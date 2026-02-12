@@ -4,7 +4,9 @@ import (
 	"context"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/memory"
@@ -431,4 +433,201 @@ func newTestMemoryStore(t *testing.T) (*memory.MemoryStore, error) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "memory", "test.db")
 	return memory.NewMemoryStore(dbPath, tmpDir)
+}
+
+// --- Parallel tool execution tests ---
+
+// slowTool is a tool that sleeps for a configurable duration and tracks execution.
+type slowTool struct {
+	name     string
+	delay    time.Duration
+	result   string
+	started  atomic.Int32
+	finished atomic.Int32
+}
+
+func (t *slowTool) Name() string        { return t.name }
+func (t *slowTool) Description() string  { return "slow test tool" }
+func (t *slowTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+}
+func (t *slowTool) Execute(_ context.Context, _ map[string]interface{}) (string, error) {
+	t.started.Add(1)
+	time.Sleep(t.delay)
+	t.finished.Add(1)
+	return t.result, nil
+}
+
+func TestRunLLMIteration_ParallelToolExecution(t *testing.T) {
+	// LLM returns 3 tool calls at once. Each tool takes 100ms.
+	// Sequential = ~300ms, parallel = ~100ms.
+	toolA := &slowTool{name: "tool_a", delay: 100 * time.Millisecond, result: "a_done"}
+	toolB := &slowTool{name: "tool_b", delay: 100 * time.Millisecond, result: "b_done"}
+	toolC := &slowTool{name: "tool_c", delay: 100 * time.Millisecond, result: "c_done"}
+
+	prov := &mockProvider{
+		responses: []mockResponse{
+			// Iteration 1: 3 parallel tool calls
+			{ToolCalls: []providers.ToolCall{
+				{ID: "tc1", Name: "tool_a", Arguments: map[string]interface{}{}},
+				{ID: "tc2", Name: "tool_b", Arguments: map[string]interface{}{}},
+				{ID: "tc3", Name: "tool_c", Arguments: map[string]interface{}{}},
+			}},
+			// Iteration 2: direct answer
+			{Content: "All done."},
+		},
+	}
+
+	al := newTestAgentLoop(t, prov, 5, []tools.Tool{toolA, toolB, toolC})
+	defer al.bus.Close()
+
+	messages := []providers.Message{
+		{Role: "system", Content: "test"},
+		{Role: "user", Content: "run all three"},
+	}
+	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
+
+	start := time.Now()
+	content, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "All done." {
+		t.Errorf("content = %q, want %q", content, "All done.")
+	}
+
+	// All tools should have executed
+	if toolA.finished.Load() != 1 || toolB.finished.Load() != 1 || toolC.finished.Load() != 1 {
+		t.Errorf("not all tools finished: a=%d b=%d c=%d",
+			toolA.finished.Load(), toolB.finished.Load(), toolC.finished.Load())
+	}
+
+	// Should be significantly faster than sequential (300ms).
+	// Allow 200ms to account for test overhead, but must be under 280ms.
+	if elapsed > 280*time.Millisecond {
+		t.Errorf("parallel execution too slow: %v (sequential would be ~300ms)", elapsed)
+	}
+}
+
+func TestRunLLMIteration_ParallelToolResults_CorrectOrder(t *testing.T) {
+	// Tool B finishes faster than Tool A, but results should be in call order.
+	toolA := &slowTool{name: "tool_a", delay: 80 * time.Millisecond, result: "result_a"}
+	toolB := &slowTool{name: "tool_b", delay: 10 * time.Millisecond, result: "result_b"}
+
+	prov := &mockProvider{
+		responses: []mockResponse{
+			{ToolCalls: []providers.ToolCall{
+				{ID: "tc1", Name: "tool_a", Arguments: map[string]interface{}{}},
+				{ID: "tc2", Name: "tool_b", Arguments: map[string]interface{}{}},
+			}},
+			{Content: "Done."},
+		},
+	}
+
+	al := newTestAgentLoop(t, prov, 5, []tools.Tool{toolA, toolB})
+	defer al.bus.Close()
+
+	messages := []providers.Message{
+		{Role: "system", Content: "test"},
+		{Role: "user", Content: "run both"},
+	}
+	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
+
+	_, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the second LLM call received tool results in the right order
+	calls := prov.getCalls()
+	if len(calls) < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", len(calls))
+	}
+
+	// The second call's messages should contain tool results.
+	// Find tool result messages.
+	secondCallMsgs := calls[1].Messages
+	var toolResults []providers.Message
+	for _, m := range secondCallMsgs {
+		if m.Role == "tool" {
+			toolResults = append(toolResults, m)
+		}
+	}
+
+	if len(toolResults) != 2 {
+		t.Fatalf("expected 2 tool result messages, got %d", len(toolResults))
+	}
+	if toolResults[0].ToolCallID != "tc1" {
+		t.Errorf("first tool result ID = %q, want %q", toolResults[0].ToolCallID, "tc1")
+	}
+	if toolResults[0].Content != "result_a" {
+		t.Errorf("first tool result content = %q, want %q", toolResults[0].Content, "result_a")
+	}
+	if toolResults[1].ToolCallID != "tc2" {
+		t.Errorf("second tool result ID = %q, want %q", toolResults[1].ToolCallID, "tc2")
+	}
+	if toolResults[1].Content != "result_b" {
+		t.Errorf("second tool result content = %q, want %q", toolResults[1].Content, "result_b")
+	}
+}
+
+func TestRunLLMIteration_ParallelToolProgress(t *testing.T) {
+	// Verify that progress messages are sent to the bus as tools complete.
+	toolA := &slowTool{name: "tool_a", delay: 30 * time.Millisecond, result: "a"}
+	toolB := &slowTool{name: "tool_b", delay: 30 * time.Millisecond, result: "b"}
+
+	prov := &mockProvider{
+		responses: []mockResponse{
+			{ToolCalls: []providers.ToolCall{
+				{ID: "tc1", Name: "tool_a", Arguments: map[string]interface{}{}},
+				{ID: "tc2", Name: "tool_b", Arguments: map[string]interface{}{}},
+			}},
+			{Content: "Done."},
+		},
+	}
+
+	al := newTestAgentLoop(t, prov, 5, []tools.Tool{toolA, toolB})
+	defer al.bus.Close()
+
+	messages := []providers.Message{
+		{Role: "system", Content: "test"},
+		{Role: "user", Content: "go"},
+	}
+	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
+
+	_, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Drain outbound messages — should have progress updates
+	var outbound []bus.OutboundMessage
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer drainCancel()
+	for {
+		msg, ok := al.bus.SubscribeOutbound(drainCtx)
+		if !ok {
+			break
+		}
+		outbound = append(outbound, msg)
+	}
+
+	// Should have at least 1 progress message (when first tool completes)
+	if len(outbound) == 0 {
+		t.Error("expected at least 1 progress message on bus, got none")
+	}
+
+	// Progress messages should mention tool completion
+	foundProgress := false
+	for _, msg := range outbound {
+		if containsStr(msg.Content, "tool_a") || containsStr(msg.Content, "tool_b") {
+			foundProgress = true
+			break
+		}
+	}
+	if !foundProgress {
+		t.Errorf("no progress message mentioned a tool name; got: %v", outbound)
+	}
 }

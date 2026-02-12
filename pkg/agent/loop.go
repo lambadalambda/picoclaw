@@ -421,48 +421,12 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		// Save assistant message with tool calls to session
 		al.sessions.AddFullMessage(opts.SessionKey, assistantMsg)
 
-		// Start status notifier for long-running tool calls (skip for system channel)
-		var notifier *statusNotifier
-		if al.statusDelay > 0 && opts.Channel != "system" {
-			notifier = newStatusNotifier(al.bus, opts.Channel, opts.ChatID, al.statusDelay)
-			notifier.start(response.ToolCalls[0].Name)
-		}
+		// Execute tool calls concurrently and collect results
+		toolResults := al.executeToolsConcurrently(ctx, response.ToolCalls, iteration, opts)
 
-		// Execute tool calls
-		for _, tc := range response.ToolCalls {
-			// Update notifier with current tool name
-			if notifier != nil {
-				notifier.reset(tc.Name)
-			}
-
-			// Log tool call with arguments preview
-			argsJSON, _ := json.Marshal(tc.Arguments)
-			argsPreview := utils.Truncate(string(argsJSON), 200)
-			logger.InfoCF("agent", fmt.Sprintf("Tool call: %s(%s)", tc.Name, argsPreview),
-				map[string]interface{}{
-					"tool":      tc.Name,
-					"iteration": iteration,
-				})
-
-			result, err := al.tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments, opts.Channel, opts.ChatID)
-			if err != nil {
-				result = fmt.Sprintf("Error: %v", err)
-			}
-
-			toolResultMsg := providers.Message{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: tc.ID,
-			}
-			messages = append(messages, toolResultMsg)
-
-			// Save tool result message to session
-			al.sessions.AddFullMessage(opts.SessionKey, toolResultMsg)
-		}
-
-		// Stop status notifier after all tool calls complete
-		if notifier != nil {
-			notifier.stop()
+		for _, tr := range toolResults {
+			messages = append(messages, tr)
+			al.sessions.AddFullMessage(opts.SessionKey, tr)
 		}
 	}
 
