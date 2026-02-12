@@ -20,14 +20,32 @@ import (
 	"github.com/sipeed/picoclaw/pkg/voice"
 )
 
+// telegramBot abstracts the telego.Bot methods used by TelegramChannel,
+// enabling mock-based testing without a live Telegram API connection.
+type telegramBot interface {
+	Username() string
+	FileDownloadURL(filepath string) string
+	UpdatesViaLongPolling(ctx context.Context, params *telego.GetUpdatesParams, options ...telego.LongPollingOption) (<-chan telego.Update, error)
+	SendMessage(ctx context.Context, params *telego.SendMessageParams) (*telego.Message, error)
+	SendChatAction(ctx context.Context, params *telego.SendChatActionParams) error
+	SendPhoto(ctx context.Context, params *telego.SendPhotoParams) (*telego.Message, error)
+	SendDocument(ctx context.Context, params *telego.SendDocumentParams) (*telego.Message, error)
+	EditMessageText(ctx context.Context, params *telego.EditMessageTextParams) (*telego.Message, error)
+	DeleteMessage(ctx context.Context, params *telego.DeleteMessageParams) error
+	GetFile(ctx context.Context, params *telego.GetFileParams) (*telego.File, error)
+}
+
 type TelegramChannel struct {
 	*BaseChannel
-	bot          *telego.Bot
+	bot          telegramBot
 	config       config.TelegramConfig
 	chatIDs      map[string]int64
 	transcriber  *voice.GroqTranscriber
-	placeholders sync.Map // chatID -> messageID
 	stopThinking sync.Map // chatID -> thinkingCancel
+
+	// typingInterval controls how often the typing indicator is refreshed.
+	// Telegram's typing indicator expires after ~5s, so default is 4s.
+	typingInterval time.Duration
 }
 
 type thinkingCancel struct {
@@ -49,13 +67,13 @@ func NewTelegramChannel(cfg config.TelegramConfig, bus *bus.MessageBus) (*Telegr
 	base := NewBaseChannel("telegram", cfg, bus, cfg.AllowFrom)
 
 	return &TelegramChannel{
-		BaseChannel:  base,
-		bot:          bot,
-		config:       cfg,
-		chatIDs:      make(map[string]int64),
-		transcriber:  nil,
-		placeholders: sync.Map{},
-		stopThinking: sync.Map{},
+		BaseChannel:    base,
+		bot:            bot,
+		config:         cfg,
+		chatIDs:        make(map[string]int64),
+		transcriber:    nil,
+		stopThinking:   sync.Map{},
+		typingInterval: 4 * time.Second,
 	}, nil
 }
 
@@ -124,20 +142,8 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 
 	htmlContent := markdownToTelegramHTML(msg.Content)
 
-	// If there's no media, send text as before
+	// If there's no media, send text only
 	if len(msg.Media) == 0 {
-		// Try to edit placeholder
-		if pID, ok := c.placeholders.Load(msg.ChatID); ok {
-			c.placeholders.Delete(msg.ChatID)
-			editMsg := tu.EditMessageText(tu.ID(chatID), pID.(int), htmlContent)
-			editMsg.ParseMode = telego.ModeHTML
-
-			if _, err = c.bot.EditMessageText(ctx, editMsg); err == nil {
-				return nil
-			}
-			// Fallback to new message if edit fails
-		}
-
 		tgMsg := tu.Message(tu.ID(chatID), htmlContent)
 		tgMsg.ParseMode = telego.ModeHTML
 
@@ -150,12 +156,6 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 			return err
 		}
 		return nil
-	}
-
-	// Delete placeholder if present (we'll send media instead of editing text)
-	if pID, ok := c.placeholders.Load(msg.ChatID); ok {
-		c.placeholders.Delete(msg.ChatID)
-		_ = c.bot.DeleteMessage(ctx, tu.Delete(tu.ID(chatID), pID.(int)))
 	}
 
 	// Send text content first if present
@@ -202,6 +202,34 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 	}
 
 	return nil
+}
+
+// startTypingIndicator sends repeated "typing..." chat actions until the
+// context is cancelled (by Send) or times out. This replaces the previous
+// animated "Thinking..." placeholder message.
+func (c *TelegramChannel) startTypingIndicator(ctx context.Context, cancel context.CancelFunc, chatID int64, chatIDStr string) {
+	c.stopThinking.Store(chatIDStr, &thinkingCancel{fn: cancel})
+
+	interval := c.typingInterval
+	if interval == 0 {
+		interval = 4 * time.Second
+	}
+
+	// Send the first typing action immediately
+	_ = c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
+			}
+		}
+	}()
 }
 
 func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Update) {
@@ -340,15 +368,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 		"preview":   utils.Truncate(content, 50),
 	})
 
-	// Thinking indicator
-	err := c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
-	if err != nil {
-		logger.ErrorCF("telegram", "Failed to send chat action", map[string]interface{}{
-			"error": err.Error(),
-		})
-	}
-
-	// Stop any previous thinking animation
+	// Start typing indicator (repeating "typing..." action until Send cancels it)
 	chatIDStr := fmt.Sprintf("%d", chatID)
 	if prevStop, ok := c.stopThinking.Load(chatIDStr); ok {
 		if cf, ok := prevStop.(*thinkingCancel); ok && cf != nil {
@@ -356,38 +376,8 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 		}
 	}
 
-	// Create new context for thinking animation with timeout
 	thinkCtx, thinkCancel := context.WithTimeout(ctx, 5*time.Minute)
-	c.stopThinking.Store(chatIDStr, &thinkingCancel{fn: thinkCancel})
-
-	pMsg, err := c.bot.SendMessage(ctx, tu.Message(tu.ID(chatID), "Thinking... 💭"))
-	if err == nil {
-		pID := pMsg.MessageID
-		c.placeholders.Store(chatIDStr, pID)
-
-		go func(cid int64, mid int) {
-			dots := []string{".", "..", "..."}
-			emotes := []string{"💭", "🤔", "☁️"}
-			i := 0
-			ticker := time.NewTicker(2000 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-thinkCtx.Done():
-					return
-				case <-ticker.C:
-					i++
-					text := fmt.Sprintf("Thinking%s %s", dots[i%len(dots)], emotes[i%len(emotes)])
-					_, editErr := c.bot.EditMessageText(thinkCtx, tu.EditMessageText(tu.ID(chatID), mid, text))
-					if editErr != nil {
-						logger.DebugCF("telegram", "Failed to edit thinking message", map[string]interface{}{
-							"error": editErr.Error(),
-						})
-					}
-				}
-			}
-		}(chatID, pID)
-	}
+	c.startTypingIndicator(thinkCtx, thinkCancel, chatID, chatIDStr)
 
 	metadata := map[string]string{
 		"message_id": fmt.Sprintf("%d", message.MessageID),
