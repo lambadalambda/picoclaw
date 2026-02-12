@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // validResponse returns a minimal valid OpenAI-format chat completion response.
@@ -47,6 +48,14 @@ func newTestOptions() map[string]interface{} {
 	return map[string]interface{}{"max_tokens": 100}
 }
 
+// newTestProvider creates an HTTPProvider with near-zero backoff for fast tests.
+func newTestProvider(apiKey, apiBase string) *HTTPProvider {
+	p := NewHTTPProvider(apiKey, apiBase)
+	p.retryBaseWait = 1 * time.Millisecond
+	p.retryMaxWait = 10 * time.Millisecond
+	return p
+}
+
 // TestChat_NoRetryOnSuccess verifies that a successful response is returned immediately
 // without any retries.
 func TestChat_NoRetryOnSuccess(t *testing.T) {
@@ -58,7 +67,7 @@ func TestChat_NoRetryOnSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHTTPProvider("test-key", srv.URL)
+	p := newTestProvider("test-key", srv.URL)
 	resp, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -86,7 +95,7 @@ func TestChat_RetryOnEmptyChoices(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHTTPProvider("test-key", srv.URL)
+	p := newTestProvider("test-key", srv.URL)
 	resp, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -114,7 +123,7 @@ func TestChat_RetryOnErrorFinishReason(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHTTPProvider("test-key", srv.URL)
+	p := newTestProvider("test-key", srv.URL)
 	resp, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -142,7 +151,7 @@ func TestChat_RetryOnHTTP500(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHTTPProvider("test-key", srv.URL)
+	p := newTestProvider("test-key", srv.URL)
 	resp, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -170,7 +179,7 @@ func TestChat_RetryOnHTTP429(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHTTPProvider("test-key", srv.URL)
+	p := newTestProvider("test-key", srv.URL)
 	resp, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -190,7 +199,7 @@ func TestChat_NoRetryOnHTTP400(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHTTPProvider("test-key", srv.URL)
+	p := newTestProvider("test-key", srv.URL)
 	_, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
 	if err == nil {
 		t.Fatal("expected error for 400, got nil")
@@ -211,14 +220,14 @@ func TestChat_ExhaustedRetriesReturnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHTTPProvider("test-key", srv.URL)
+	p := newTestProvider("test-key", srv.URL)
 	_, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
 	if err == nil {
 		t.Fatal("expected error after exhausting retries, got nil")
 	}
-	// Should have tried original + retries (expect 3 total: 1 original + 2 retries)
-	if calls.Load() < 2 {
-		t.Fatalf("expected multiple attempts, got: %d", calls.Load())
+	// Should have tried original + retries (expect 6 total: 1 original + 5 retries)
+	if calls.Load() != 6 {
+		t.Fatalf("expected 6 attempts, got: %d", calls.Load())
 	}
 }
 
@@ -236,7 +245,7 @@ func TestChat_RetriesRespectContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	p := NewHTTPProvider("test-key", srv.URL)
+	p := newTestProvider("test-key", srv.URL)
 	_, err := p.Chat(ctx, newTestMessages(), nil, "test-model", newTestOptions())
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")

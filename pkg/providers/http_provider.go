@@ -23,20 +23,27 @@ import (
 )
 
 const (
-	maxRetries    = 2              // up to 2 retries (3 attempts total)
-	retryBaseWait = 1 * time.Second // base wait before first retry
+	defaultMaxRetries    = 5                 // up to 5 retries (6 attempts total)
+	defaultRetryBaseWait = 1 * time.Second   // base wait before first retry
+	defaultRetryMaxWait  = 60 * time.Second  // cap on backoff duration
 )
 
 type HTTPProvider struct {
-	apiKey     string
-	apiBase    string
-	httpClient *http.Client
+	apiKey        string
+	apiBase       string
+	httpClient    *http.Client
+	maxRetries    int
+	retryBaseWait time.Duration
+	retryMaxWait  time.Duration
 }
 
 func NewHTTPProvider(apiKey, apiBase string) *HTTPProvider {
 	return &HTTPProvider{
-		apiKey:  apiKey,
-		apiBase: apiBase,
+		apiKey:        apiKey,
+		apiBase:       apiBase,
+		maxRetries:    defaultMaxRetries,
+		retryBaseWait: defaultRetryBaseWait,
+		retryMaxWait:  defaultRetryMaxWait,
 		httpClient: &http.Client{
 			Timeout: 0,
 		},
@@ -77,10 +84,13 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 	}
 
 	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt <= p.maxRetries; attempt++ {
 		if attempt > 0 {
-			wait := retryBaseWait * time.Duration(1<<(attempt-1)) // exponential: 1s, 2s
-			logger.WarnCF("provider", fmt.Sprintf("Retrying LLM request (attempt %d/%d)", attempt+1, maxRetries+1),
+			wait := p.retryBaseWait * time.Duration(1<<(attempt-1)) // exponential: 1s, 2s, 4s, 8s, 16s
+			if wait > p.retryMaxWait {
+				wait = p.retryMaxWait
+			}
+			logger.WarnCF("provider", fmt.Sprintf("Retrying LLM request (attempt %d/%d)", attempt+1, p.maxRetries+1),
 				map[string]interface{}{
 					"wait":       wait.String(),
 					"last_error": fmt.Sprintf("%v", lastErr),
@@ -140,7 +150,7 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 		return llmResp, nil
 	}
 
-	return nil, fmt.Errorf("LLM request failed after %d attempts: %w", maxRetries+1, lastErr)
+	return nil, fmt.Errorf("LLM request failed after %d attempts: %w", p.maxRetries+1, lastErr)
 }
 
 // doRequest sends the HTTP request and returns the raw response.
