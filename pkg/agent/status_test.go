@@ -59,9 +59,9 @@ func TestStatusNotifier_SendsAfterDelay(t *testing.T) {
 	if got.Content == "" {
 		t.Error("expected non-empty status content")
 	}
-	// Should mention the tool name
-	if !contains(got.Content, "exec") {
-		t.Errorf("status content %q should mention tool name %q", got.Content, "exec")
+	// Should NOT contain tool name — keep user-facing messages generic
+	if contains(got.Content, "exec") {
+		t.Errorf("status content %q should not expose tool name to user", got.Content)
 	}
 }
 
@@ -109,9 +109,9 @@ func TestStatusNotifier_ResetExtendsDelay(t *testing.T) {
 		t.Fatal("expected status message after reset delay expired, got none")
 	}
 
-	// Should mention the updated tool name
-	if !contains(msgs[0].Content, "web_search") {
-		t.Errorf("status content %q should mention updated tool %q", msgs[0].Content, "web_search")
+	// Should NOT contain tool name — keep user-facing messages generic
+	if contains(msgs[0].Content, "web_search") {
+		t.Errorf("status content %q should not expose tool name to user", msgs[0].Content)
 	}
 }
 

@@ -6,15 +6,14 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 // executeToolsConcurrently runs all tool calls in parallel, collects results
-// in call order, and sends per-tool progress to the bus. A statusNotifier
-// provides periodic "still working" pings as a fallback for very long tools.
+// in call order, and logs per-tool progress. A statusNotifier provides
+// periodic "still working" pings for long-running tool batches.
 func (al *AgentLoop) executeToolsConcurrently(
 	ctx context.Context,
 	toolCalls []providers.ToolCall,
@@ -28,12 +27,7 @@ func (al *AgentLoop) executeToolsConcurrently(
 
 	// Start status notifier for long-running tool calls (skip for system channel)
 	var notifier *statusNotifier
-	sendProgress := opts.Channel != "system"
-	if al.statusDelay > 0 && sendProgress {
-		names := make([]string, n)
-		for i, tc := range toolCalls {
-			names[i] = tc.Name
-		}
+	if al.statusDelay > 0 && opts.Channel != "system" {
 		notifier = newStatusNotifier(al.bus, opts.Channel, opts.ChatID, al.statusDelay)
 		notifier.start(fmt.Sprintf("%d tools", n))
 	}
@@ -80,15 +74,13 @@ func (al *AgentLoop) executeToolsConcurrently(
 		for range n {
 			idx := <-doneCh
 			completed++
-			if sendProgress && n > 1 {
-				name := toolCalls[idx].Name
-				msg := fmt.Sprintf("%s done (%d/%d)", name, completed, n)
-				al.bus.PublishOutbound(bus.OutboundMessage{
-					Channel: opts.Channel,
-					ChatID:  opts.ChatID,
-					Content: msg,
+			name := toolCalls[idx].Name
+			logger.DebugCF("agent", fmt.Sprintf("Tool completed: %s (%d/%d)", name, completed, n),
+				map[string]interface{}{
+					"tool":      name,
+					"completed": completed,
+					"total":     n,
 				})
-			}
 		}
 	}()
 

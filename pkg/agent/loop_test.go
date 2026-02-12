@@ -573,8 +573,9 @@ func TestRunLLMIteration_ParallelToolResults_CorrectOrder(t *testing.T) {
 	}
 }
 
-func TestRunLLMIteration_ParallelToolProgress(t *testing.T) {
-	// Verify that progress messages are sent to the bus as tools complete.
+func TestRunLLMIteration_ParallelToolNoLeakedToolNames(t *testing.T) {
+	// Verify that tool names are NOT sent to the bus — they should only
+	// appear in logs, not in user-facing messages.
 	toolA := &slowTool{name: "tool_a", delay: 30 * time.Millisecond, result: "a"}
 	toolB := &slowTool{name: "tool_b", delay: 30 * time.Millisecond, result: "b"}
 
@@ -602,7 +603,7 @@ func TestRunLLMIteration_ParallelToolProgress(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Drain outbound messages — should have progress updates
+	// Drain outbound messages
 	var outbound []bus.OutboundMessage
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer drainCancel()
@@ -614,20 +615,10 @@ func TestRunLLMIteration_ParallelToolProgress(t *testing.T) {
 		outbound = append(outbound, msg)
 	}
 
-	// Should have at least 1 progress message (when first tool completes)
-	if len(outbound) == 0 {
-		t.Error("expected at least 1 progress message on bus, got none")
-	}
-
-	// Progress messages should mention tool completion
-	foundProgress := false
+	// No outbound message should contain tool names
 	for _, msg := range outbound {
 		if containsStr(msg.Content, "tool_a") || containsStr(msg.Content, "tool_b") {
-			foundProgress = true
-			break
+			t.Errorf("outbound message leaked tool name to user: %q", msg.Content)
 		}
-	}
-	if !foundProgress {
-		t.Errorf("no progress message mentioned a tool name; got: %v", outbound)
 	}
 }

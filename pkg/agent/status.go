@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -101,7 +100,7 @@ func (sn *statusNotifier) loop() {
 			sn.timer.Reset(sn.delay)
 			sn.mu.Unlock()
 
-			msg := fmt.Sprintf("Still working on it... (running *%s*)", tool)
+			msg := "Still working on it..."
 			logger.DebugCF("agent", msg, map[string]interface{}{
 				"tool":    tool,
 				"channel": sn.channel,
