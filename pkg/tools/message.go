@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-type SendCallback func(channel, chatID, content string) error
+type SendCallback func(channel, chatID, content string, media []string) error
 
 type MessageTool struct {
 	sendCallback   SendCallback
@@ -22,7 +22,8 @@ func (t *MessageTool) Name() string {
 }
 
 func (t *MessageTool) Description() string {
-	return "Send a message to user on a chat channel. Use this when you want to communicate something."
+	return "Send a message (and optionally files/images) to a user on a chat channel. " +
+		"Use this when you want to communicate something or share files."
 }
 
 func (t *MessageTool) Parameters() map[string]interface{} {
@@ -40,6 +41,13 @@ func (t *MessageTool) Parameters() map[string]interface{} {
 			"chat_id": map[string]interface{}{
 				"type":        "string",
 				"description": "Optional: target chat/user ID",
+			},
+			"media": map[string]interface{}{
+				"type":        "array",
+				"description": "Optional: list of file paths to send as attachments (images, documents, etc.)",
+				"items": map[string]interface{}{
+					"type": "string",
+				},
 			},
 		},
 		"required": []string{"content"},
@@ -79,7 +87,22 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 		return "Error: Message sending not configured", nil
 	}
 
-	if err := t.sendCallback(channel, chatID, content); err != nil {
+	// Extract media paths
+	var media []string
+	if rawMedia, ok := args["media"]; ok {
+		if mediaList, ok := rawMedia.([]interface{}); ok {
+			for _, item := range mediaList {
+				if path, ok := item.(string); ok {
+					media = append(media, path)
+				}
+			}
+		}
+	}
+	if media == nil {
+		media = []string{}
+	}
+
+	if err := t.sendCallback(channel, chatID, content, media); err != nil {
 		return fmt.Sprintf("Error sending message: %v", err), nil
 	}
 
