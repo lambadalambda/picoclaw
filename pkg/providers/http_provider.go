@@ -14,9 +14,17 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/auth"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/utils"
+)
+
+const (
+	maxRetries    = 2              // up to 2 retries (3 attempts total)
+	retryBaseWait = 1 * time.Second // base wait before first retry
 )
 
 type HTTPProvider struct {
@@ -68,6 +76,75 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			wait := retryBaseWait * time.Duration(1<<(attempt-1)) // exponential: 1s, 2s
+			logger.WarnCF("provider", fmt.Sprintf("Retrying LLM request (attempt %d/%d)", attempt+1, maxRetries+1),
+				map[string]interface{}{
+					"wait":       wait.String(),
+					"last_error": fmt.Sprintf("%v", lastErr),
+				})
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled during retry wait: %w", ctx.Err())
+			case <-time.After(wait):
+			}
+		}
+
+		resp, err := p.doRequest(ctx, jsonData)
+		if err != nil {
+			lastErr = err
+			// Context cancellation is not retryable
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("failed to send request: %w", err)
+			}
+			continue
+		}
+
+		statusCode, body, err := p.readResponse(resp)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Non-OK status: retry on 5xx and 429, fail immediately on other 4xx
+		if statusCode != http.StatusOK {
+			lastErr = fmt.Errorf("API error (HTTP %d): %s", statusCode, utils.Truncate(string(body), 500))
+			if statusCode == http.StatusTooManyRequests || statusCode >= 500 {
+				continue // retryable
+			}
+			return nil, lastErr // non-retryable client error
+		}
+
+		// Log raw response body at debug level for troubleshooting
+		logger.DebugCF("provider", "Raw LLM response",
+			map[string]interface{}{
+				"status":     statusCode,
+				"body_bytes": len(body),
+				"body":       utils.Truncate(string(body), 2000),
+			})
+
+		llmResp, err := p.parseResponse(body)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Check for empty/error responses that warrant a retry
+		if p.shouldRetry(llmResp) {
+			lastErr = fmt.Errorf("empty or error response from LLM (finish_reason=%s)", llmResp.FinishReason)
+			continue
+		}
+
+		return llmResp, nil
+	}
+
+	return nil, fmt.Errorf("LLM request failed after %d attempts: %w", maxRetries+1, lastErr)
+}
+
+// doRequest sends the HTTP request and returns the raw response.
+func (p *HTTPProvider) doRequest(ctx context.Context, jsonData []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", p.apiBase+"/chat/completions", bytes.NewReader(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -78,22 +155,26 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 		req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
 
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
+	return p.httpClient.Do(req)
+}
 
+// readResponse reads the body and closes it, returning status code and body bytes.
+func (p *HTTPProvider) readResponse(resp *http.Response) (int, []byte, error) {
+	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return resp.StatusCode, nil, fmt.Errorf("failed to read response: %w", err)
 	}
+	return resp.StatusCode, body, nil
+}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error: %s", string(body))
+// shouldRetry returns true if the LLM response is empty/broken and worth retrying.
+func (p *HTTPProvider) shouldRetry(resp *LLMResponse) bool {
+	// No content and no tool calls = useless response
+	if resp.Content == "" && len(resp.ToolCalls) == 0 {
+		return true
 	}
-
-	return p.parseResponse(body)
+	return false
 }
 
 func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
@@ -120,6 +201,10 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 	}
 
 	if len(apiResponse.Choices) == 0 {
+		logger.WarnCF("provider", "LLM returned 0 choices",
+			map[string]interface{}{
+				"body_preview": utils.Truncate(string(body), 500),
+			})
 		return &LLMResponse{
 			Content:      "",
 			FinishReason: "stop",
@@ -127,6 +212,14 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 	}
 
 	choice := apiResponse.Choices[0]
+
+	if choice.Message.Content == "" && len(choice.Message.ToolCalls) == 0 {
+		logger.WarnCF("provider", "LLM returned empty content with no tool calls",
+			map[string]interface{}{
+				"finish_reason": choice.FinishReason,
+				"body_preview":  utils.Truncate(string(body), 500),
+			})
+	}
 
 	toolCalls := make([]ToolCall, 0, len(choice.Message.ToolCalls))
 	for _, tc := range choice.Message.ToolCalls {
