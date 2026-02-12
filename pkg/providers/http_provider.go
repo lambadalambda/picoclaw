@@ -24,9 +24,10 @@ import (
 )
 
 const (
-	defaultMaxRetries    = 5                 // up to 5 retries (6 attempts total)
-	defaultRetryBaseWait = 1 * time.Second   // base wait before first retry
-	defaultRetryMaxWait  = 60 * time.Second  // cap on backoff duration
+	defaultMaxRetries    = 5                // up to 5 retries (6 attempts total)
+	defaultRetryBaseWait = 1 * time.Second  // base wait before first retry
+	defaultRetryMaxWait  = 60 * time.Second // cap on backoff duration
+	defaultHTTPTimeout   = 2 * time.Minute  // safety net; ctx controls cancellation per call
 )
 
 type HTTPProvider struct {
@@ -47,7 +48,7 @@ func NewHTTPProvider(apiKey, apiBase string) *HTTPProvider {
 		retryBaseWait: defaultRetryBaseWait,
 		retryMaxWait:  defaultRetryMaxWait,
 		httpClient: &http.Client{
-			Timeout: 0,
+			Timeout: defaultHTTPTimeout,
 		},
 	}
 }
@@ -195,6 +196,12 @@ func (p *HTTPProvider) readResponse(resp *http.Response) (int, []byte, error) {
 
 // shouldRetry returns true if the LLM response is empty/broken and worth retrying.
 func (p *HTTPProvider) shouldRetry(resp *LLMResponse) bool {
+	// Some providers return finish_reason="error" even with partial content.
+	// Treat this as retryable.
+	if strings.EqualFold(resp.FinishReason, "error") {
+		return true
+	}
+
 	// No content and no tool calls = useless response
 	if resp.Content == "" && len(resp.ToolCalls) == 0 {
 		return true
