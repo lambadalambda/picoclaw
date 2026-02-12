@@ -362,6 +362,13 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			})
 
 		// Call LLM
+		logger.InfoCF("agent", "Calling LLM",
+			map[string]interface{}{
+				"iteration":      iteration,
+				"model":          al.model,
+				"messages_count": len(messages),
+				"tools_count":    len(providerToolDefs),
+			})
 		response, err := al.provider.Chat(ctx, messages, providerToolDefs, al.model, map[string]interface{}{
 			"max_tokens":  8192,
 			"temperature": 0.7,
