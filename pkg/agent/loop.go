@@ -312,6 +312,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.Message, opts processOptions) (string, int, error) {
 	iteration := 0
 	var finalContent string
+	exhausted := true // assume exhausted; set false on clean exit
 
 	for iteration < al.maxIterations {
 		iteration++
@@ -374,6 +375,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		// Check if no tool calls - we're done
 		if len(response.ToolCalls) == 0 {
 			finalContent = response.Content
+			exhausted = false
 			logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
 				map[string]interface{}{
 					"iteration":     iteration,
@@ -457,6 +459,34 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		// Stop status notifier after all tool calls complete
 		if notifier != nil {
 			notifier.stop()
+		}
+	}
+
+	// If the loop exhausted all iterations without a direct answer,
+	// make one final LLM call with no tools to get a progress summary.
+	// The user can then say "continue" to resume.
+	if exhausted {
+		logger.WarnCF("agent", "Tool iteration limit reached, requesting summary",
+			map[string]interface{}{
+				"iterations": iteration,
+				"max":        al.maxIterations,
+			})
+
+		messages = append(messages, providers.Message{
+			Role:    "user",
+			Content: "You've reached your tool call iteration limit. Please summarize what you've accomplished so far and what still needs to be done. The user can tell you to continue.",
+		})
+
+		response, err := al.provider.Chat(ctx, messages, nil, al.model, map[string]interface{}{
+			"max_tokens":  8192,
+			"temperature": 0.7,
+		})
+		if err != nil {
+			logger.ErrorCF("agent", "Summary call failed after iteration limit",
+				map[string]interface{}{"error": err.Error()})
+			finalContent = fmt.Sprintf("I reached my tool call limit (%d iterations) before finishing. Ask me to continue and I'll pick up where I left off.", al.maxIterations)
+		} else {
+			finalContent = response.Content
 		}
 	}
 
