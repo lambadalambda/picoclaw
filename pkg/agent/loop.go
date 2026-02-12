@@ -20,6 +20,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/memory"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -86,6 +87,20 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	// Register edit file tool
 	editFileTool := tools.NewEditFileTool(workspace)
 	toolsRegistry.Register(editFileTool)
+
+	// Register memory tools (graceful degradation if SQLite init fails)
+	memoryDBPath := filepath.Join(workspace, "memory", "memory.db")
+	memoryDB, err := memory.NewMemoryStore(memoryDBPath, workspace)
+	if err != nil {
+		logger.WarnCF("agent", "Memory DB unavailable, memory tools disabled", map[string]interface{}{"error": err.Error()})
+	} else {
+		// Reindex existing markdown files into the search index
+		if reindexErr := memoryDB.Reindex(); reindexErr != nil {
+			logger.WarnCF("agent", "Memory reindex failed", map[string]interface{}{"error": reindexErr.Error()})
+		}
+		toolsRegistry.Register(tools.NewMemorySearchTool(memoryDB))
+		toolsRegistry.Register(tools.NewMemoryStoreTool(memoryDB))
+	}
 
 	sessionsManager := session.NewSessionManager(filepath.Join(workspace, "sessions"))
 
