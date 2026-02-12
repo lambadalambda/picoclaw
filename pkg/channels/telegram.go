@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -123,28 +124,81 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 
 	htmlContent := markdownToTelegramHTML(msg.Content)
 
-	// Try to edit placeholder
-	if pID, ok := c.placeholders.Load(msg.ChatID); ok {
-		c.placeholders.Delete(msg.ChatID)
-		editMsg := tu.EditMessageText(tu.ID(chatID), pID.(int), htmlContent)
-		editMsg.ParseMode = telego.ModeHTML
+	// If there's no media, send text as before
+	if len(msg.Media) == 0 {
+		// Try to edit placeholder
+		if pID, ok := c.placeholders.Load(msg.ChatID); ok {
+			c.placeholders.Delete(msg.ChatID)
+			editMsg := tu.EditMessageText(tu.ID(chatID), pID.(int), htmlContent)
+			editMsg.ParseMode = telego.ModeHTML
 
-		if _, err = c.bot.EditMessageText(ctx, editMsg); err == nil {
-			return nil
+			if _, err = c.bot.EditMessageText(ctx, editMsg); err == nil {
+				return nil
+			}
+			// Fallback to new message if edit fails
 		}
-		// Fallback to new message if edit fails
+
+		tgMsg := tu.Message(tu.ID(chatID), htmlContent)
+		tgMsg.ParseMode = telego.ModeHTML
+
+		if _, err = c.bot.SendMessage(ctx, tgMsg); err != nil {
+			logger.ErrorCF("telegram", "HTML parse failed, falling back to plain text", map[string]interface{}{
+				"error": err.Error(),
+			})
+			tgMsg.ParseMode = ""
+			_, err = c.bot.SendMessage(ctx, tgMsg)
+			return err
+		}
+		return nil
 	}
 
-	tgMsg := tu.Message(tu.ID(chatID), htmlContent)
-	tgMsg.ParseMode = telego.ModeHTML
+	// Delete placeholder if present (we'll send media instead of editing text)
+	if pID, ok := c.placeholders.Load(msg.ChatID); ok {
+		c.placeholders.Delete(msg.ChatID)
+		_ = c.bot.DeleteMessage(ctx, tu.Delete(tu.ID(chatID), pID.(int)))
+	}
 
-	if _, err = c.bot.SendMessage(ctx, tgMsg); err != nil {
-		logger.ErrorCF("telegram", "HTML parse failed, falling back to plain text", map[string]interface{}{
-			"error": err.Error(),
-		})
-		tgMsg.ParseMode = ""
-		_, err = c.bot.SendMessage(ctx, tgMsg)
-		return err
+	// Send text content first if present
+	if msg.Content != "" {
+		tgMsg := tu.Message(tu.ID(chatID), htmlContent)
+		tgMsg.ParseMode = telego.ModeHTML
+		if _, err = c.bot.SendMessage(ctx, tgMsg); err != nil {
+			logger.ErrorCF("telegram", "Failed to send text before media", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
+	}
+
+	// Send each media file
+	for _, mediaPath := range msg.Media {
+		file, fileErr := os.Open(mediaPath)
+		if fileErr != nil {
+			logger.ErrorCF("telegram", "Failed to open media file", map[string]interface{}{
+				"path":  mediaPath,
+				"error": fileErr.Error(),
+			})
+			continue
+		}
+
+		if isImageFile(mediaPath) {
+			photoMsg := tu.Photo(tu.ID(chatID), tu.File(file))
+			if _, sendErr := c.bot.SendPhoto(ctx, photoMsg); sendErr != nil {
+				logger.ErrorCF("telegram", "Failed to send photo", map[string]interface{}{
+					"path":  mediaPath,
+					"error": sendErr.Error(),
+				})
+			}
+		} else {
+			docMsg := tu.Document(tu.ID(chatID), tu.File(file))
+			if _, sendErr := c.bot.SendDocument(ctx, docMsg); sendErr != nil {
+				logger.ErrorCF("telegram", "Failed to send document", map[string]interface{}{
+					"path":  mediaPath,
+					"error": sendErr.Error(),
+				})
+			}
+		}
+
+		file.Close()
 	}
 
 	return nil
@@ -383,6 +437,16 @@ func (c *TelegramChannel) downloadFile(ctx context.Context, fileID, ext string) 
 	}
 
 	return c.downloadFileWithInfo(file, ext)
+}
+
+func isImageFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseChatID(chatIDStr string) (int64, error) {
