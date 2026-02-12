@@ -39,6 +39,7 @@ type AgentLoop struct {
 	tools          *tools.ToolRegistry
 	running        atomic.Bool
 	summarizing    sync.Map      // Tracks which sessions are currently being summarized
+	statusDelay    time.Duration // Delay before sending "still working" status updates (0 = disabled)
 }
 
 // processOptions configures how a message is processed
@@ -119,6 +120,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		contextBuilder: contextBuilder,
 		tools:          toolsRegistry,
 		summarizing:    sync.Map{},
+		statusDelay:    30 * time.Second,
 	}
 }
 
@@ -413,8 +415,20 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		// Save assistant message with tool calls to session
 		al.sessions.AddFullMessage(opts.SessionKey, assistantMsg)
 
+		// Start status notifier for long-running tool calls (skip for system channel)
+		var notifier *statusNotifier
+		if al.statusDelay > 0 && opts.Channel != "system" {
+			notifier = newStatusNotifier(al.bus, opts.Channel, opts.ChatID, al.statusDelay)
+			notifier.start(response.ToolCalls[0].Name)
+		}
+
 		// Execute tool calls
 		for _, tc := range response.ToolCalls {
+			// Update notifier with current tool name
+			if notifier != nil {
+				notifier.reset(tc.Name)
+			}
+
 			// Log tool call with arguments preview
 			argsJSON, _ := json.Marshal(tc.Arguments)
 			argsPreview := utils.Truncate(string(argsJSON), 200)
@@ -438,6 +452,11 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 
 			// Save tool result message to session
 			al.sessions.AddFullMessage(opts.SessionKey, toolResultMsg)
+		}
+
+		// Stop status notifier after all tool calls complete
+		if notifier != nil {
+			notifier.stop()
 		}
 	}
 
