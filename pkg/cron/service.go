@@ -5,13 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/adhocore/gronx"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 type CronSchedule struct {
@@ -162,7 +162,7 @@ func (cs *CronService) checkJobs() {
 	}
 
 	if err := cs.saveStoreUnsafe(); err != nil {
-		log.Printf("[cron] failed to save store: %v", err)
+		logger.ErrorCF("cron", "Failed to save store", map[string]interface{}{"error": err.Error()})
 	}
 
 	cs.mu.Unlock()
@@ -216,7 +216,7 @@ func (cs *CronService) executeJob(job *CronJob) {
 	}
 
 	if err := cs.saveStoreUnsafe(); err != nil {
-		log.Printf("[cron] failed to save store: %v", err)
+		logger.ErrorCF("cron", "Failed to save store", map[string]interface{}{"error": err.Error()})
 	}
 }
 
@@ -245,7 +245,7 @@ func (cs *CronService) computeNextRun(schedule *CronSchedule, nowMS int64) *int6
 		now := time.UnixMilli(nowMS)
 		nextTime, err := gronx.NextTickAfter(schedule.Expr, now, false)
 		if err != nil {
-			log.Printf("[cron] failed to compute next run for expr '%s': %v", schedule.Expr, err)
+			logger.ErrorCF("cron", "Failed to compute next run", map[string]interface{}{"expr": schedule.Expr, "error": err.Error()})
 			return nil
 		}
 
@@ -378,7 +378,7 @@ func (cs *CronService) removeJobUnsafe(jobID string) bool {
 
 	if removed {
 		if err := cs.saveStoreUnsafe(); err != nil {
-			log.Printf("[cron] failed to save store after remove: %v", err)
+			logger.ErrorCF("cron", "Failed to save store after remove", map[string]interface{}{"error": err.Error()})
 		}
 	}
 
@@ -402,7 +402,7 @@ func (cs *CronService) EnableJob(jobID string, enabled bool) *CronJob {
 			}
 
 			if err := cs.saveStoreUnsafe(); err != nil {
-				log.Printf("[cron] failed to save store after enable: %v", err)
+				logger.ErrorCF("cron", "Failed to save store after enable", map[string]interface{}{"error": err.Error()})
 			}
 			return job
 		}
