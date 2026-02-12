@@ -251,3 +251,23 @@ func TestChat_RetriesRespectContextCancellation(t *testing.T) {
 		t.Fatal("expected error from cancelled context, got nil")
 	}
 }
+
+// TestChat_NewlinePaddedResponse verifies that responses with leading/trailing
+// whitespace padding (seen from Friendli via OpenRouter) are handled correctly.
+func TestChat_NewlinePaddedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Simulate Friendli-style padding: many newlines before JSON
+		fmt.Fprint(w, "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"+validResponse("padded but fine")+"\n\n\n")
+	}))
+	defer srv.Close()
+
+	p := newTestProvider("test-key", srv.URL)
+	resp, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if resp.Content != "padded but fine" {
+		t.Fatalf("expected content 'padded but fine', got: %q", resp.Content)
+	}
+}

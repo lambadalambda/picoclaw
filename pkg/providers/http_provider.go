@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sipeed/picoclaw/pkg/auth"
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -169,12 +170,15 @@ func (p *HTTPProvider) doRequest(ctx context.Context, jsonData []byte) (*http.Re
 }
 
 // readResponse reads the body and closes it, returning status code and body bytes.
+// Leading/trailing whitespace is trimmed because some upstream providers (e.g. Friendli
+// via OpenRouter) pad responses with newlines.
 func (p *HTTPProvider) readResponse(resp *http.Response) (int, []byte, error) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return resp.StatusCode, nil, fmt.Errorf("failed to read response: %w", err)
 	}
+	body = bytes.TrimFunc(body, unicode.IsSpace)
 	return resp.StatusCode, body, nil
 }
 
