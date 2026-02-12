@@ -36,6 +36,7 @@ type HTTPProvider struct {
 	maxRetries    int
 	retryBaseWait time.Duration
 	retryMaxWait  time.Duration
+	routing       map[string]interface{}
 }
 
 func NewHTTPProvider(apiKey, apiBase string) *HTTPProvider {
@@ -49,6 +50,12 @@ func NewHTTPProvider(apiKey, apiBase string) *HTTPProvider {
 			Timeout: 0,
 		},
 	}
+}
+
+// SetRouting sets the provider routing preferences (OpenRouter-specific).
+// The map is passed as the "provider" object in the request body.
+func (p *HTTPProvider) SetRouting(routing map[string]interface{}) {
+	p.routing = routing
 }
 
 func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]interface{}) (*LLMResponse, error) {
@@ -77,6 +84,10 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 
 	if temperature, ok := options["temperature"].(float64); ok {
 		requestBody["temperature"] = temperature
+	}
+
+	if len(p.routing) > 0 {
+		requestBody["provider"] = p.routing
 	}
 
 	jsonData, err := json.Marshal(requestBody)
@@ -303,6 +314,7 @@ func CreateProvider(cfg *config.Config) (LLMProvider, error) {
 	model := cfg.Agents.Defaults.Model
 
 	var apiKey, apiBase string
+	var routing map[string]interface{}
 
 	lowerModel := strings.ToLower(model)
 
@@ -314,6 +326,7 @@ func CreateProvider(cfg *config.Config) (LLMProvider, error) {
 		} else {
 			apiBase = "https://openrouter.ai/api/v1"
 		}
+		routing = cfg.Providers.OpenRouter.Routing
 
 	case (strings.Contains(lowerModel, "claude") || strings.HasPrefix(model, "anthropic/")) && (cfg.Providers.Anthropic.APIKey != "" || cfg.Providers.Anthropic.AuthMethod != ""):
 		if cfg.Providers.Anthropic.AuthMethod == "oauth" || cfg.Providers.Anthropic.AuthMethod == "token" {
@@ -368,6 +381,7 @@ func CreateProvider(cfg *config.Config) (LLMProvider, error) {
 			} else {
 				apiBase = "https://openrouter.ai/api/v1"
 			}
+			routing = cfg.Providers.OpenRouter.Routing
 		} else {
 			return nil, fmt.Errorf("no API key configured for model: %s", model)
 		}
@@ -381,5 +395,9 @@ func CreateProvider(cfg *config.Config) (LLMProvider, error) {
 		return nil, fmt.Errorf("no API base configured for provider (model: %s)", model)
 	}
 
-	return NewHTTPProvider(apiKey, apiBase), nil
+	p := NewHTTPProvider(apiKey, apiBase)
+	if len(routing) > 0 {
+		p.SetRouting(routing)
+	}
+	return p, nil
 }
