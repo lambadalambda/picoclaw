@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -180,4 +181,35 @@ func TestMessageTool_Execute_CallbackError(t *testing.T) {
 	if result != "Error sending message: network error" {
 		t.Errorf("result = %q, want callback error message", result)
 	}
+}
+
+func TestMessageTool_SetContextConcurrentWithExecute_NoRace(t *testing.T) {
+	tool := NewMessageTool()
+	tool.SetSendCallback(func(channel, chatID, content string, media []string) error {
+		return nil
+	})
+	tool.SetContext("telegram", "init")
+
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			tool.SetContext("telegram", fmt.Sprintf("%d", i))
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			_, _ = tool.Execute(ctx, map[string]interface{}{
+				"content": "hello",
+			})
+		}
+	}()
+
+	wg.Wait()
 }
