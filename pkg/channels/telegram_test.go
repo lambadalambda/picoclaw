@@ -1,10 +1,132 @@
 package channels
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/mymmrac/telego"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
 )
+
+// mockTelegramBot implements telegramBot for testing.
+type mockTelegramBot struct {
+	mu sync.Mutex
+
+	sendMessageCalls    []*telego.SendMessageParams
+	sendChatActionCalls []*telego.SendChatActionParams
+	editMessageCalls    []*telego.EditMessageTextParams
+	deleteMessageCalls  []*telego.DeleteMessageParams
+	sendPhotoCalls      []*telego.SendPhotoParams
+	sendDocumentCalls   []*telego.SendDocumentParams
+
+	// configurable return for SendMessage
+	sendMessageID int
+}
+
+func newMockBot() *mockTelegramBot {
+	return &mockTelegramBot{sendMessageID: 42}
+}
+
+func (m *mockTelegramBot) Username() string { return "testbot" }
+func (m *mockTelegramBot) FileDownloadURL(filepath string) string {
+	return "https://example.com/" + filepath
+}
+func (m *mockTelegramBot) UpdatesViaLongPolling(ctx context.Context, params *telego.GetUpdatesParams, options ...telego.LongPollingOption) (<-chan telego.Update, error) {
+	return nil, nil
+}
+func (m *mockTelegramBot) SendMessage(ctx context.Context, params *telego.SendMessageParams) (*telego.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendMessageCalls = append(m.sendMessageCalls, params)
+	return &telego.Message{MessageID: m.sendMessageID}, nil
+}
+func (m *mockTelegramBot) SendChatAction(ctx context.Context, params *telego.SendChatActionParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendChatActionCalls = append(m.sendChatActionCalls, params)
+	return nil
+}
+func (m *mockTelegramBot) SendPhoto(ctx context.Context, params *telego.SendPhotoParams) (*telego.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendPhotoCalls = append(m.sendPhotoCalls, params)
+	return &telego.Message{MessageID: m.sendMessageID}, nil
+}
+func (m *mockTelegramBot) SendDocument(ctx context.Context, params *telego.SendDocumentParams) (*telego.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendDocumentCalls = append(m.sendDocumentCalls, params)
+	return &telego.Message{MessageID: m.sendMessageID}, nil
+}
+func (m *mockTelegramBot) EditMessageText(ctx context.Context, params *telego.EditMessageTextParams) (*telego.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.editMessageCalls = append(m.editMessageCalls, params)
+	return &telego.Message{MessageID: params.MessageID}, nil
+}
+func (m *mockTelegramBot) DeleteMessage(ctx context.Context, params *telego.DeleteMessageParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleteMessageCalls = append(m.deleteMessageCalls, params)
+	return nil
+}
+func (m *mockTelegramBot) GetFile(ctx context.Context, params *telego.GetFileParams) (*telego.File, error) {
+	return &telego.File{FileID: params.FileID, FilePath: "photos/test.jpg"}, nil
+}
+
+func (m *mockTelegramBot) getSendMessageCalls() []*telego.SendMessageParams {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]*telego.SendMessageParams, len(m.sendMessageCalls))
+	copy(cp, m.sendMessageCalls)
+	return cp
+}
+
+func (m *mockTelegramBot) getSendChatActionCalls() []*telego.SendChatActionParams {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]*telego.SendChatActionParams, len(m.sendChatActionCalls))
+	copy(cp, m.sendChatActionCalls)
+	return cp
+}
+
+func (m *mockTelegramBot) getEditMessageCalls() []*telego.EditMessageTextParams {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]*telego.EditMessageTextParams, len(m.editMessageCalls))
+	copy(cp, m.editMessageCalls)
+	return cp
+}
+
+func (m *mockTelegramBot) getDeleteMessageCalls() []*telego.DeleteMessageParams {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]*telego.DeleteMessageParams, len(m.deleteMessageCalls))
+	copy(cp, m.deleteMessageCalls)
+	return cp
+}
+
+func newTestTelegramChannel(bot telegramBot) *TelegramChannel {
+	msgBus := bus.NewMessageBus()
+	base := NewBaseChannel("telegram", nil, msgBus, nil)
+	base.running.Store(true)
+	ch := &TelegramChannel{
+		BaseChannel:    base,
+		bot:            bot,
+		chatIDs:        make(map[string]int64),
+		stopThinking:   sync.Map{},
+		typingInterval: 100 * time.Millisecond, // fast ticks for tests
+	}
+	return ch
+}
+
+// --- Pure function tests (no mock needed) ---
 
 func TestIsImageFile(t *testing.T) {
 	tests := []struct {
@@ -131,5 +253,173 @@ func TestMarkdownToTelegramHTML(t *testing.T) {
 				t.Errorf("markdownToTelegramHTML(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// --- Send() tests ---
+
+func TestSend_TextMessage(t *testing.T) {
+	mock := newMockBot()
+	ch := newTestTelegramChannel(mock)
+
+	err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Hello world",
+	})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	calls := mock.getSendMessageCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(calls))
+	}
+	if calls[0].ParseMode != telego.ModeHTML {
+		t.Errorf("expected HTML parse mode, got %q", calls[0].ParseMode)
+	}
+}
+
+func TestSend_NeverEditsOrDeletesMessages(t *testing.T) {
+	mock := newMockBot()
+	ch := newTestTelegramChannel(mock)
+
+	// Send should always create a new message — never edit or delete.
+	err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Response text",
+	})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	edits := mock.getEditMessageCalls()
+	if len(edits) != 0 {
+		t.Errorf("expected 0 EditMessageText calls, got %d", len(edits))
+	}
+
+	deletes := mock.getDeleteMessageCalls()
+	if len(deletes) != 0 {
+		t.Errorf("expected 0 DeleteMessage calls, got %d", len(deletes))
+	}
+
+	sends := mock.getSendMessageCalls()
+	if len(sends) != 1 {
+		t.Errorf("expected 1 SendMessage call, got %d", len(sends))
+	}
+}
+
+func TestSend_StopsTypingIndicator(t *testing.T) {
+	mock := newMockBot()
+	ch := newTestTelegramChannel(mock)
+
+	// Simulate a running typing indicator
+	var cancelled atomic.Bool
+	ctx, cancel := context.WithCancel(context.Background())
+	ch.stopThinking.Store("12345", &thinkingCancel{fn: func() {
+		cancelled.Store(true)
+		cancel()
+	}})
+
+	err := ch.Send(ctx, bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Done thinking",
+	})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	if !cancelled.Load() {
+		t.Error("expected typing indicator to be cancelled when Send is called")
+	}
+
+	// The stopThinking entry should be cleaned up
+	if _, ok := ch.stopThinking.Load("12345"); ok {
+		t.Error("expected stopThinking entry to be deleted after Send")
+	}
+}
+
+// --- Typing indicator tests ---
+
+func TestStartTypingIndicator_SendsChatAction(t *testing.T) {
+	mock := newMockBot()
+	ch := newTestTelegramChannel(mock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	chatIDStr := "12345"
+
+	ch.startTypingIndicator(ctx, cancel, 12345, chatIDStr)
+
+	// Wait for at least one tick
+	time.Sleep(150 * time.Millisecond)
+
+	actions := mock.getSendChatActionCalls()
+	if len(actions) == 0 {
+		t.Error("expected at least one SendChatAction call")
+	}
+	for _, a := range actions {
+		if a.Action != telego.ChatActionTyping {
+			t.Errorf("expected action %q, got %q", telego.ChatActionTyping, a.Action)
+		}
+	}
+
+	// Should NOT send any "Thinking..." message
+	msgs := mock.getSendMessageCalls()
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 SendMessage calls (no thinking message), got %d", len(msgs))
+	}
+
+	// Should NOT edit any message
+	edits := mock.getEditMessageCalls()
+	if len(edits) != 0 {
+		t.Errorf("expected 0 EditMessageText calls, got %d", len(edits))
+	}
+
+	// Cleanup
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestStartTypingIndicator_StopsOnCancel(t *testing.T) {
+	mock := newMockBot()
+	ch := newTestTelegramChannel(mock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ch.startTypingIndicator(ctx, cancel, 12345, "12345")
+
+	// Let a couple ticks fire
+	time.Sleep(250 * time.Millisecond)
+
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	// Record count after cancel
+	countAfterCancel := len(mock.getSendChatActionCalls())
+
+	// Wait more — count should not increase
+	time.Sleep(200 * time.Millisecond)
+	countLater := len(mock.getSendChatActionCalls())
+
+	if countLater > countAfterCancel {
+		t.Errorf("typing indicator continued after cancel: %d > %d", countLater, countAfterCancel)
+	}
+}
+
+func TestStartTypingIndicator_RepeatsAction(t *testing.T) {
+	mock := newMockBot()
+	ch := newTestTelegramChannel(mock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ch.startTypingIndicator(ctx, cancel, 12345, "12345")
+
+	// Wait long enough for multiple ticks
+	time.Sleep(350 * time.Millisecond)
+
+	cancel()
+
+	actions := mock.getSendChatActionCalls()
+	if len(actions) < 2 {
+		t.Errorf("expected at least 2 SendChatAction calls for repeated typing, got %d", len(actions))
 	}
 }
