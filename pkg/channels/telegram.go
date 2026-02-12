@@ -532,8 +532,11 @@ func extractInlineCodes(text string) inlineCodeMatch {
 		codes = append(codes, match[1])
 	}
 
+	idx := 0
 	text = re.ReplaceAllStringFunc(text, func(m string) string {
-		return fmt.Sprintf("\x00IC%d\x00", len(codes)-1)
+		s := fmt.Sprintf("\x00IC%d\x00", idx)
+		idx++
+		return s
 	})
 
 	return inlineCodeMatch{text: text, codes: codes}
