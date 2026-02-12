@@ -379,13 +379,6 @@ This file stores important information that should persist across sessions.
 		}
 	}
 
-	for filename, content := range templates {
-		filePath := filepath.Join(workspace, filename)
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
-			os.WriteFile(filePath, []byte(content), 0644)
-			fmt.Printf("  Created %s\n", filename)
-		}
-	}
 }
 
 func migrateCmd() {
@@ -1264,52 +1257,7 @@ func cronEnableCmd(storePath string, disable bool) {
 	}
 }
 
-func skillsCmd() {
-	if len(os.Args) < 3 {
-		skillsHelp()
-		return
-	}
 
-	subcommand := os.Args[2]
-
-	cfg, err := loadConfig()
-	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
-		os.Exit(1)
-	}
-
-	workspace := cfg.WorkspacePath()
-	installer := skills.NewSkillInstaller(workspace)
-	// 获取全局配置目录和内置 skills 目录
-	globalDir := filepath.Dir(getConfigPath())
-	globalSkillsDir := filepath.Join(globalDir, "skills")
-	builtinSkillsDir := filepath.Join(globalDir, "picoclaw", "skills")
-	skillsLoader := skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir)
-
-	switch subcommand {
-	case "list":
-		skillsListCmd(skillsLoader)
-	case "install":
-		skillsInstallCmd(installer)
-	case "remove", "uninstall":
-		if len(os.Args) < 4 {
-			fmt.Println("Usage: picoclaw skills remove <skill-name>")
-			return
-		}
-		skillsRemoveCmd(installer, os.Args[3])
-	case "search":
-		skillsSearchCmd(installer)
-	case "show":
-		if len(os.Args) < 4 {
-			fmt.Println("Usage: picoclaw skills show <skill-name>")
-			return
-		}
-		skillsShowCmd(skillsLoader, os.Args[3])
-	default:
-		fmt.Printf("Unknown skills command: %s\n", subcommand)
-		skillsHelp()
-	}
-}
 
 func skillsHelp() {
 	fmt.Println("\nSkills commands:")
