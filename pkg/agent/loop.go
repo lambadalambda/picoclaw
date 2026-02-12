@@ -40,6 +40,7 @@ type AgentLoop struct {
 	running        atomic.Bool
 	summarizing    sync.Map      // Tracks which sessions are currently being summarized
 	statusDelay    time.Duration // Delay before sending "still working" status updates (0 = disabled)
+	memoryStore    *memory.MemoryStore // Searchable memory DB (nil = disabled)
 }
 
 // processOptions configures how a message is processed
@@ -103,6 +104,8 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		toolsRegistry.Register(tools.NewMemoryStoreTool(memoryDB))
 	}
 
+	// memoryDB may be nil — that's fine, extractAndStoreMemories handles it
+
 	sessionsManager := session.NewSessionManager(filepath.Join(workspace, "sessions"))
 
 	// Create context builder and set tools registry
@@ -121,6 +124,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		tools:          toolsRegistry,
 		summarizing:    sync.Map{},
 		statusDelay:    30 * time.Second,
+		memoryStore:    memoryDB,
 	}
 }
 
@@ -663,6 +667,9 @@ func (al *AgentLoop) summarizeSession(sessionKey string) {
 		al.sessions.SetSummary(sessionKey, finalSummary)
 		al.sessions.TruncateHistory(sessionKey, 4)
 		al.sessions.Save(al.sessions.GetOrCreate(sessionKey))
+
+		// Extract and store notable memories from the compacted messages
+		al.extractAndStoreMemories(ctx, toSummarize)
 	}
 }
 
