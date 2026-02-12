@@ -80,7 +80,9 @@ Your workspace is at: %s
 
 2. **Be helpful and accurate** - When using tools, briefly explain what you're doing.
 
-3. **Memory** - When remembering something, write to %s/memory/MEMORY.md`,
+3. **Memory** - When remembering something, write to %s/memory/MEMORY.md
+
+4. **Parallel tool calls** - You can call multiple tools simultaneously in a single response when the calls are independent of each other. This is more efficient than calling them sequentially.`,
 		now, runtime, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
 }
 
