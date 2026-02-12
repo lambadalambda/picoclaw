@@ -42,6 +42,17 @@ func errorFinishResponse() string {
 	}`
 }
 
+// errorFinishResponseWithContent returns a response with finish_reason "error" but non-empty content.
+func errorFinishResponseWithContent(content string) string {
+	return fmt.Sprintf(`{
+		"choices": [{
+			"message": {"content": %q, "tool_calls": []},
+			"finish_reason": "error"
+		}],
+		"usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+	}`, content)
+}
+
 func newTestMessages() []Message {
 	return []Message{{Role: "user", Content: "hello"}}
 }
@@ -135,6 +146,44 @@ func TestChat_RetryOnErrorFinishReason(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("expected 2 calls, got: %d", calls.Load())
+	}
+}
+
+// TestChat_RetryOnErrorFinishReason_WithContent verifies that finish_reason "error"
+// triggers retries even if the message content is non-empty.
+func TestChat_RetryOnErrorFinishReason_WithContent(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if n < 2 {
+			fmt.Fprint(w, errorFinishResponseWithContent("partial"))
+		} else {
+			fmt.Fprint(w, validResponse("ok now"))
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider("test-key", srv.URL)
+	resp, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if resp.Content != "ok now" {
+		t.Fatalf("expected content 'ok now', got: %q", resp.Content)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected 2 calls, got: %d", calls.Load())
+	}
+}
+
+func TestNewHTTPProvider_DefaultTimeoutIsSet(t *testing.T) {
+	p := NewHTTPProvider("test-key", "https://example.com")
+	if p.httpClient == nil {
+		t.Fatal("expected httpClient to be non-nil")
+	}
+	if p.httpClient.Timeout <= 0 {
+		t.Fatalf("expected non-zero default http client timeout, got: %s", p.httpClient.Timeout)
 	}
 }
 
