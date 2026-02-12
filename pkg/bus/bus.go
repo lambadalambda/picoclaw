@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"log"
 	"sync"
 )
 
@@ -21,7 +22,11 @@ func NewMessageBus() *MessageBus {
 }
 
 func (mb *MessageBus) PublishInbound(msg InboundMessage) {
-	mb.inbound <- msg
+	select {
+	case mb.inbound <- msg:
+	default:
+		log.Printf("[WARN] bus: inbound channel full, dropping message from %s:%s", msg.Channel, msg.ChatID)
+	}
 }
 
 func (mb *MessageBus) ConsumeInbound(ctx context.Context) (InboundMessage, bool) {
@@ -34,7 +39,11 @@ func (mb *MessageBus) ConsumeInbound(ctx context.Context) (InboundMessage, bool)
 }
 
 func (mb *MessageBus) PublishOutbound(msg OutboundMessage) {
-	mb.outbound <- msg
+	select {
+	case mb.outbound <- msg:
+	default:
+		log.Printf("[WARN] bus: outbound channel full, dropping message for %s:%s", msg.Channel, msg.ChatID)
+	}
 }
 
 func (mb *MessageBus) SubscribeOutbound(ctx context.Context) (OutboundMessage, bool) {
