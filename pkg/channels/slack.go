@@ -255,8 +255,8 @@ func (c *SlackChannel) handleMessageEvent(ev *slackevents.MessageEvent) {
 
 			if utils.IsAudioFile(file.Name, file.Mimetype) && c.transcriber != nil && c.transcriber.IsAvailable() {
 				ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
-				defer cancel()
 				result, err := c.transcriber.Transcribe(ctx, localPath)
+				cancel()
 
 				if err != nil {
 					logger.ErrorCF("slack", "Voice transcription failed", map[string]interface{}{"error": err.Error()})
