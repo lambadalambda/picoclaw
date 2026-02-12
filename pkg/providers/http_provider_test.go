@@ -2,7 +2,9 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -269,5 +271,72 @@ func TestChat_NewlinePaddedResponse(t *testing.T) {
 	}
 	if resp.Content != "padded but fine" {
 		t.Fatalf("expected content 'padded but fine', got: %q", resp.Content)
+	}
+}
+
+// TestChat_ProviderRoutingIncludedInRequest verifies that when routing is set,
+// it appears as the "provider" object in the request body sent to the API.
+func TestChat_ProviderRoutingIncludedInRequest(t *testing.T) {
+	var capturedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, validResponse("ok"))
+	}))
+	defer srv.Close()
+
+	p := newTestProvider("test-key", srv.URL)
+	p.SetRouting(map[string]interface{}{
+		"ignore": []string{"Friendli"},
+		"order":  []string{"Together", "DeepInfra"},
+	})
+
+	_, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	providerObj, ok := capturedBody["provider"]
+	if !ok {
+		t.Fatal("expected 'provider' field in request body, not found")
+	}
+	providerMap, ok := providerObj.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected provider to be object, got: %T", providerObj)
+	}
+
+	ignoreList, ok := providerMap["ignore"]
+	if !ok {
+		t.Fatal("expected 'ignore' in provider object")
+	}
+	items := ignoreList.([]interface{})
+	if len(items) != 1 || items[0] != "Friendli" {
+		t.Fatalf("expected ignore=[Friendli], got: %v", ignoreList)
+	}
+}
+
+// TestChat_ProviderRoutingOmittedWhenEmpty verifies that when no routing is set,
+// no "provider" field appears in the request body.
+func TestChat_ProviderRoutingOmittedWhenEmpty(t *testing.T) {
+	var capturedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, validResponse("ok"))
+	}))
+	defer srv.Close()
+
+	p := newTestProvider("test-key", srv.URL)
+	// No SetRouting call
+
+	_, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if _, ok := capturedBody["provider"]; ok {
+		t.Fatal("expected no 'provider' field in request body when routing is not set")
 	}
 }
