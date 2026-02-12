@@ -138,6 +138,10 @@ clean:
 	@rm -rf $(BUILD_DIR)
 	@echo "Clean complete"
 
+## test: Run all tests
+test:
+	$(GO) test ./...
+
 ## fmt: Format Go code
 fmt:
 	@$(GO) fmt ./...
