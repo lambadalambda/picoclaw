@@ -476,12 +476,21 @@ func (al *AgentLoop) updateToolContexts(channel, chatID string) {
 }
 
 // maybeSummarize triggers summarization if the session history exceeds thresholds.
+// When contextWindow is configured, compaction triggers at 75% token usage.
+// Otherwise, falls back to a message count heuristic.
 func (al *AgentLoop) maybeSummarize(sessionKey string) {
 	newHistory := al.sessions.GetHistory(sessionKey)
-	tokenEstimate := al.estimateTokens(newHistory)
-	threshold := al.contextWindow * 75 / 100
 
-	if len(newHistory) > 20 || tokenEstimate > threshold {
+	var shouldSummarize bool
+	if al.contextWindow > 0 {
+		tokenEstimate := al.estimateTokens(newHistory)
+		threshold := al.contextWindow * 75 / 100
+		shouldSummarize = tokenEstimate > threshold
+	} else {
+		shouldSummarize = len(newHistory) > 20
+	}
+
+	if shouldSummarize {
 		if _, loading := al.summarizing.LoadOrStore(sessionKey, true); !loading {
 			go func() {
 				defer al.summarizing.Delete(sessionKey)
