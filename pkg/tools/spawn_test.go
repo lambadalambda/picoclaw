@@ -34,7 +34,7 @@ func TestSpawnTool_Execute_NoTask(t *testing.T) {
 
 func TestSpawnTool_SetContextConcurrentWithExecute_NoRace(t *testing.T) {
 	// Use nil bus so subagent tasks don't publish messages during the test.
-	mgr := NewSubagentManager(&fastMockProvider{}, t.TempDir(), nil)
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
 	tool := NewSpawnTool(mgr)
 	tool.SetContext("telegram", "init")
 

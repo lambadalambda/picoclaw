@@ -82,7 +82,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	toolsRegistry.Register(messageTool)
 
 	// Register spawn tool
-	subagentManager := tools.NewSubagentManager(provider, workspace, msgBus)
+	subagentManager := tools.NewSubagentManager(provider, cfg.Agents.Defaults.Model, workspace, msgBus)
 	spawnTool := tools.NewSpawnTool(subagentManager)
 	toolsRegistry.Register(spawnTool)
 
@@ -237,8 +237,32 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 	// Use the origin session for context
 	sessionKey := fmt.Sprintf("%s:%s", originChannel, originChatID)
 
+	// Subagent internal reports should not be forwarded to the end user.
+	// They can be stored as internal notes for later integration.
+	if strings.HasPrefix(msg.SenderID, "subagent:") {
+		event := ""
+		if msg.Metadata != nil {
+			event = msg.Metadata["subagent_event"]
+		}
+
+		// Progress-like events are internal only: store and return no user response.
+		switch event {
+		case "progress", "note", "warning":
+			internal := fmt.Sprintf("[Internal: %s] %s", msg.SenderID, msg.Content)
+			al.sessions.AddMessage(sessionKey, "assistant", internal)
+			_ = al.sessions.Save(al.sessions.GetOrCreate(sessionKey))
+			logger.InfoCF("agent", "Stored subagent update (internal)",
+				map[string]interface{}{
+					"session_key": sessionKey,
+					"event":       event,
+					"sender_id":   msg.SenderID,
+				})
+			return "", nil
+		}
+	}
+
 	// Process as system message with routing back to origin
-	return al.runAgentLoop(ctx, processOptions{
+	_, err := al.runAgentLoop(ctx, processOptions{
 		SessionKey:      sessionKey,
 		Channel:         originChannel,
 		ChatID:          originChatID,
@@ -247,6 +271,16 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 		EnableSummary:   false,
 		SendResponse:    true, // Send response back to original channel
 	})
+	if err != nil {
+		// Avoid routing errors to the non-existent "system" channel. Send a fallback
+		// message directly to the origin channel/chat.
+		al.bus.PublishOutbound(bus.OutboundMessage{
+			Channel: originChannel,
+			ChatID:  originChatID,
+			Content: fmt.Sprintf("Error processing background task: %v", err),
+		})
+	}
+	return "", nil
 }
 
 // runAgentLoop is the core message processing logic.

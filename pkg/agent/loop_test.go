@@ -622,3 +622,45 @@ func TestRunLLMIteration_ParallelToolNoLeakedToolNames(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessSystemMessage_SubagentProgress_IsInternal(t *testing.T) {
+	// Subagent progress updates should be stored as internal notes and
+	// must not produce user-facing outbound messages.
+	al := newTestAgentLoop(t, &mockProvider{responses: []mockResponse{{Content: "unused"}}}, 1, nil)
+	defer al.bus.Close()
+
+	msg := bus.InboundMessage{
+		Channel:  "system",
+		SenderID: "subagent:subagent-1",
+		ChatID:   "telegram:chat1",
+		Content:  "step 1",
+		Metadata: map[string]string{"subagent_event": "progress"},
+	}
+
+	resp, err := al.processSystemMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("processSystemMessage error: %v", err)
+	}
+	if resp != "" {
+		t.Errorf("response = %q, want empty", resp)
+	}
+
+	// No outbound user message should be published
+	outCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, ok := al.bus.SubscribeOutbound(outCtx); ok {
+		t.Fatal("unexpected outbound message for subagent progress event")
+	}
+
+	// Internal note should be stored in session history
+	history := al.sessions.GetHistory("telegram:chat1")
+	if len(history) != 1 {
+		t.Fatalf("history len = %d, want 1", len(history))
+	}
+	if history[0].Role != "assistant" {
+		t.Errorf("history role = %q, want %q", history[0].Role, "assistant")
+	}
+	if !containsStr(history[0].Content, "Internal") {
+		t.Errorf("history content should look like internal note; got %q", history[0].Content)
+	}
+}
