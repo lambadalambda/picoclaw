@@ -222,6 +222,78 @@ func TestExtractCodeBlocks(t *testing.T) {
 	}
 }
 
+func TestExtractInlineCodes(t *testing.T) {
+	tests := []struct {
+		name                       string
+		input                      string
+		wantCodes                  int
+		wantDistinctPlaceholders   int
+		wantCodesSlice             []string
+		wantTextContainsPlaceholds []string
+	}{
+		{
+			name:                     "no inline codes",
+			input:                    "hello world",
+			wantCodes:                0,
+			wantDistinctPlaceholders: 0,
+			wantCodesSlice:           nil,
+		},
+		{
+			name:                     "two inline codes",
+			input:                    "before `one` middle `two` after",
+			wantCodes:                2,
+			wantDistinctPlaceholders: 2,
+			wantCodesSlice:           []string{"one", "two"},
+			wantTextContainsPlaceholds: []string{
+				"\x00IC0\x00",
+				"\x00IC1\x00",
+			},
+		},
+		{
+			name:                     "three inline codes",
+			input:                    "`a` `b` `c`",
+			wantCodes:                3,
+			wantDistinctPlaceholders: 3,
+			wantCodesSlice:           []string{"a", "b", "c"},
+			wantTextContainsPlaceholds: []string{
+				"\x00IC0\x00",
+				"\x00IC1\x00",
+				"\x00IC2\x00",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractInlineCodes(tt.input)
+			if len(result.codes) != tt.wantCodes {
+				t.Fatalf("got %d codes, want %d", len(result.codes), tt.wantCodes)
+			}
+
+			if tt.wantCodesSlice != nil {
+				for i := range tt.wantCodesSlice {
+					if result.codes[i] != tt.wantCodesSlice[i] {
+						t.Errorf("codes[%d] = %q, want %q", i, result.codes[i], tt.wantCodesSlice[i])
+					}
+				}
+			}
+
+			// Check that each placeholder has a unique index
+			seen := make(map[string]bool)
+			for i := 0; i < len(result.codes); i++ {
+				placeholder := fmt.Sprintf("\x00IC%d\x00", i)
+				if !strings.Contains(result.text, placeholder) {
+					t.Errorf("missing placeholder %q in result text %q", placeholder, result.text)
+				}
+				seen[placeholder] = true
+			}
+			if len(seen) != tt.wantDistinctPlaceholders {
+				t.Errorf("got %d distinct placeholders, want %d", len(seen), tt.wantDistinctPlaceholders)
+			}
+		})
+	}
+}
+
 func TestMarkdownToTelegramHTML(t *testing.T) {
 	// Verify existing functionality still works
 	tests := []struct {
