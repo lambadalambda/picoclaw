@@ -1,0 +1,35 @@
+services:
+  picoclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: picoclaw
+    restart: unless-stopped
+    ports:
+      - "18790:18790"
+    volumes:
+      # Picoclaw config, workspace, skills, and session data.
+      # Lives in ./picoclaw-home so you can edit config.json directly.
+      - ./picoclaw-home:/root/.picoclaw
+
+      # Persist software the assistant installs (apt, pip, etc.)
+      # across container recreations. The picoclaw binary itself
+      # lives in /opt so it always comes from the image.
+      - picoclaw-usr-local:/usr/local
+      - picoclaw-var-lib-apt:/var/lib/apt
+      - picoclaw-var-cache-apt:/var/cache/apt
+      - picoclaw-var-lib-dpkg:/var/lib/dpkg
+      - picoclaw-pip:/root/.local
+
+    # Provide API keys and config overrides via .env file.
+    # Copy .env.example to .env and fill in your values.
+    env_file:
+      - path: .env
+        required: false
+
+volumes:
+  picoclaw-usr-local:
+  picoclaw-var-lib-apt:
+  picoclaw-var-cache-apt:
+  picoclaw-var-lib-dpkg:
+  picoclaw-pip:

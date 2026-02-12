@@ -11,6 +11,8 @@ bin/
 
 # Picoclaw specific
 .picoclaw/
+picoclaw-home/
+.env
 config.json
 sessions/
 build/

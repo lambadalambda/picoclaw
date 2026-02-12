@@ -1,0 +1,14 @@
+build/
+.picoclaw/
+picoclaw-home/
+config.json
+sessions/
+ralph/
+.git/
+.DS_Store
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
