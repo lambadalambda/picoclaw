@@ -170,8 +170,8 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 	// Log system prompt summary for debugging (debug mode only)
 	logger.DebugCF("agent", "System prompt built",
 		map[string]interface{}{
-			"total_chars": len(systemPrompt),
-			"total_lines": strings.Count(systemPrompt, "\n") + 1,
+			"total_chars":   len(systemPrompt),
+			"total_lines":   strings.Count(systemPrompt, "\n") + 1,
 			"section_count": strings.Count(systemPrompt, "\n\n---\n\n") + 1,
 		})
 
@@ -221,25 +221,6 @@ func (cb *ContextBuilder) AddAssistantMessage(messages []providers.Message, cont
 	// Always add assistant message, whether or not it has tool calls
 	messages = append(messages, msg)
 	return messages
-}
-
-func (cb *ContextBuilder) loadSkills() string {
-	allSkills := cb.skillsLoader.ListSkills()
-	if len(allSkills) == 0 {
-		return ""
-	}
-
-	var skillNames []string
-	for _, s := range allSkills {
-		skillNames = append(skillNames, s.Name)
-	}
-
-	content := cb.skillsLoader.LoadSkillsForContext(skillNames)
-	if content == "" {
-		return ""
-	}
-
-	return "# Skill Definitions\n\n" + content
 }
 
 // GetSkillsInfo returns information about loaded skills.
