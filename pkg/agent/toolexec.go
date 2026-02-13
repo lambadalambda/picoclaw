@@ -57,11 +57,7 @@ func (al *AgentLoop) executeToolsConcurrently(
 				result = fmt.Sprintf("Error: %v", err)
 			}
 
-			results[idx] = providers.Message{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: tc.ID,
-			}
+			results[idx] = providers.ToolResultMessage(tc.ID, result)
 
 			doneCh <- idx
 		}(i, tc)

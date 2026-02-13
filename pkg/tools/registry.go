@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 type ToolRegistry struct {
@@ -92,6 +93,35 @@ func (r *ToolRegistry) GetDefinitions() []map[string]interface{} {
 	return definitions
 }
 
+// GetProviderDefinitions returns tool definitions in the providers.ToolDefinition
+// format, ready to pass directly to an LLM provider's Chat call.
+func (r *ToolRegistry) GetProviderDefinitions() []providers.ToolDefinition {
+	schemas := r.GetDefinitions()
+	defs := make([]providers.ToolDefinition, 0, len(schemas))
+	for _, td := range schemas {
+		fn, ok := td["function"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := fn["name"].(string)
+		desc, _ := fn["description"].(string)
+		params, _ := fn["parameters"].(map[string]interface{})
+		typeStr, _ := td["type"].(string)
+		if name == "" || typeStr == "" {
+			continue
+		}
+		defs = append(defs, providers.ToolDefinition{
+			Type: typeStr,
+			Function: providers.ToolFunctionDefinition{
+				Name:        name,
+				Description: desc,
+				Parameters:  params,
+			},
+		})
+	}
+	return defs
+}
+
 // List returns a list of all registered tool names.
 func (r *ToolRegistry) List() []string {
 	r.mu.RLock()
@@ -109,6 +139,18 @@ func (r *ToolRegistry) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.tools)
+}
+
+// RegisterCoreTools registers the standard set of tools shared between the
+// main agent and subagents: filesystem ops, exec, edit, web search, and web fetch.
+func RegisterCoreTools(r *ToolRegistry, workspace string, braveAPIKey string, searchMaxResults int) {
+	r.Register(&ReadFileTool{})
+	r.Register(&WriteFileTool{})
+	r.Register(&ListDirTool{})
+	r.Register(NewExecTool(workspace))
+	r.Register(NewEditFileTool(workspace))
+	r.Register(NewWebFetchTool(50000))
+	r.Register(NewWebSearchTool(braveAPIKey, searchMaxResults))
 }
 
 // GetSummaries returns human-readable summaries of all registered tools.

@@ -40,6 +40,27 @@ type LLMProvider interface {
 	GetDefaultModel() string
 }
 
+// AssistantMessageFromResponse builds a Message suitable for appending to the
+// conversation history from an LLM response that contains tool calls.
+// The returned message has Role "assistant" and carries the response's tool
+// calls in the canonical OpenAI wire format (Type + Function populated).
+func AssistantMessageFromResponse(resp *LLMResponse) Message {
+	return Message{
+		Role:      "assistant",
+		Content:   resp.Content,
+		ToolCalls: resp.ToolCalls,
+	}
+}
+
+// ToolResultMessage builds a "tool" role message for a single tool call result.
+func ToolResultMessage(toolCallID, result string) Message {
+	return Message{
+		Role:       "tool",
+		Content:    result,
+		ToolCallID: toolCallID,
+	}
+}
+
 type ToolDefinition struct {
 	Type     string                 `json:"type"`
 	Function ToolFunctionDefinition `json:"function"`

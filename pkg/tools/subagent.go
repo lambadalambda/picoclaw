@@ -93,14 +93,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 
 	// Build a subagent-only tool registry.
 	registry := NewToolRegistry()
-	registry.Register(&ReadFileTool{})
-	registry.Register(&WriteFileTool{})
-	registry.Register(&ListDirTool{})
-	registry.Register(NewExecTool(sm.workspace))
-	registry.Register(NewEditFileTool(sm.workspace))
-	registry.Register(NewWebFetchTool(50000))
-	// Web search requires an API key; the tool will self-report if missing.
-	registry.Register(NewWebSearchTool("", 5))
+	RegisterCoreTools(registry, sm.workspace, "", 5) // web search will self-report if key missing
 	registry.Register(NewSubagentReportTool(sm.bus, task.ID, task.Label, task.OriginChannel, task.OriginChatID))
 
 	systemPrompt := sm.buildSubagentSystemPrompt(registry)
@@ -119,7 +112,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 	var finalErr error
 
 	for iteration := 1; iteration <= maxIterations; iteration++ {
-		toolDefs := sm.buildProviderToolDefinitions(registry)
+		toolDefs := registry.GetProviderDefinitions()
 		logger.InfoCF("subagent", "Calling LLM",
 			map[string]interface{}{
 				"task_id":        task.ID,
@@ -144,11 +137,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 		}
 
 		// Append assistant tool-call message to the conversation.
-		messages = append(messages, providers.Message{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
-		})
+		messages = append(messages, providers.AssistantMessageFromResponse(resp))
 
 		// Execute tool calls sequentially (keep order).
 		for _, tc := range resp.ToolCalls {
@@ -167,11 +156,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 				result = fmt.Sprintf("Error: %v", err)
 			}
 
-			messages = append(messages, providers.Message{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: tc.ID,
-			})
+			messages = append(messages, providers.ToolResultMessage(tc.ID, result))
 		}
 	}
 
@@ -264,33 +249,6 @@ func (sm *SubagentManager) buildSubagentSystemPrompt(registry *ToolRegistry) str
 	}
 
 	return strings.Join(parts, "\n")
-}
-
-func (sm *SubagentManager) buildProviderToolDefinitions(registry *ToolRegistry) []providers.ToolDefinition {
-	schemas := registry.GetDefinitions()
-	defs := make([]providers.ToolDefinition, 0, len(schemas))
-	for _, td := range schemas {
-		fn, ok := td["function"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		name, _ := fn["name"].(string)
-		desc, _ := fn["description"].(string)
-		params, _ := fn["parameters"].(map[string]interface{})
-		typeStr, _ := td["type"].(string)
-		if name == "" || typeStr == "" {
-			continue
-		}
-		defs = append(defs, providers.ToolDefinition{
-			Type: typeStr,
-			Function: providers.ToolFunctionDefinition{
-				Name:        name,
-				Description: desc,
-				Parameters:  params,
-			},
-		})
-	}
-	return defs
 }
 
 func (sm *SubagentManager) GetTask(taskID string) (*SubagentTask, bool) {

@@ -8,7 +8,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,14 +58,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	os.MkdirAll(workspace, 0755)
 
 	toolsRegistry := tools.NewToolRegistry()
-	toolsRegistry.Register(&tools.ReadFileTool{})
-	toolsRegistry.Register(&tools.WriteFileTool{})
-	toolsRegistry.Register(&tools.ListDirTool{})
-	toolsRegistry.Register(tools.NewExecTool(workspace))
-
-	braveAPIKey := cfg.Tools.Web.Search.APIKey
-	toolsRegistry.Register(tools.NewWebSearchTool(braveAPIKey, cfg.Tools.Web.Search.MaxResults))
-	toolsRegistry.Register(tools.NewWebFetchTool(50000))
+	tools.RegisterCoreTools(toolsRegistry, workspace, cfg.Tools.Web.Search.APIKey, cfg.Tools.Web.Search.MaxResults)
 
 	// Register message tool
 	messageTool := tools.NewMessageTool()
@@ -85,10 +77,6 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	subagentManager := tools.NewSubagentManager(provider, cfg.Agents.Defaults.Model, workspace, msgBus)
 	spawnTool := tools.NewSpawnTool(subagentManager)
 	toolsRegistry.Register(spawnTool)
-
-	// Register edit file tool
-	editFileTool := tools.NewEditFileTool(workspace)
-	toolsRegistry.Register(editFileTool)
 
 	// Register memory tools (graceful degradation if SQLite init fails)
 	memoryDBPath := filepath.Join(workspace, "memory", "memory.db")
@@ -362,18 +350,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			})
 
 		// Build tool definitions
-		toolDefs := al.tools.GetDefinitions()
-		providerToolDefs := make([]providers.ToolDefinition, 0, len(toolDefs))
-		for _, td := range toolDefs {
-			providerToolDefs = append(providerToolDefs, providers.ToolDefinition{
-				Type: td["type"].(string),
-				Function: providers.ToolFunctionDefinition{
-					Name:        td["function"].(map[string]interface{})["name"].(string),
-					Description: td["function"].(map[string]interface{})["description"].(string),
-					Parameters:  td["function"].(map[string]interface{})["parameters"].(map[string]interface{}),
-				},
-			})
-		}
+		providerToolDefs := al.tools.GetProviderDefinitions()
 
 		// Log LLM request details
 		logger.DebugCF("agent", "LLM request",
@@ -442,21 +419,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			})
 
 		// Build assistant message with tool calls
-		assistantMsg := providers.Message{
-			Role:    "assistant",
-			Content: response.Content,
-		}
-		for _, tc := range response.ToolCalls {
-			argumentsJSON, _ := json.Marshal(tc.Arguments)
-			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, providers.ToolCall{
-				ID:   tc.ID,
-				Type: "function",
-				Function: &providers.FunctionCall{
-					Name:      tc.Name,
-					Arguments: string(argumentsJSON),
-				},
-			})
-		}
+		assistantMsg := providers.AssistantMessageFromResponse(response)
 		messages = append(messages, assistantMsg)
 
 		// Save assistant message with tool calls to session
