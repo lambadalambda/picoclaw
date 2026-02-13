@@ -82,7 +82,9 @@ Your workspace is at: %s
 
 3. **Memory** - When remembering something, write to %s/memory/MEMORY.md
 
-4. **Parallel tool calls** - You can call multiple tools simultaneously in a single response when the calls are independent of each other. This is more efficient than calling them sequentially.`,
+4. **Parallel tool calls** - You can call multiple tools simultaneously in a single response when the calls are independent of each other. This is more efficient than calling them sequentially.
+
+5. **Delegate with spawn** - When a task involves a skill (like image generation, complex builds, or multi-step research), use the spawn tool to delegate it to a background subagent. You can keep talking to the user while the subagent works. The subagent will report back when done.`,
 		now, runtime, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
 }
 
