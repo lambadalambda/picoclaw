@@ -276,8 +276,17 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 			}
 		}
 
+		rawArgs := ""
+		if tc.Function != nil {
+			rawArgs = tc.Function.Arguments
+		}
 		toolCalls = append(toolCalls, ToolCall{
-			ID:        tc.ID,
+			ID:   tc.ID,
+			Type: "function",
+			Function: &FunctionCall{
+				Name:      name,
+				Arguments: rawArgs,
+			},
 			Name:      name,
 			Arguments: arguments,
 		})
