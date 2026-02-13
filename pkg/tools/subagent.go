@@ -69,6 +69,15 @@ func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel
 
 	go sm.runTask(ctx, subagentTask)
 
+	logger.InfoCF("subagent", "Spawned subagent",
+		map[string]interface{}{
+			"task_id":        taskID,
+			"label":          label,
+			"origin_channel": originChannel,
+			"origin_chat_id": originChatID,
+			"task_preview":   utils.Truncate(task, 120),
+		})
+
 	if label != "" {
 		return fmt.Sprintf("Spawned subagent '%s' for task: %s", label, task), nil
 	}
@@ -171,11 +180,24 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 		task.Status = "failed"
 		task.Result = fmt.Sprintf("Error: %v", finalErr)
 		sm.mu.Unlock()
+		logger.ErrorCF("subagent", "Subagent failed",
+			map[string]interface{}{
+				"task_id": task.ID,
+				"label":   task.Label,
+				"error":   finalErr.Error(),
+			})
 	} else {
 		sm.mu.Lock()
 		task.Status = "completed"
 		task.Result = final
 		sm.mu.Unlock()
+		logger.InfoCF("subagent", "Subagent completed",
+			map[string]interface{}{
+				"task_id":       task.ID,
+				"label":         task.Label,
+				"result_length": len(final),
+				"result_preview": utils.Truncate(final, 200),
+			})
 	}
 
 	// Send completion message back to main agent.
