@@ -27,19 +27,22 @@ import (
 )
 
 type AgentLoop struct {
-	bus            *bus.MessageBus
-	provider       providers.LLMProvider
-	workspace      string
-	model          string
-	contextWindow  int           // Maximum context window size in tokens
-	maxIterations  int
-	sessions       *session.SessionManager
-	contextBuilder *ContextBuilder
-	tools          *tools.ToolRegistry
-	running        atomic.Bool
-	summarizing    sync.Map      // Tracks which sessions are currently being summarized
-	statusDelay    time.Duration // Delay before sending "still working" status updates (0 = disabled)
-	memoryStore    *memory.MemoryStore // Searchable memory DB (nil = disabled)
+	bus              *bus.MessageBus
+	provider         providers.LLMProvider
+	workspace        string
+	model            string
+	contextWindow    int // Maximum context window size in tokens
+	maxIterations    int
+	llmTimeout       time.Duration // Per-LLM-call timeout (0 = disabled)
+	toolTimeout      time.Duration // Per-tool-call timeout (0 = disabled)
+	maxParallelTools int           // Max concurrent tools per iteration (<=0 = unlimited)
+	sessions         *session.SessionManager
+	contextBuilder   *ContextBuilder
+	tools            *tools.ToolRegistry
+	running          atomic.Bool
+	summarizing      sync.Map            // Tracks which sessions are currently being summarized
+	statusDelay      time.Duration       // Delay before sending "still working" status updates (0 = disabled)
+	memoryStore      *memory.MemoryStore // Searchable memory DB (nil = disabled)
 }
 
 // processOptions configures how a message is processed
@@ -101,18 +104,21 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	contextBuilder.SetToolsRegistry(toolsRegistry)
 
 	return &AgentLoop{
-		bus:            msgBus,
-		provider:       provider,
-		workspace:      workspace,
-		model:          cfg.Agents.Defaults.Model,
-		contextWindow:  cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
-		maxIterations:  cfg.Agents.Defaults.MaxToolIterations,
-		sessions:       sessionsManager,
-		contextBuilder: contextBuilder,
-		tools:          toolsRegistry,
-		summarizing:    sync.Map{},
-		statusDelay:    30 * time.Second,
-		memoryStore:    memoryDB,
+		bus:              msgBus,
+		provider:         provider,
+		workspace:        workspace,
+		model:            cfg.Agents.Defaults.Model,
+		contextWindow:    cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
+		maxIterations:    cfg.Agents.Defaults.MaxToolIterations,
+		llmTimeout:       time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds) * time.Second,
+		toolTimeout:      time.Duration(cfg.Agents.Defaults.ToolTimeoutSeconds) * time.Second,
+		maxParallelTools: cfg.Agents.Defaults.MaxParallelToolCalls,
+		sessions:         sessionsManager,
+		contextBuilder:   contextBuilder,
+		tools:            toolsRegistry,
+		summarizing:      sync.Map{},
+		statusDelay:      30 * time.Second,
+		memoryStore:      memoryDB,
 	}
 }
 
@@ -380,7 +386,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 				"messages_count": len(messages),
 				"tools_count":    len(providerToolDefs),
 			})
-		response, err := al.provider.Chat(ctx, messages, providerToolDefs, al.model, map[string]interface{}{
+		response, err := al.chatWithTimeout(ctx, messages, providerToolDefs, map[string]interface{}{
 			"max_tokens":  8192,
 			"temperature": 0.7,
 		})
@@ -449,7 +455,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			Content: "You've reached your tool call iteration limit. Please summarize what you've accomplished so far and what still needs to be done. The user can tell you to continue.",
 		})
 
-		response, err := al.provider.Chat(ctx, messages, nil, al.model, map[string]interface{}{
+		response, err := al.chatWithTimeout(ctx, messages, nil, map[string]interface{}{
 			"max_tokens":  8192,
 			"temperature": 0.7,
 		})
@@ -463,6 +469,22 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 	}
 
 	return finalContent, iteration, nil
+}
+
+func (al *AgentLoop) chatWithTimeout(
+	ctx context.Context,
+	messages []providers.Message,
+	toolDefs []providers.ToolDefinition,
+	options map[string]interface{},
+) (*providers.LLMResponse, error) {
+	callCtx := ctx
+	cancel := func() {}
+	if al.llmTimeout > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, al.llmTimeout)
+	}
+	defer cancel()
+
+	return al.provider.Chat(callCtx, messages, toolDefs, al.model, options)
 }
 
 // updateToolContexts updates the context for tools that need channel/chatID info.

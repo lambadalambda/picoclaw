@@ -21,9 +21,18 @@ func (al *AgentLoop) executeToolsConcurrently(
 	opts processOptions,
 ) []providers.Message {
 	n := len(toolCalls)
+	if n == 0 {
+		return nil
+	}
 
 	// Pre-allocate result slots so goroutines write to independent indices.
 	results := make([]providers.Message, n)
+
+	parallelLimit := n
+	if al.maxParallelTools > 0 && al.maxParallelTools < parallelLimit {
+		parallelLimit = al.maxParallelTools
+	}
+	sem := make(chan struct{}, parallelLimit)
 
 	// Start status notifier for long-running tool calls (skip for system channel)
 	var notifier *statusNotifier
@@ -41,7 +50,11 @@ func (al *AgentLoop) executeToolsConcurrently(
 	for i, tc := range toolCalls {
 		wg.Add(1)
 		go func(idx int, tc providers.ToolCall) {
+			acquired := false
 			defer func() {
+				if acquired {
+					<-sem
+				}
 				if r := recover(); r != nil {
 					result := fmt.Sprintf("Error: tool %s panicked: %v", tc.Name, r)
 					logger.ErrorCF("agent", "Recovered panic in tool execution",
@@ -56,6 +69,14 @@ func (al *AgentLoop) executeToolsConcurrently(
 				wg.Done()
 			}()
 
+			select {
+			case sem <- struct{}{}:
+				acquired = true
+			case <-ctx.Done():
+				results[idx] = providers.ToolResultMessage(tc.ID, fmt.Sprintf("Error: %v", ctx.Err()))
+				return
+			}
+
 			// Log tool call
 			argsJSON, _ := json.Marshal(tc.Arguments)
 			argsPreview := utils.Truncate(string(argsJSON), 200)
@@ -65,7 +86,13 @@ func (al *AgentLoop) executeToolsConcurrently(
 					"iteration": iteration,
 				})
 
-			result, err := al.tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments, opts.Channel, opts.ChatID)
+			toolCtx := ctx
+			cancel := func() {}
+			if al.toolTimeout > 0 {
+				toolCtx, cancel = context.WithTimeout(ctx, al.toolTimeout)
+			}
+			result, err := al.tools.ExecuteWithContext(toolCtx, tc.Name, tc.Arguments, opts.Channel, opts.ChatID)
+			cancel()
 			if err != nil {
 				result = fmt.Sprintf("Error: %v", err)
 			}

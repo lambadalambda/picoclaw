@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -33,6 +34,15 @@ type mockResponse struct {
 	ToolCalls []providers.ToolCall
 	Err       error
 }
+
+type blockingProvider struct{}
+
+func (p *blockingProvider) Chat(ctx context.Context, _ []providers.Message, _ []providers.ToolDefinition, _ string, _ map[string]interface{}) (*providers.LLMResponse, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *blockingProvider) GetDefaultModel() string { return "test-model" }
 
 func (m *mockProvider) Chat(_ context.Context, messages []providers.Message, tdefs []providers.ToolDefinition, _ string, _ map[string]interface{}) (*providers.LLMResponse, error) {
 	m.mu.Lock()
@@ -448,6 +458,59 @@ type slowTool struct {
 	finished atomic.Int32
 }
 
+type timeoutAwareTool struct {
+	name  string
+	delay time.Duration
+}
+
+func (t *timeoutAwareTool) Name() string        { return t.name }
+func (t *timeoutAwareTool) Description() string { return "timeout-aware test tool" }
+func (t *timeoutAwareTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+}
+func (t *timeoutAwareTool) Execute(ctx context.Context, _ map[string]interface{}) (string, error) {
+	select {
+	case <-time.After(t.delay):
+		return "done", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+type concurrencyTracker struct {
+	inFlight atomic.Int32
+	maxSeen  atomic.Int32
+}
+
+type trackedTool struct {
+	name    string
+	delay   time.Duration
+	tracker *concurrencyTracker
+}
+
+func (t *trackedTool) Name() string        { return t.name }
+func (t *trackedTool) Description() string { return "tracked test tool" }
+func (t *trackedTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+}
+func (t *trackedTool) Execute(ctx context.Context, _ map[string]interface{}) (string, error) {
+	current := t.tracker.inFlight.Add(1)
+	for {
+		prev := t.tracker.maxSeen.Load()
+		if current <= prev || t.tracker.maxSeen.CompareAndSwap(prev, current) {
+			break
+		}
+	}
+	defer t.tracker.inFlight.Add(-1)
+
+	select {
+	case <-time.After(t.delay):
+		return t.name + "_ok", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
 // panicTool simulates a buggy tool implementation that panics during Execute.
 type panicTool struct {
 	name string
@@ -685,6 +748,126 @@ func TestRunLLMIteration_ParallelToolPanic_Recovered(t *testing.T) {
 	}
 	if !foundToolResult {
 		t.Fatal("expected tool result message for panicking tool")
+	}
+}
+
+func TestRunLLMIteration_LLMCallTimeout(t *testing.T) {
+	al := newTestAgentLoop(t, &blockingProvider{}, 3, nil)
+	defer al.bus.Close()
+	al.llmTimeout = 50 * time.Millisecond
+
+	messages := []providers.Message{
+		{Role: "system", Content: "test"},
+		{Role: "user", Content: "hello"},
+	}
+	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
+
+	start := time.Now()
+	_, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error from provider call")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got: %v", err)
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Fatalf("timeout took too long: %v", elapsed)
+	}
+}
+
+func TestRunLLMIteration_ToolTimeoutProducesErrorResult(t *testing.T) {
+	prov := &mockProvider{
+		responses: []mockResponse{
+			{ToolCalls: []providers.ToolCall{{ID: "tc1", Name: "slow_timeout", Arguments: map[string]interface{}{}}}},
+			{Content: "done"},
+		},
+	}
+
+	tool := &timeoutAwareTool{name: "slow_timeout", delay: 300 * time.Millisecond}
+	al := newTestAgentLoop(t, prov, 5, []tools.Tool{tool})
+	defer al.bus.Close()
+	al.toolTimeout = 50 * time.Millisecond
+
+	messages := []providers.Message{
+		{Role: "system", Content: "test"},
+		{Role: "user", Content: "run timeout tool"},
+	}
+	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
+
+	start := time.Now()
+	content, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "done" {
+		t.Fatalf("content = %q, want %q", content, "done")
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("tool timeout not applied; elapsed=%v", elapsed)
+	}
+
+	calls := prov.getCalls()
+	if len(calls) < 2 {
+		t.Fatalf("expected 2 provider calls, got %d", len(calls))
+	}
+
+	foundToolMsg := false
+	for _, msg := range calls[1].Messages {
+		if msg.Role == "tool" && msg.ToolCallID == "tc1" {
+			foundToolMsg = true
+			if !containsStr(msg.Content, "context deadline") {
+				t.Fatalf("expected timeout content, got %q", msg.Content)
+			}
+		}
+	}
+	if !foundToolMsg {
+		t.Fatal("expected tool result message for timed out tool")
+	}
+}
+
+func TestRunLLMIteration_RespectsMaxParallelTools(t *testing.T) {
+	tracker := &concurrencyTracker{}
+	t1 := &trackedTool{name: "tracked_1", delay: 120 * time.Millisecond, tracker: tracker}
+	t2 := &trackedTool{name: "tracked_2", delay: 120 * time.Millisecond, tracker: tracker}
+	t3 := &trackedTool{name: "tracked_3", delay: 120 * time.Millisecond, tracker: tracker}
+	t4 := &trackedTool{name: "tracked_4", delay: 120 * time.Millisecond, tracker: tracker}
+
+	prov := &mockProvider{
+		responses: []mockResponse{
+			{ToolCalls: []providers.ToolCall{
+				{ID: "tc1", Name: "tracked_1", Arguments: map[string]interface{}{}},
+				{ID: "tc2", Name: "tracked_2", Arguments: map[string]interface{}{}},
+				{ID: "tc3", Name: "tracked_3", Arguments: map[string]interface{}{}},
+				{ID: "tc4", Name: "tracked_4", Arguments: map[string]interface{}{}},
+			}},
+			{Content: "done"},
+		},
+	}
+
+	al := newTestAgentLoop(t, prov, 5, []tools.Tool{t1, t2, t3, t4})
+	defer al.bus.Close()
+	al.maxParallelTools = 2
+
+	messages := []providers.Message{
+		{Role: "system", Content: "test"},
+		{Role: "user", Content: "run all"},
+	}
+	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
+
+	content, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "done" {
+		t.Fatalf("content = %q, want %q", content, "done")
+	}
+
+	if got := tracker.maxSeen.Load(); got > 2 {
+		t.Fatalf("max concurrent tools = %d, want <= 2", got)
 	}
 }
 
