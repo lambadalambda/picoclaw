@@ -95,8 +95,10 @@ func (cs *CronService) Start() error {
 		return fmt.Errorf("failed to save store: %w", err)
 	}
 
+	// Recreate stop channel on each start so Stop->Start works.
+	cs.stopChan = make(chan struct{})
 	cs.running = true
-	go cs.runLoop()
+	go cs.runLoop(cs.stopChan)
 
 	return nil
 }
@@ -110,16 +112,18 @@ func (cs *CronService) Stop() {
 	}
 
 	cs.running = false
-	close(cs.stopChan)
+	if cs.stopChan != nil {
+		close(cs.stopChan)
+	}
 }
 
-func (cs *CronService) runLoop() {
+func (cs *CronService) runLoop(stopChan <-chan struct{}) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-cs.stopChan:
+		case <-stopChan:
 			return
 		case <-ticker.C:
 			cs.checkJobs()
