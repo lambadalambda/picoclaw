@@ -33,7 +33,16 @@ if [ ! -f "$CONFIG" ]; then
       "model": "anthropic/claude-sonnet-4-20250514",
       "max_tokens": 8192,
       "temperature": 0.7,
-      "max_tool_iterations": 20
+      "max_tool_iterations": 20,
+      "llm_timeout_seconds": 120,
+      "tool_timeout_seconds": 60,
+      "max_parallel_tool_calls": 4,
+      "request_max_messages": 0,
+      "request_max_total_chars": 0,
+      "request_max_message_chars": 0,
+      "request_max_tool_message_chars": 0,
+      "subagent_max_tasks": 200,
+      "subagent_completed_ttl_seconds": 86400
     }
   },
   "providers": {},

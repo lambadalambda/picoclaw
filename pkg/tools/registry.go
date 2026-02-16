@@ -11,14 +11,22 @@ import (
 )
 
 type ToolRegistry struct {
-	tools map[string]Tool
-	mu    sync.RWMutex
+	tools  map[string]Tool
+	policy ToolExecutionPolicy
+	mu     sync.RWMutex
 }
 
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
 		tools: make(map[string]Tool),
 	}
+}
+
+// SetExecutionPolicy updates the active tool execution policy.
+func (r *ToolRegistry) SetExecutionPolicy(policy ToolExecutionPolicy) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.policy = policy
 }
 
 func (r *ToolRegistry) Register(tool Tool) {
@@ -39,10 +47,12 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, args map[string
 }
 
 func (r *ToolRegistry) ExecuteWithContext(ctx context.Context, name string, args map[string]interface{}, channel, chatID string) (string, error) {
+	traceID := TraceIDFromContext(ctx)
 	logger.InfoCF("tool", "Tool execution started",
 		map[string]interface{}{
-			"tool": name,
-			"args": args,
+			"tool":     name,
+			"args":     args,
+			"trace_id": traceID,
 		})
 
 	tool, ok := r.Get(name)
@@ -54,7 +64,17 @@ func (r *ToolRegistry) ExecuteWithContext(ctx context.Context, name string, args
 		return "", fmt.Errorf("tool '%s' not found", name)
 	}
 
-	execArgs := withExecutionContext(args, channel, chatID)
+	if err := r.checkPolicy(name); err != nil {
+		logger.WarnCF("tool", "Tool execution blocked by policy",
+			map[string]interface{}{
+				"tool":     name,
+				"error":    err.Error(),
+				"trace_id": traceID,
+			})
+		return "", err
+	}
+
+	execArgs := withExecutionContext(args, channel, chatID, traceID)
 
 	start := time.Now()
 	result, err := tool.Execute(ctx, execArgs)
@@ -66,6 +86,7 @@ func (r *ToolRegistry) ExecuteWithContext(ctx context.Context, name string, args
 				"tool":     name,
 				"duration": duration.Milliseconds(),
 				"error":    err.Error(),
+				"trace_id": traceID,
 			})
 	} else {
 		logger.InfoCF("tool", "Tool execution completed",
@@ -73,6 +94,7 @@ func (r *ToolRegistry) ExecuteWithContext(ctx context.Context, name string, args
 				"tool":          name,
 				"duration_ms":   duration.Milliseconds(),
 				"result_length": len(result),
+				"trace_id":      traceID,
 			})
 	}
 
@@ -161,4 +183,11 @@ func (r *ToolRegistry) GetSummaries() []string {
 		summaries = append(summaries, fmt.Sprintf("- `%s` - %s", tool.Name(), tool.Description()))
 	}
 	return summaries
+}
+
+func (r *ToolRegistry) checkPolicy(name string) error {
+	r.mu.RLock()
+	policy := r.policy
+	r.mu.RUnlock()
+	return policy.check(name)
 }

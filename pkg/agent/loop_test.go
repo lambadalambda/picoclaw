@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/memory"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
@@ -887,7 +888,7 @@ func TestProcessSystemMessage_SubagentProgress_IsInternal(t *testing.T) {
 		Metadata: map[string]string{"subagent_event": "progress"},
 	}
 
-	resp, err := al.processSystemMessage(context.Background(), msg)
+	resp, err := al.processSystemMessage(context.Background(), msg, "trace-test-1")
 	if err != nil {
 		t.Fatalf("processSystemMessage error: %v", err)
 	}
@@ -927,7 +928,7 @@ func TestProcessSystemMessage_SubagentCancelled_IsInternal(t *testing.T) {
 		Metadata: map[string]string{"subagent_event": "cancelled"},
 	}
 
-	resp, err := al.processSystemMessage(context.Background(), msg)
+	resp, err := al.processSystemMessage(context.Background(), msg, "trace-test-2")
 	if err != nil {
 		t.Fatalf("processSystemMessage error: %v", err)
 	}
@@ -940,5 +941,29 @@ func TestProcessSystemMessage_SubagentCancelled_IsInternal(t *testing.T) {
 	defer cancel()
 	if _, ok := al.bus.SubscribeOutbound(outCtx); ok {
 		t.Fatal("unexpected outbound message for subagent cancelled event")
+	}
+}
+
+func TestMessageBudgetFromDefaults_AppliesOverrides(t *testing.T) {
+	d := config.AgentDefaults{
+		MaxTokens:                  8192,
+		RequestMaxMessages:         123,
+		RequestMaxTotalChars:       4567,
+		RequestMaxMessageChars:     890,
+		RequestMaxToolMessageChars: 321,
+	}
+	b := messageBudgetFromDefaults(d)
+
+	if b.MaxMessages != 123 {
+		t.Fatalf("MaxMessages = %d, want 123", b.MaxMessages)
+	}
+	if b.MaxTotalChars != 4567 {
+		t.Fatalf("MaxTotalChars = %d, want 4567", b.MaxTotalChars)
+	}
+	if b.MaxMessageChars != 890 {
+		t.Fatalf("MaxMessageChars = %d, want 890", b.MaxMessageChars)
+	}
+	if b.MaxToolMessageChars != 321 {
+		t.Fatalf("MaxToolMessageChars = %d, want 321", b.MaxToolMessageChars)
 	}
 }

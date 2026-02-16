@@ -15,6 +15,7 @@ import (
 type ExecuteToolCallsOptions struct {
 	Channel     string
 	ChatID      string
+	TraceID     string
 	Timeout     time.Duration
 	MaxParallel int // <=0 means unlimited within this batch
 
@@ -66,6 +67,7 @@ func (r *ToolRegistry) ExecuteToolCalls(
 							"tool":      tc.Name,
 							"iteration": opts.Iteration,
 							"panic":     fmt.Sprintf("%v", rec),
+							"trace_id":  opts.TraceID,
 						})
 					results[idx] = providers.ToolResultMessage(tc.ID, result)
 				}
@@ -87,9 +89,10 @@ func (r *ToolRegistry) ExecuteToolCalls(
 				map[string]interface{}{
 					"tool":      tc.Name,
 					"iteration": opts.Iteration,
+					"trace_id":  opts.TraceID,
 				})
 
-			toolCtx := ctx
+			toolCtx := WithTraceID(ctx, opts.TraceID)
 			cancel := func() {}
 			if opts.Timeout > 0 {
 				toolCtx, cancel = context.WithTimeout(ctx, opts.Timeout)

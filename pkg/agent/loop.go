@@ -43,6 +43,7 @@ type AgentLoop struct {
 	sessions         *session.SessionManager
 	contextBuilder   *ContextBuilder
 	tools            *tools.ToolRegistry
+	traceSeq         atomic.Uint64
 	running          atomic.Bool
 	summarizing      sync.Map            // Tracks which sessions are currently being summarized
 	statusDelay      time.Duration       // Delay before sending "still working" status updates (0 = disabled)
@@ -54,6 +55,7 @@ type processOptions struct {
 	SessionKey      string // Session identifier for history/context
 	Channel         string // Target channel for tool execution
 	ChatID          string // Target chat ID for tool execution
+	TraceID         string // Correlation ID for logs across one processing flow
 	UserMessage     string // User message content (may include prefix)
 	DefaultResponse string // Response when LLM returns empty
 	EnableSummary   bool   // Whether to trigger summarization
@@ -63,9 +65,17 @@ type processOptions struct {
 func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers.LLMProvider) *AgentLoop {
 	workspace := cfg.WorkspacePath()
 	os.MkdirAll(workspace, 0755)
+	messageBudget := messageBudgetFromDefaults(cfg.Agents.Defaults)
 
 	toolsRegistry := tools.NewToolRegistry()
 	tools.RegisterCoreTools(toolsRegistry, workspace, cfg.Tools.Web.Search.APIKey, cfg.Tools.Web.Search.MaxResults)
+
+	policyEnabled := cfg.Tools.Policy.Enabled || cfg.Tools.Policy.SafeMode || len(cfg.Tools.Policy.Allow) > 0 || len(cfg.Tools.Policy.Deny) > 0
+	denyTools := append([]string{}, cfg.Tools.Policy.Deny...)
+	if cfg.Tools.Policy.SafeMode {
+		denyTools = append(denyTools, "exec", "write_file", "edit_file")
+	}
+	toolsRegistry.SetExecutionPolicy(tools.NewToolExecutionPolicy(policyEnabled, cfg.Tools.Policy.Allow, denyTools))
 
 	// Register message tool
 	messageTool := tools.NewMessageTool()
@@ -88,7 +98,11 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		cfg.Agents.Defaults.MaxParallelToolCalls,
 		cfg.Agents.Defaults.MaxToolIterations,
 	)
-	subagentManager.ConfigureMessageBudget(providers.BudgetFromContextWindow(cfg.Agents.Defaults.MaxTokens))
+	subagentManager.ConfigureMessageBudget(messageBudget)
+	subagentManager.ConfigureRetention(
+		cfg.Agents.Defaults.SubagentMaxTasks,
+		time.Duration(cfg.Agents.Defaults.SubagentCompletedTTLSeconds)*time.Second,
+	)
 	spawnTool := tools.NewSpawnTool(subagentManager)
 	toolsRegistry.Register(spawnTool)
 
@@ -127,7 +141,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		contextWindow:    cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
 		chatOptions:      providers.ChatOptions{MaxTokens: 8192, Temperature: chatTemperature},
 		compactOptions:   providers.ChatOptions{MaxTokens: 1024, Temperature: 0.3},
-		messageBudget:    providers.BudgetFromContextWindow(cfg.Agents.Defaults.MaxTokens),
+		messageBudget:    messageBudget,
 		maxIterations:    cfg.Agents.Defaults.MaxToolIterations,
 		llmTimeout:       time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds) * time.Second,
 		toolTimeout:      time.Duration(cfg.Agents.Defaults.ToolTimeoutSeconds) * time.Second,
@@ -176,6 +190,11 @@ func (al *AgentLoop) Stop() {
 	al.running.Store(false)
 }
 
+func (al *AgentLoop) nextTraceID() string {
+	seq := al.traceSeq.Add(1)
+	return fmt.Sprintf("trace-%d", seq)
+}
+
 func (al *AgentLoop) RegisterTool(tool tools.Tool) {
 	al.tools.Register(tool)
 }
@@ -197,6 +216,15 @@ func (al *AgentLoop) ProcessDirectWithChannel(ctx context.Context, content, sess
 }
 
 func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	traceID := ""
+	if msg.Metadata != nil {
+		traceID = msg.Metadata["trace_id"]
+	}
+	if traceID == "" {
+		traceID = al.nextTraceID()
+	}
+	ctx = tools.WithTraceID(ctx, traceID)
+
 	// Add message preview to log
 	preview := utils.Truncate(msg.Content, 80)
 	logger.InfoCF("agent", fmt.Sprintf("Processing message from %s:%s: %s", msg.Channel, msg.SenderID, preview),
@@ -205,11 +233,12 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 			"chat_id":     msg.ChatID,
 			"sender_id":   msg.SenderID,
 			"session_key": msg.SessionKey,
+			"trace_id":    traceID,
 		})
 
 	// Route system messages to processSystemMessage
 	if msg.Channel == "system" {
-		return al.processSystemMessage(ctx, msg)
+		return al.processSystemMessage(ctx, msg, traceID)
 	}
 
 	// Process as user message
@@ -217,6 +246,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		SessionKey:      msg.SessionKey,
 		Channel:         msg.Channel,
 		ChatID:          msg.ChatID,
+		TraceID:         traceID,
 		UserMessage:     msg.Content,
 		DefaultResponse: "I've completed processing but have no response to give.",
 		EnableSummary:   true,
@@ -224,7 +254,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	})
 }
 
-func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
+func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMessage, traceID string) (string, error) {
 	// Verify this is a system message
 	if msg.Channel != "system" {
 		return "", fmt.Errorf("processSystemMessage called with non-system message channel: %s", msg.Channel)
@@ -234,6 +264,7 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 		map[string]interface{}{
 			"sender_id": msg.SenderID,
 			"chat_id":   msg.ChatID,
+			"trace_id":  traceID,
 		})
 
 	// Parse origin from chat_id (format: "channel:chat_id")
@@ -269,6 +300,7 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 					"session_key": sessionKey,
 					"event":       event,
 					"sender_id":   msg.SenderID,
+					"trace_id":    traceID,
 				})
 			return "", nil
 		}
@@ -279,6 +311,7 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 		SessionKey:      sessionKey,
 		Channel:         originChannel,
 		ChatID:          originChatID,
+		TraceID:         traceID,
 		UserMessage:     fmt.Sprintf("[System: %s] %s", msg.SenderID, msg.Content),
 		DefaultResponse: "Background task completed.",
 		EnableSummary:   false,
@@ -348,6 +381,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	logger.InfoCF("agent", fmt.Sprintf("Response: %s", responsePreview),
 		map[string]interface{}{
 			"session_key":  opts.SessionKey,
+			"trace_id":     opts.TraceID,
 			"iterations":   iteration,
 			"final_length": len(finalContent),
 		})
@@ -378,6 +412,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			MessagesBudgeted: func(iteration int, stats providers.MessageBudgetStats) {
 				logger.WarnCF("agent", "LLM request payload budget applied",
 					map[string]interface{}{
+						"trace_id":           opts.TraceID,
 						"iteration":          iteration,
 						"messages_before":    stats.InputMessages,
 						"messages_after":     stats.OutputMessages,
@@ -390,6 +425,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			BeforeLLMCall: func(iteration int, currentMessages []providers.Message, toolDefs []providers.ToolDefinition) {
 				logger.DebugCF("agent", "LLM iteration",
 					map[string]interface{}{
+						"trace_id":  opts.TraceID,
 						"iteration": iteration,
 						"max":       al.maxIterations,
 					})
@@ -401,6 +437,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 
 				logger.DebugCF("agent", "LLM request",
 					map[string]interface{}{
+						"trace_id":          opts.TraceID,
 						"iteration":         iteration,
 						"model":             al.model,
 						"messages_count":    len(currentMessages),
@@ -412,6 +449,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 
 				logger.DebugCF("agent", "Full LLM request",
 					map[string]interface{}{
+						"trace_id":      opts.TraceID,
 						"iteration":     iteration,
 						"messages_json": formatMessagesForLog(currentMessages),
 						"tools_json":    formatToolsForLog(toolDefs),
@@ -419,6 +457,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 
 				logger.InfoCF("agent", "Calling LLM",
 					map[string]interface{}{
+						"trace_id":       opts.TraceID,
 						"iteration":      iteration,
 						"model":          al.model,
 						"messages_count": len(currentMessages),
@@ -428,6 +467,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			LLMCallFailed: func(iteration int, err error) {
 				logger.ErrorCF("agent", "LLM call failed",
 					map[string]interface{}{
+						"trace_id":  opts.TraceID,
 						"iteration": iteration,
 						"error":     err.Error(),
 					})
@@ -439,6 +479,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 				}
 				logger.InfoCF("agent", "LLM requested tool calls",
 					map[string]interface{}{
+						"trace_id":  opts.TraceID,
 						"tools":     toolNames,
 						"count":     len(toolNames),
 						"iteration": iteration,
@@ -447,6 +488,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			DirectResponse: func(iteration int, content string) {
 				logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
 					map[string]interface{}{
+						"trace_id":      opts.TraceID,
 						"iteration":     iteration,
 						"content_chars": len(content),
 					})
@@ -474,6 +516,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 	if exhausted {
 		logger.WarnCF("agent", "Tool iteration limit reached, requesting summary",
 			map[string]interface{}{
+				"trace_id":   opts.TraceID,
 				"iterations": iteration,
 				"max":        al.maxIterations,
 			})
@@ -487,6 +530,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		if summaryBudgetStats.Changed() {
 			logger.WarnCF("agent", "Summary request payload budget applied",
 				map[string]interface{}{
+					"trace_id":           opts.TraceID,
 					"messages_before":    summaryBudgetStats.InputMessages,
 					"messages_after":     summaryBudgetStats.OutputMessages,
 					"chars_before":       summaryBudgetStats.CharsBefore,
@@ -499,7 +543,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		response, err := providers.ChatWithTimeout(ctx, al.llmTimeout, al.provider, summaryMessages, nil, al.model, al.chatOptions.ToMap())
 		if err != nil {
 			logger.ErrorCF("agent", "Summary call failed after iteration limit",
-				map[string]interface{}{"error": err.Error()})
+				map[string]interface{}{"error": err.Error(), "trace_id": opts.TraceID})
 			finalContent = fmt.Sprintf("I reached my tool call limit (%d iterations) before finishing. Ask me to continue and I'll pick up where I left off.", al.maxIterations)
 		} else {
 			finalContent = response.Content
@@ -507,6 +551,23 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 	}
 
 	return finalContent, iteration, nil
+}
+
+func messageBudgetFromDefaults(d config.AgentDefaults) providers.MessageBudget {
+	budget := providers.BudgetFromContextWindow(d.MaxTokens)
+	if d.RequestMaxMessages > 0 {
+		budget.MaxMessages = d.RequestMaxMessages
+	}
+	if d.RequestMaxTotalChars > 0 {
+		budget.MaxTotalChars = d.RequestMaxTotalChars
+	}
+	if d.RequestMaxMessageChars > 0 {
+		budget.MaxMessageChars = d.RequestMaxMessageChars
+	}
+	if d.RequestMaxToolMessageChars > 0 {
+		budget.MaxToolMessageChars = d.RequestMaxToolMessageChars
+	}
+	return budget
 }
 
 // maybeSummarize triggers summarization if the session history exceeds thresholds.

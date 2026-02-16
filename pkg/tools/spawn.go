@@ -71,6 +71,7 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (s
 
 		label, _ := args["label"].(string)
 		originChannel, originChatID := getExecutionContext(args)
+		parentTraceID := getExecutionTraceID(args)
 		if originChannel == "" {
 			originChannel = "cli"
 		}
@@ -83,7 +84,7 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (s
 			return "Error: Subagent manager not configured", nil
 		}
 
-		taskID, err := mgr.Spawn(ctx, task, label, originChannel, originChatID)
+		taskID, err := mgr.Spawn(ctx, task, label, originChannel, originChatID, parentTraceID)
 		if err != nil {
 			return "", fmt.Errorf("failed to spawn subagent: %w", err)
 		}

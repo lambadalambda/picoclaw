@@ -31,6 +31,7 @@ Core architecture:
   - `list` tasks
   - `cancel` running tasks
 - Improved provider retry behavior (including `Retry-After` support)
+- Optional tool execution policy / safe mode (allow/deny lists)
 - Session/memory/cron/channel bug fixes with regression tests
 
 ## Run With Docker (Recommended)
@@ -127,6 +128,20 @@ Template:
 Important notes:
 
 - `agents.defaults.max_tokens` is used as context window sizing for compaction behavior in this fork.
+- Request payload budgeting can be tuned with:
+  - `agents.defaults.request_max_messages`
+  - `agents.defaults.request_max_total_chars`
+  - `agents.defaults.request_max_message_chars`
+  - `agents.defaults.request_max_tool_message_chars`
+  - Set these to `0` to use automatic defaults derived from `max_tokens`.
+- Subagent task retention can be tuned with:
+  - `agents.defaults.subagent_max_tasks`
+  - `agents.defaults.subagent_completed_ttl_seconds`
+- Tool policy can be tuned with:
+  - `tools.policy.enabled`
+  - `tools.policy.safe_mode`
+  - `tools.policy.allow`
+  - `tools.policy.deny`
 - The gateway is not a general REST API; users interact through chat channels or CLI.
 
 ## Typical Docker Workflow

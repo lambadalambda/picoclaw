@@ -23,14 +23,20 @@ type AgentsConfig struct {
 }
 
 type AgentDefaults struct {
-	Workspace            string  `json:"workspace" env:"PICOCLAW_AGENTS_DEFAULTS_WORKSPACE"`
-	Model                string  `json:"model" env:"PICOCLAW_AGENTS_DEFAULTS_MODEL"`
-	MaxTokens            int     `json:"max_tokens" env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOKENS"`
-	Temperature          float64 `json:"temperature" env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
-	MaxToolIterations    int     `json:"max_tool_iterations" env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
-	LLMTimeoutSeconds    int     `json:"llm_timeout_seconds" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_TIMEOUT_SECONDS"`
-	ToolTimeoutSeconds   int     `json:"tool_timeout_seconds" env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_TIMEOUT_SECONDS"`
-	MaxParallelToolCalls int     `json:"max_parallel_tool_calls" env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TOOL_CALLS"`
+	Workspace                   string  `json:"workspace" env:"PICOCLAW_AGENTS_DEFAULTS_WORKSPACE"`
+	Model                       string  `json:"model" env:"PICOCLAW_AGENTS_DEFAULTS_MODEL"`
+	MaxTokens                   int     `json:"max_tokens" env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOKENS"`
+	Temperature                 float64 `json:"temperature" env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
+	MaxToolIterations           int     `json:"max_tool_iterations" env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
+	LLMTimeoutSeconds           int     `json:"llm_timeout_seconds" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_TIMEOUT_SECONDS"`
+	ToolTimeoutSeconds          int     `json:"tool_timeout_seconds" env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_TIMEOUT_SECONDS"`
+	MaxParallelToolCalls        int     `json:"max_parallel_tool_calls" env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TOOL_CALLS"`
+	RequestMaxMessages          int     `json:"request_max_messages" env:"PICOCLAW_AGENTS_DEFAULTS_REQUEST_MAX_MESSAGES"`
+	RequestMaxTotalChars        int     `json:"request_max_total_chars" env:"PICOCLAW_AGENTS_DEFAULTS_REQUEST_MAX_TOTAL_CHARS"`
+	RequestMaxMessageChars      int     `json:"request_max_message_chars" env:"PICOCLAW_AGENTS_DEFAULTS_REQUEST_MAX_MESSAGE_CHARS"`
+	RequestMaxToolMessageChars  int     `json:"request_max_tool_message_chars" env:"PICOCLAW_AGENTS_DEFAULTS_REQUEST_MAX_TOOL_MESSAGE_CHARS"`
+	SubagentMaxTasks            int     `json:"subagent_max_tasks" env:"PICOCLAW_AGENTS_DEFAULTS_SUBAGENT_MAX_TASKS"`
+	SubagentCompletedTTLSeconds int     `json:"subagent_completed_ttl_seconds" env:"PICOCLAW_AGENTS_DEFAULTS_SUBAGENT_COMPLETED_TTL_SECONDS"`
 }
 
 type ChannelsConfig struct {
@@ -130,22 +136,36 @@ type WebToolsConfig struct {
 	Search WebSearchConfig `json:"search"`
 }
 
+type ToolPolicyConfig struct {
+	Enabled  bool     `json:"enabled" env:"PICOCLAW_TOOLS_POLICY_ENABLED"`
+	SafeMode bool     `json:"safe_mode" env:"PICOCLAW_TOOLS_POLICY_SAFE_MODE"`
+	Allow    []string `json:"allow" env:"PICOCLAW_TOOLS_POLICY_ALLOW"`
+	Deny     []string `json:"deny" env:"PICOCLAW_TOOLS_POLICY_DENY"`
+}
+
 type ToolsConfig struct {
-	Web WebToolsConfig `json:"web"`
+	Web    WebToolsConfig   `json:"web"`
+	Policy ToolPolicyConfig `json:"policy"`
 }
 
 func DefaultConfig() *Config {
 	return &Config{
 		Agents: AgentsConfig{
 			Defaults: AgentDefaults{
-				Workspace:            "~/.picoclaw/workspace",
-				Model:                "glm-4.7",
-				MaxTokens:            8192,
-				Temperature:          0.7,
-				MaxToolIterations:    20,
-				LLMTimeoutSeconds:    120,
-				ToolTimeoutSeconds:   60,
-				MaxParallelToolCalls: 4,
+				Workspace:                   "~/.picoclaw/workspace",
+				Model:                       "glm-4.7",
+				MaxTokens:                   8192,
+				Temperature:                 0.7,
+				MaxToolIterations:           20,
+				LLMTimeoutSeconds:           120,
+				ToolTimeoutSeconds:          60,
+				MaxParallelToolCalls:        4,
+				RequestMaxMessages:          0,
+				RequestMaxTotalChars:        0,
+				RequestMaxMessageChars:      0,
+				RequestMaxToolMessageChars:  0,
+				SubagentMaxTasks:            200,
+				SubagentCompletedTTLSeconds: 86400,
 			},
 		},
 		Channels: ChannelsConfig{
@@ -216,6 +236,12 @@ func DefaultConfig() *Config {
 					APIKey:     "",
 					MaxResults: 5,
 				},
+			},
+			Policy: ToolPolicyConfig{
+				Enabled:  false,
+				SafeMode: false,
+				Allow:    []string{},
+				Deny:     []string{},
 			},
 		},
 	}

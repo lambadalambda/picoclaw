@@ -30,9 +30,11 @@ type SubagentTask struct {
 	Label         string
 	OriginChannel string
 	OriginChatID  string
+	ParentTraceID string
 	Status        string
 	Result        string
 	Created       int64
+	Finished      int64
 }
 
 type SubagentManager struct {
@@ -43,6 +45,8 @@ type SubagentManager struct {
 	model            string
 	chatOptions      providers.ChatOptions
 	messageBudget    providers.MessageBudget
+	maxStoredTasks   int
+	completedTTL     time.Duration
 	llmTimeout       time.Duration
 	toolTimeout      time.Duration
 	maxParallelTools int
@@ -60,6 +64,8 @@ func NewSubagentManager(provider providers.LLMProvider, model string, workspace 
 		model:            model,
 		chatOptions:      providers.ChatOptions{MaxTokens: 4096, Temperature: 0.3},
 		messageBudget:    providers.BudgetFromContextWindow(8192),
+		maxStoredTasks:   200,
+		completedTTL:     24 * time.Hour,
 		llmTimeout:       120 * time.Second,
 		toolTimeout:      60 * time.Second,
 		maxParallelTools: 4,
@@ -94,9 +100,22 @@ func (sm *SubagentManager) ConfigureMessageBudget(budget providers.MessageBudget
 	sm.messageBudget = budget
 }
 
-func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel, originChatID string) (string, error) {
+func (sm *SubagentManager) ConfigureRetention(maxStoredTasks int, completedTTL time.Duration) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	if maxStoredTasks > 0 {
+		sm.maxStoredTasks = maxStoredTasks
+	}
+	if completedTTL >= 0 {
+		sm.completedTTL = completedTTL
+	}
+}
+
+func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel, originChatID, parentTraceID string) (string, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.cleanupLocked(time.Now())
 
 	taskID := fmt.Sprintf("subagent-%d", sm.nextID)
 	sm.nextID++
@@ -107,8 +126,10 @@ func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel
 		Label:         label,
 		OriginChannel: originChannel,
 		OriginChatID:  originChatID,
+		ParentTraceID: parentTraceID,
 		Status:        "running",
 		Created:       time.Now().UnixMilli(),
+		Finished:      0,
 	}
 	sm.tasks[taskID] = subagentTask
 	baseCtx := context.Background()
@@ -126,6 +147,7 @@ func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel
 			"label":          label,
 			"origin_channel": originChannel,
 			"origin_chat_id": originChatID,
+			"trace_id":       parentTraceID,
 			"task_preview":   utils.Truncate(task, 120),
 		})
 
@@ -198,6 +220,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 		},
 		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
 			return registry.ExecuteToolCalls(ctx, toolCalls, ExecuteToolCallsOptions{
+				TraceID:      initial.ParentTraceID,
 				Timeout:      toolTimeout,
 				MaxParallel:  maxParallelTools,
 				LogComponent: "subagent",
@@ -206,6 +229,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 					logger.DebugCF("subagent", fmt.Sprintf("Tool completed: %s (%d/%d)", call.Name, completed, total),
 						map[string]interface{}{
 							"task_id":   initial.ID,
+							"trace_id":  initial.ParentTraceID,
 							"iteration": iteration,
 							"tool":      call.Name,
 							"completed": completed,
@@ -219,6 +243,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 				logger.WarnCF("subagent", "LLM request payload budget applied",
 					map[string]interface{}{
 						"task_id":            initial.ID,
+						"trace_id":           initial.ParentTraceID,
 						"iteration":          iteration,
 						"messages_before":    stats.InputMessages,
 						"messages_after":     stats.OutputMessages,
@@ -232,6 +257,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 				logger.InfoCF("subagent", "Calling LLM",
 					map[string]interface{}{
 						"task_id":        initial.ID,
+						"trace_id":       initial.ParentTraceID,
 						"iteration":      iteration,
 						"model":          model,
 						"messages_count": len(currentMessages),
@@ -258,8 +284,10 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 	if ok {
 		task.Status = status
 		task.Result = result
+		task.Finished = time.Now().UnixMilli()
 	}
 	delete(sm.cancels, taskID)
+	sm.cleanupLocked(time.Now())
 	if ok {
 		initial = cloneSubagentTask(*task)
 	}
@@ -269,21 +297,24 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 	case "failed":
 		logger.ErrorCF("subagent", "Subagent failed",
 			map[string]interface{}{
-				"task_id": initial.ID,
-				"label":   initial.Label,
-				"error":   result,
+				"task_id":  initial.ID,
+				"label":    initial.Label,
+				"trace_id": initial.ParentTraceID,
+				"error":    result,
 			})
 	case "cancelled":
 		logger.InfoCF("subagent", "Subagent cancelled",
 			map[string]interface{}{
-				"task_id": initial.ID,
-				"label":   initial.Label,
+				"task_id":  initial.ID,
+				"label":    initial.Label,
+				"trace_id": initial.ParentTraceID,
 			})
 	default:
 		logger.InfoCF("subagent", "Subagent completed",
 			map[string]interface{}{
 				"task_id":        initial.ID,
 				"label":          initial.Label,
+				"trace_id":       initial.ParentTraceID,
 				"result_length":  len(result),
 				"result_preview": utils.Truncate(result, 200),
 			})
@@ -317,6 +348,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 			Metadata: map[string]string{
 				"subagent_event":   event,
 				"subagent_task_id": initial.ID,
+				"trace_id":         initial.ParentTraceID,
 			},
 		})
 	}
@@ -365,6 +397,74 @@ func (sm *SubagentManager) buildSubagentSystemPrompt(registry *ToolRegistry) str
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+func (sm *SubagentManager) cleanupLocked(now time.Time) {
+	if len(sm.tasks) == 0 {
+		return
+	}
+
+	nowMS := now.UnixMilli()
+
+	// TTL-based cleanup for terminal tasks.
+	if sm.completedTTL > 0 {
+		ttlMS := sm.completedTTL.Milliseconds()
+		for id, task := range sm.tasks {
+			if !isTerminalSubagentStatus(task.Status) {
+				continue
+			}
+			finished := task.Finished
+			if finished == 0 {
+				finished = task.Created
+			}
+			if nowMS-finished >= ttlMS {
+				delete(sm.tasks, id)
+				delete(sm.cancels, id)
+			}
+		}
+	}
+
+	if sm.maxStoredTasks <= 0 || len(sm.tasks) <= sm.maxStoredTasks {
+		return
+	}
+
+	// Capacity cleanup: remove oldest terminal tasks first.
+	type candidate struct {
+		id       string
+		finished int64
+	}
+	terminals := make([]candidate, 0, len(sm.tasks))
+	for id, task := range sm.tasks {
+		if !isTerminalSubagentStatus(task.Status) {
+			continue
+		}
+		finished := task.Finished
+		if finished == 0 {
+			finished = task.Created
+		}
+		terminals = append(terminals, candidate{id: id, finished: finished})
+	}
+
+	sort.Slice(terminals, func(i, j int) bool {
+		return terminals[i].finished < terminals[j].finished
+	})
+
+	for _, c := range terminals {
+		if len(sm.tasks) <= sm.maxStoredTasks {
+			break
+		}
+		delete(sm.tasks, c.id)
+		delete(sm.cancels, c.id)
+	}
+}
+
+func isTerminalSubagentStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 func (sm *SubagentManager) GetTask(taskID string) (*SubagentTask, bool) {
