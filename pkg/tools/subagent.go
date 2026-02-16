@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/llmloop"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/skills"
@@ -139,55 +140,54 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 		model = sm.provider.GetDefaultModel()
 	}
 
-	var final string
-	var finalErr error
+	chatOptions := map[string]interface{}{
+		"max_tokens":  4096,
+		"temperature": 0.3,
+	}
 
-	for iteration := 1; iteration <= maxIterations; iteration++ {
-		toolDefs := registry.GetProviderDefinitions()
-		logger.InfoCF("subagent", "Calling LLM",
-			map[string]interface{}{
-				"task_id":        task.ID,
-				"iteration":      iteration,
-				"model":          model,
-				"messages_count": len(messages),
-				"tools_count":    len(toolDefs),
+	loopRes, finalErr := llmloop.Run(ctx, llmloop.RunOptions{
+		Provider:      sm.provider,
+		Model:         model,
+		MaxIterations: maxIterations,
+		LLMTimeout:    llmTimeout,
+		ChatOptions:   chatOptions,
+		Messages:      messages,
+		BuildToolDefs: func(iteration int, _ []providers.Message) []providers.ToolDefinition {
+			return registry.GetProviderDefinitions()
+		},
+		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
+			return registry.ExecuteToolCalls(ctx, toolCalls, ExecuteToolCallsOptions{
+				Timeout:      toolTimeout,
+				MaxParallel:  maxParallelTools,
+				LogComponent: "subagent",
+				Iteration:    iteration,
+				OnToolComplete: func(completed, total, index int, call providers.ToolCall, _ providers.Message) {
+					logger.DebugCF("subagent", fmt.Sprintf("Tool completed: %s (%d/%d)", call.Name, completed, total),
+						map[string]interface{}{
+							"task_id":   task.ID,
+							"iteration": iteration,
+							"tool":      call.Name,
+							"completed": completed,
+							"total":     total,
+						})
+				},
 			})
-
-		resp, err := providers.ChatWithTimeout(ctx, llmTimeout, sm.provider, messages, toolDefs, model, map[string]interface{}{
-			"max_tokens":  4096,
-			"temperature": 0.3,
-		})
-		if err != nil {
-			finalErr = err
-			break
-		}
-
-		if len(resp.ToolCalls) == 0 {
-			final = resp.Content
-			break
-		}
-
-		// Append assistant tool-call message to the conversation.
-		messages = append(messages, providers.AssistantMessageFromResponse(resp))
-
-		toolResults := registry.ExecuteToolCalls(ctx, resp.ToolCalls, ExecuteToolCallsOptions{
-			Timeout:      toolTimeout,
-			MaxParallel:  maxParallelTools,
-			LogComponent: "subagent",
-			Iteration:    iteration,
-			OnToolComplete: func(completed, total, index int, call providers.ToolCall, _ providers.Message) {
-				logger.DebugCF("subagent", fmt.Sprintf("Tool completed: %s (%d/%d)", call.Name, completed, total),
+		},
+		Hooks: llmloop.Hooks{
+			BeforeLLMCall: func(iteration int, currentMessages []providers.Message, toolDefs []providers.ToolDefinition) {
+				logger.InfoCF("subagent", "Calling LLM",
 					map[string]interface{}{
-						"task_id":   task.ID,
-						"iteration": iteration,
-						"tool":      call.Name,
-						"completed": completed,
-						"total":     total,
+						"task_id":        task.ID,
+						"iteration":      iteration,
+						"model":          model,
+						"messages_count": len(currentMessages),
+						"tools_count":    len(toolDefs),
 					})
 			},
-		})
-		messages = append(messages, toolResults...)
-	}
+		},
+	})
+
+	final := loopRes.FinalContent
 
 	if finalErr != nil {
 		sm.mu.Lock()

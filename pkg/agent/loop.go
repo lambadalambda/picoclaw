@@ -18,6 +18,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/llmloop"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/memory"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -348,103 +349,105 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 // runLLMIteration executes the LLM call loop with tool handling.
 // Returns the final content, iteration count, and any error.
 func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.Message, opts processOptions) (string, int, error) {
-	iteration := 0
-	var finalContent string
-	exhausted := true // assume exhausted; set false on clean exit
-
-	for iteration < al.maxIterations {
-		iteration++
-
-		logger.DebugCF("agent", "LLM iteration",
-			map[string]interface{}{
-				"iteration": iteration,
-				"max":       al.maxIterations,
-			})
-
-		// Build tool definitions
-		providerToolDefs := al.tools.GetProviderDefinitions()
-
-		// Log LLM request details
-		logger.DebugCF("agent", "LLM request",
-			map[string]interface{}{
-				"iteration":         iteration,
-				"model":             al.model,
-				"messages_count":    len(messages),
-				"tools_count":       len(providerToolDefs),
-				"max_tokens":        8192,
-				"temperature":       0.7,
-				"system_prompt_len": len(messages[0].Content),
-			})
-
-		// Log full messages (detailed)
-		logger.DebugCF("agent", "Full LLM request",
-			map[string]interface{}{
-				"iteration":     iteration,
-				"messages_json": formatMessagesForLog(messages),
-				"tools_json":    formatToolsForLog(providerToolDefs),
-			})
-
-		// Call LLM
-		logger.InfoCF("agent", "Calling LLM",
-			map[string]interface{}{
-				"iteration":      iteration,
-				"model":          al.model,
-				"messages_count": len(messages),
-				"tools_count":    len(providerToolDefs),
-			})
-		response, err := providers.ChatWithTimeout(ctx, al.llmTimeout, al.provider, messages, providerToolDefs, al.model, map[string]interface{}{
-			"max_tokens":  8192,
-			"temperature": 0.7,
-		})
-
-		if err != nil {
-			logger.ErrorCF("agent", "LLM call failed",
-				map[string]interface{}{
-					"iteration": iteration,
-					"error":     err.Error(),
-				})
-			return "", iteration, fmt.Errorf("LLM call failed: %w", err)
-		}
-
-		// Check if no tool calls - we're done
-		if len(response.ToolCalls) == 0 {
-			finalContent = response.Content
-			exhausted = false
-			logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
-				map[string]interface{}{
-					"iteration":     iteration,
-					"content_chars": len(finalContent),
-				})
-			break
-		}
-
-		// Log tool calls
-		toolNames := make([]string, 0, len(response.ToolCalls))
-		for _, tc := range response.ToolCalls {
-			toolNames = append(toolNames, tc.Name)
-		}
-		logger.InfoCF("agent", "LLM requested tool calls",
-			map[string]interface{}{
-				"tools":     toolNames,
-				"count":     len(toolNames),
-				"iteration": iteration,
-			})
-
-		// Build assistant message with tool calls
-		assistantMsg := providers.AssistantMessageFromResponse(response)
-		messages = append(messages, assistantMsg)
-
-		// Save assistant message with tool calls to session
-		al.sessions.AddFullMessage(opts.SessionKey, assistantMsg)
-
-		// Execute tool calls concurrently and collect results
-		toolResults := al.executeToolsConcurrently(ctx, response.ToolCalls, iteration, opts)
-
-		for _, tr := range toolResults {
-			messages = append(messages, tr)
-			al.sessions.AddFullMessage(opts.SessionKey, tr)
-		}
+	chatOptions := map[string]interface{}{
+		"max_tokens":  8192,
+		"temperature": 0.7,
 	}
+
+	loopRes, err := llmloop.Run(ctx, llmloop.RunOptions{
+		Provider:      al.provider,
+		Model:         al.model,
+		MaxIterations: al.maxIterations,
+		LLMTimeout:    al.llmTimeout,
+		ChatOptions:   chatOptions,
+		Messages:      messages,
+		BuildToolDefs: func(iteration int, _ []providers.Message) []providers.ToolDefinition {
+			return al.tools.GetProviderDefinitions()
+		},
+		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
+			return al.executeToolsConcurrently(ctx, toolCalls, iteration, opts)
+		},
+		Hooks: llmloop.Hooks{
+			BeforeLLMCall: func(iteration int, currentMessages []providers.Message, toolDefs []providers.ToolDefinition) {
+				logger.DebugCF("agent", "LLM iteration",
+					map[string]interface{}{
+						"iteration": iteration,
+						"max":       al.maxIterations,
+					})
+
+				systemPromptLen := 0
+				if len(currentMessages) > 0 {
+					systemPromptLen = len(currentMessages[0].Content)
+				}
+
+				logger.DebugCF("agent", "LLM request",
+					map[string]interface{}{
+						"iteration":         iteration,
+						"model":             al.model,
+						"messages_count":    len(currentMessages),
+						"tools_count":       len(toolDefs),
+						"max_tokens":        chatOptions["max_tokens"],
+						"temperature":       chatOptions["temperature"],
+						"system_prompt_len": systemPromptLen,
+					})
+
+				logger.DebugCF("agent", "Full LLM request",
+					map[string]interface{}{
+						"iteration":     iteration,
+						"messages_json": formatMessagesForLog(currentMessages),
+						"tools_json":    formatToolsForLog(toolDefs),
+					})
+
+				logger.InfoCF("agent", "Calling LLM",
+					map[string]interface{}{
+						"iteration":      iteration,
+						"model":          al.model,
+						"messages_count": len(currentMessages),
+						"tools_count":    len(toolDefs),
+					})
+			},
+			LLMCallFailed: func(iteration int, err error) {
+				logger.ErrorCF("agent", "LLM call failed",
+					map[string]interface{}{
+						"iteration": iteration,
+						"error":     err.Error(),
+					})
+			},
+			ToolCallsRequested: func(iteration int, toolCalls []providers.ToolCall) {
+				toolNames := make([]string, 0, len(toolCalls))
+				for _, tc := range toolCalls {
+					toolNames = append(toolNames, tc.Name)
+				}
+				logger.InfoCF("agent", "LLM requested tool calls",
+					map[string]interface{}{
+						"tools":     toolNames,
+						"count":     len(toolNames),
+						"iteration": iteration,
+					})
+			},
+			DirectResponse: func(iteration int, content string) {
+				logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
+					map[string]interface{}{
+						"iteration":     iteration,
+						"content_chars": len(content),
+					})
+			},
+			AssistantMessage: func(_ int, msg providers.Message) {
+				al.sessions.AddFullMessage(opts.SessionKey, msg)
+			},
+			ToolResultMessage: func(_ int, msg providers.Message) {
+				al.sessions.AddFullMessage(opts.SessionKey, msg)
+			},
+		},
+	})
+	if err != nil {
+		return "", loopRes.Iterations, fmt.Errorf("LLM call failed: %w", err)
+	}
+
+	iteration := loopRes.Iterations
+	finalContent := loopRes.FinalContent
+	exhausted := loopRes.Exhausted
+	messages = loopRes.Messages
 
 	// If the loop exhausted all iterations without a direct answer,
 	// make one final LLM call with no tools to get a progress summary.
