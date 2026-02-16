@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,23 +28,49 @@ type SubagentTask struct {
 }
 
 type SubagentManager struct {
-	tasks     map[string]*SubagentTask
-	mu        sync.RWMutex
-	provider  providers.LLMProvider
-	model     string
-	bus       *bus.MessageBus
-	workspace string
-	nextID    int
+	tasks            map[string]*SubagentTask
+	mu               sync.RWMutex
+	provider         providers.LLMProvider
+	model            string
+	llmTimeout       time.Duration
+	toolTimeout      time.Duration
+	maxParallelTools int
+	maxIterations    int
+	bus              *bus.MessageBus
+	workspace        string
+	nextID           int
 }
 
 func NewSubagentManager(provider providers.LLMProvider, model string, workspace string, bus *bus.MessageBus) *SubagentManager {
 	return &SubagentManager{
-		tasks:     make(map[string]*SubagentTask),
-		provider:  provider,
-		model:     model,
-		bus:       bus,
-		workspace: workspace,
-		nextID:    1,
+		tasks:            make(map[string]*SubagentTask),
+		provider:         provider,
+		model:            model,
+		llmTimeout:       120 * time.Second,
+		toolTimeout:      60 * time.Second,
+		maxParallelTools: 4,
+		maxIterations:    10,
+		bus:              bus,
+		workspace:        workspace,
+		nextID:           1,
+	}
+}
+
+func (sm *SubagentManager) ConfigureExecution(llmTimeout, toolTimeout time.Duration, maxParallelTools, maxIterations int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if llmTimeout >= 0 {
+		sm.llmTimeout = llmTimeout
+	}
+	if toolTimeout >= 0 {
+		sm.toolTimeout = toolTimeout
+	}
+	if maxParallelTools >= 0 {
+		sm.maxParallelTools = maxParallelTools
+	}
+	if maxIterations > 0 {
+		sm.maxIterations = maxIterations
 	}
 }
 
@@ -102,8 +127,14 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 		{Role: "user", Content: task.Task},
 	}
 
-	maxIterations := 10
+	sm.mu.RLock()
+	maxIterations := sm.maxIterations
 	model := sm.model
+	llmTimeout := sm.llmTimeout
+	toolTimeout := sm.toolTimeout
+	maxParallelTools := sm.maxParallelTools
+	sm.mu.RUnlock()
+
 	if model == "" {
 		model = sm.provider.GetDefaultModel()
 	}
@@ -122,7 +153,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 				"tools_count":    len(toolDefs),
 			})
 
-		resp, err := sm.provider.Chat(ctx, messages, toolDefs, model, map[string]interface{}{
+		resp, err := providers.ChatWithTimeout(ctx, llmTimeout, sm.provider, messages, toolDefs, model, map[string]interface{}{
 			"max_tokens":  4096,
 			"temperature": 0.3,
 		})
@@ -139,25 +170,23 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 		// Append assistant tool-call message to the conversation.
 		messages = append(messages, providers.AssistantMessageFromResponse(resp))
 
-		// Execute tool calls sequentially (keep order).
-		for _, tc := range resp.ToolCalls {
-			argsJSON, _ := json.Marshal(tc.Arguments)
-			argsPreview := utils.Truncate(string(argsJSON), 200)
-			logger.InfoCF("subagent", fmt.Sprintf("Tool call: %s(%s)", tc.Name, argsPreview),
-				map[string]interface{}{
-					"task_id":    task.ID,
-					"iteration":  iteration,
-					"tool":       tc.Name,
-					"tool_callID": tc.ID,
-				})
-
-			result, err := registry.Execute(ctx, tc.Name, tc.Arguments)
-			if err != nil {
-				result = fmt.Sprintf("Error: %v", err)
-			}
-
-			messages = append(messages, providers.ToolResultMessage(tc.ID, result))
-		}
+		toolResults := registry.ExecuteToolCalls(ctx, resp.ToolCalls, ExecuteToolCallsOptions{
+			Timeout:      toolTimeout,
+			MaxParallel:  maxParallelTools,
+			LogComponent: "subagent",
+			Iteration:    iteration,
+			OnToolComplete: func(completed, total, index int, call providers.ToolCall, _ providers.Message) {
+				logger.DebugCF("subagent", fmt.Sprintf("Tool completed: %s (%d/%d)", call.Name, completed, total),
+					map[string]interface{}{
+						"task_id":   task.ID,
+						"iteration": iteration,
+						"tool":      call.Name,
+						"completed": completed,
+						"total":     total,
+					})
+			},
+		})
+		messages = append(messages, toolResults...)
 	}
 
 	if finalErr != nil {
@@ -178,9 +207,9 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 		sm.mu.Unlock()
 		logger.InfoCF("subagent", "Subagent completed",
 			map[string]interface{}{
-				"task_id":       task.ID,
-				"label":         task.Label,
-				"result_length": len(final),
+				"task_id":        task.ID,
+				"label":          task.Label,
+				"result_length":  len(final),
 				"result_preview": utils.Truncate(final, 200),
 			})
 	}
@@ -196,7 +225,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 			Channel:  "system",
 			SenderID: fmt.Sprintf("subagent:%s", task.ID),
 			// Format: "original_channel:original_chat_id" for routing back
-			ChatID: fmt.Sprintf("%s:%s", task.OriginChannel, task.OriginChatID),
+			ChatID:  fmt.Sprintf("%s:%s", task.OriginChannel, task.OriginChatID),
 			Content: announceContent,
 			Metadata: map[string]string{
 				"subagent_event":   "complete",

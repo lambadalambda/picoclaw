@@ -78,6 +78,12 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 
 	// Register spawn tool
 	subagentManager := tools.NewSubagentManager(provider, cfg.Agents.Defaults.Model, workspace, msgBus)
+	subagentManager.ConfigureExecution(
+		time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds)*time.Second,
+		time.Duration(cfg.Agents.Defaults.ToolTimeoutSeconds)*time.Second,
+		cfg.Agents.Defaults.MaxParallelToolCalls,
+		cfg.Agents.Defaults.MaxToolIterations,
+	)
 	spawnTool := tools.NewSpawnTool(subagentManager)
 	toolsRegistry.Register(spawnTool)
 
@@ -386,7 +392,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 				"messages_count": len(messages),
 				"tools_count":    len(providerToolDefs),
 			})
-		response, err := al.chatWithTimeout(ctx, messages, providerToolDefs, map[string]interface{}{
+		response, err := providers.ChatWithTimeout(ctx, al.llmTimeout, al.provider, messages, providerToolDefs, al.model, map[string]interface{}{
 			"max_tokens":  8192,
 			"temperature": 0.7,
 		})
@@ -455,7 +461,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			Content: "You've reached your tool call iteration limit. Please summarize what you've accomplished so far and what still needs to be done. The user can tell you to continue.",
 		})
 
-		response, err := al.chatWithTimeout(ctx, messages, nil, map[string]interface{}{
+		response, err := providers.ChatWithTimeout(ctx, al.llmTimeout, al.provider, messages, nil, al.model, map[string]interface{}{
 			"max_tokens":  8192,
 			"temperature": 0.7,
 		})
@@ -469,22 +475,6 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 	}
 
 	return finalContent, iteration, nil
-}
-
-func (al *AgentLoop) chatWithTimeout(
-	ctx context.Context,
-	messages []providers.Message,
-	toolDefs []providers.ToolDefinition,
-	options map[string]interface{},
-) (*providers.LLMResponse, error) {
-	callCtx := ctx
-	cancel := func() {}
-	if al.llmTimeout > 0 {
-		callCtx, cancel = context.WithTimeout(ctx, al.llmTimeout)
-	}
-	defer cancel()
-
-	return al.provider.Chat(callCtx, messages, toolDefs, al.model, options)
 }
 
 // updateToolContexts updates the context for tools that need channel/chatID info.
