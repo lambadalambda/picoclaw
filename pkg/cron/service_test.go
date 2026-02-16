@@ -193,6 +193,27 @@ func TestListJobs(t *testing.T) {
 	}
 }
 
+func TestListJobs_IncludeDisabledReturnsCopy(t *testing.T) {
+	cs := newTestService(t)
+	every := int64(60000)
+	_, _ = cs.AddJob("job1", CronSchedule{Kind: "every", EveryMS: &every}, "msg1", false, "", "")
+
+	jobs := cs.ListJobs(true)
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+
+	jobs[0].Name = "mutated"
+
+	again := cs.ListJobs(true)
+	if len(again) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(again))
+	}
+	if again[0].Name == "mutated" {
+		t.Fatal("ListJobs(true) returned internal slice; external mutation leaked into service state")
+	}
+}
+
 func TestStatus(t *testing.T) {
 	cs := newTestService(t)
 	every := int64(60000)

@@ -420,17 +420,44 @@ func (cs *CronService) ListJobs(includeDisabled bool) []CronJob {
 	defer cs.mu.RUnlock()
 
 	if includeDisabled {
-		return cs.store.Jobs
+		jobs := make([]CronJob, 0, len(cs.store.Jobs))
+		for _, job := range cs.store.Jobs {
+			jobs = append(jobs, cloneCronJob(job))
+		}
+		return jobs
 	}
 
 	var enabled []CronJob
 	for _, job := range cs.store.Jobs {
 		if job.Enabled {
-			enabled = append(enabled, job)
+			enabled = append(enabled, cloneCronJob(job))
 		}
 	}
 
 	return enabled
+}
+
+func cloneCronJob(job CronJob) CronJob {
+	copyJob := job
+
+	if job.Schedule.AtMS != nil {
+		v := *job.Schedule.AtMS
+		copyJob.Schedule.AtMS = &v
+	}
+	if job.Schedule.EveryMS != nil {
+		v := *job.Schedule.EveryMS
+		copyJob.Schedule.EveryMS = &v
+	}
+	if job.State.NextRunAtMS != nil {
+		v := *job.State.NextRunAtMS
+		copyJob.State.NextRunAtMS = &v
+	}
+	if job.State.LastRunAtMS != nil {
+		v := *job.State.LastRunAtMS
+		copyJob.State.LastRunAtMS = &v
+	}
+
+	return copyJob
 }
 
 func (cs *CronService) Status() map[string]interface{} {
