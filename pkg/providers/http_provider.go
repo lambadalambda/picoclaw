@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -97,17 +98,24 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 	}
 
 	var lastErr error
+	var retryAfterHint time.Duration
+	var hasRetryAfterHint bool
 	for attempt := 0; attempt <= p.maxRetries; attempt++ {
 		if attempt > 0 {
-			wait := p.retryBaseWait * time.Duration(1<<(attempt-1)) // exponential: 1s, 2s, 4s, 8s, 16s
-			if wait > p.retryMaxWait {
-				wait = p.retryMaxWait
+			retryAfterLog := ""
+			if hasRetryAfterHint {
+				retryAfterLog = retryAfterHint.String()
 			}
+			wait := p.computeRetryWait(attempt, retryAfterHint, hasRetryAfterHint)
+			hasRetryAfterHint = false
+
 			logger.WarnCF("provider", fmt.Sprintf("Retrying LLM request (attempt %d/%d)", attempt+1, p.maxRetries+1),
 				map[string]interface{}{
-					"wait":       wait.String(),
-					"last_error": fmt.Sprintf("%v", lastErr),
+					"wait":        wait.String(),
+					"retry_after": retryAfterLog,
+					"last_error":  fmt.Sprintf("%v", lastErr),
 				})
+
 			select {
 			case <-ctx.Done():
 				return nil, fmt.Errorf("context cancelled during retry wait: %w", ctx.Err())
@@ -118,6 +126,7 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 		resp, err := p.doRequest(ctx, jsonData)
 		if err != nil {
 			lastErr = err
+			hasRetryAfterHint = false
 			// Context cancellation is not retryable
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("failed to send request: %w", err)
@@ -125,20 +134,25 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 			continue
 		}
 
+		retryAfter, hasRetryAfter := parseRetryAfterHeader(resp.Header.Get("Retry-After"))
 		statusCode, body, err := p.readResponse(resp)
 		if err != nil {
 			lastErr = err
+			hasRetryAfterHint = false
 			continue
 		}
 
 		// Non-OK status: retry on 5xx and 429, fail immediately on other 4xx
 		if statusCode != http.StatusOK {
 			lastErr = fmt.Errorf("API error (HTTP %d): %s", statusCode, utils.Truncate(string(body), 500))
-			if statusCode == http.StatusTooManyRequests || statusCode >= 500 {
+			if isRetryableStatus(statusCode) {
+				retryAfterHint = retryAfter
+				hasRetryAfterHint = hasRetryAfter
 				continue // retryable
 			}
 			return nil, lastErr // non-retryable client error
 		}
+		hasRetryAfterHint = false
 
 		// Log raw response body at debug level for troubleshooting
 		logger.DebugCF("provider", "Raw LLM response",
@@ -151,12 +165,14 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 		llmResp, err := p.parseResponse(body)
 		if err != nil {
 			lastErr = err
+			hasRetryAfterHint = false
 			continue
 		}
 
 		// Check for empty/error responses that warrant a retry
 		if p.shouldRetry(llmResp) {
 			lastErr = fmt.Errorf("empty or error response from LLM (finish_reason=%s)", llmResp.FinishReason)
+			hasRetryAfterHint = false
 			continue
 		}
 
@@ -164,6 +180,58 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 	}
 
 	return nil, fmt.Errorf("LLM request failed after %d attempts: %w", p.maxRetries+1, lastErr)
+}
+
+func (p *HTTPProvider) computeRetryWait(attempt int, retryAfterHint time.Duration, hasRetryAfterHint bool) time.Duration {
+	wait := p.retryBaseWait * time.Duration(1<<(attempt-1)) // exponential: 1s, 2s, 4s, 8s, 16s
+	if wait > p.retryMaxWait {
+		wait = p.retryMaxWait
+	}
+
+	if hasRetryAfterHint {
+		retryAfter := retryAfterHint
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
+		if retryAfter > p.retryMaxWait {
+			retryAfter = p.retryMaxWait
+		}
+		if retryAfter > wait {
+			wait = retryAfter
+		}
+	}
+
+	return wait
+}
+
+func isRetryableStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode >= 500
+}
+
+func parseRetryAfterHeader(header string) (time.Duration, bool) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0, false
+	}
+
+	// Delta-seconds form.
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs <= 0 {
+			return 0, true
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+
+	// HTTP-date form.
+	if t, err := http.ParseTime(header); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			d = 0
+		}
+		return d, true
+	}
+
+	return 0, false
 }
 
 // doRequest sends the HTTP request and returns the raw response.

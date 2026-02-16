@@ -240,6 +240,83 @@ func TestChat_RetryOnHTTP429(t *testing.T) {
 	}
 }
 
+// TestChat_RespectsRetryAfterHeaderSeconds verifies that 429 Retry-After
+// headers are respected when scheduling retries.
+func TestChat_RespectsRetryAfterHeaderSeconds(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error": "rate limited"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, validResponse("after retry-after"))
+	}))
+	defer srv.Close()
+
+	p := newTestProvider("test-key", srv.URL)
+	p.retryMaxWait = 2 * time.Second
+	start := time.Now()
+	resp, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if resp.Content != "after retry-after" {
+		t.Fatalf("expected content 'after retry-after', got: %q", resp.Content)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected 2 calls, got: %d", calls.Load())
+	}
+	if elapsed < 900*time.Millisecond {
+		t.Fatalf("expected retry to wait for Retry-After (~1s), elapsed=%v", elapsed)
+	}
+}
+
+// TestChat_RetryAfterHeaderRespectsRetryMaxWait verifies Retry-After doesn't
+// exceed configured retryMaxWait, preventing unbounded sleeps.
+func TestChat_RetryAfterHeaderRespectsRetryMaxWait(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error": "rate limited"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, validResponse("after capped retry"))
+	}))
+	defer srv.Close()
+
+	p := newTestProvider("test-key", srv.URL)
+	p.retryMaxWait = 20 * time.Millisecond
+	start := time.Now()
+	resp, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if resp.Content != "after capped retry" {
+		t.Fatalf("expected content 'after capped retry', got: %q", resp.Content)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected 2 calls, got: %d", calls.Load())
+	}
+	if elapsed < 15*time.Millisecond {
+		t.Fatalf("expected retry to wait close to retryMaxWait, elapsed=%v", elapsed)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected capped wait, but retry slept too long: %v", elapsed)
+	}
+}
+
 // TestChat_NoRetryOnHTTP400 verifies that client errors (4xx, not 429) are NOT retried.
 func TestChat_NoRetryOnHTTP400(t *testing.T) {
 	var calls atomic.Int32
@@ -387,5 +464,35 @@ func TestChat_ProviderRoutingOmittedWhenEmpty(t *testing.T) {
 
 	if _, ok := capturedBody["provider"]; ok {
 		t.Fatal("expected no 'provider' field in request body when routing is not set")
+	}
+}
+
+func TestParseRetryAfterHeader_DeltaSeconds(t *testing.T) {
+	d, ok := parseRetryAfterHeader("3")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if d != 3*time.Second {
+		t.Fatalf("duration = %v, want 3s", d)
+	}
+}
+
+func TestParseRetryAfterHeader_HTTPDate(t *testing.T) {
+	header := time.Now().Add(2 * time.Second).UTC().Format(http.TimeFormat)
+	d, ok := parseRetryAfterHeader(header)
+	if !ok {
+		t.Fatal("expected ok=true for HTTP-date")
+	}
+	if d <= 0 {
+		t.Fatalf("expected positive duration, got %v", d)
+	}
+	if d > 3*time.Second {
+		t.Fatalf("expected duration close to 2s, got %v", d)
+	}
+}
+
+func TestParseRetryAfterHeader_Invalid(t *testing.T) {
+	if d, ok := parseRetryAfterHeader("not-a-date"); ok {
+		t.Fatalf("expected ok=false for invalid header, got duration %v", d)
 	}
 }
