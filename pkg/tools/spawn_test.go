@@ -2,8 +2,6 @@ package tools
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -32,32 +30,27 @@ func TestSpawnTool_Execute_NoTask(t *testing.T) {
 	}
 }
 
-func TestSpawnTool_SetContextConcurrentWithExecute_NoRace(t *testing.T) {
-	// Use nil bus so subagent tasks don't publish messages during the test.
+func TestSpawnTool_ExecuteWithRegistryContext_UsesOriginChat(t *testing.T) {
 	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
 	tool := NewSpawnTool(mgr)
-	tool.SetContext("telegram", "init")
+	registry := NewToolRegistry()
+	registry.Register(tool)
 
-	ctx := context.Background()
+	_, err := registry.ExecuteWithContext(context.Background(), "spawn", map[string]interface{}{
+		"task": "do the thing",
+	}, "telegram", "chat-ctx")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 200; i++ {
-			tool.SetContext("telegram", fmt.Sprintf("%d", i))
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 200; i++ {
-			_, _ = tool.Execute(ctx, map[string]interface{}{
-				"task": "do the thing",
-			})
-		}
-	}()
-
-	wg.Wait()
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 spawned task, got %d", len(tasks))
+	}
+	if tasks[0].OriginChannel != "telegram" {
+		t.Fatalf("OriginChannel = %q, want %q", tasks[0].OriginChannel, "telegram")
+	}
+	if tasks[0].OriginChatID != "chat-ctx" {
+		t.Fatalf("OriginChatID = %q, want %q", tasks[0].OriginChatID, "chat-ctx")
+	}
 }

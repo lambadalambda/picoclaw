@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -46,9 +47,8 @@ func TestMessageTool_Parameters_IncludesMedia(t *testing.T) {
 	}
 }
 
-func TestMessageTool_Execute_TextOnly(t *testing.T) {
+func TestMessageTool_Execute_UsesExplicitChannelChat(t *testing.T) {
 	tool := NewMessageTool()
-	tool.SetContext("telegram", "123")
 
 	var gotChannel, gotChatID, gotContent string
 	var gotMedia []string
@@ -63,6 +63,8 @@ func TestMessageTool_Execute_TextOnly(t *testing.T) {
 
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
 		"content": "hello world",
+		"channel": "telegram",
+		"chat_id": "123",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -87,7 +89,6 @@ func TestMessageTool_Execute_TextOnly(t *testing.T) {
 
 func TestMessageTool_Execute_WithMedia(t *testing.T) {
 	tool := NewMessageTool()
-	tool.SetContext("telegram", "456")
 
 	var gotMedia []string
 
@@ -98,6 +99,8 @@ func TestMessageTool_Execute_WithMedia(t *testing.T) {
 
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
 		"content": "here are the files",
+		"channel": "telegram",
+		"chat_id": "456",
 		"media":   []interface{}{"/tmp/photo.jpg", "/tmp/report.pdf"},
 	})
 	if err != nil {
@@ -120,7 +123,6 @@ func TestMessageTool_Execute_WithMedia(t *testing.T) {
 
 func TestMessageTool_Execute_NoContent(t *testing.T) {
 	tool := NewMessageTool()
-	tool.SetContext("telegram", "123")
 	tool.SetSendCallback(func(channel, chatID, content string, media []string) error {
 		return nil
 	})
@@ -133,11 +135,11 @@ func TestMessageTool_Execute_NoContent(t *testing.T) {
 
 func TestMessageTool_Execute_NoCallback(t *testing.T) {
 	tool := NewMessageTool()
-	tool.SetContext("telegram", "123")
-	// Don't set callback
 
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
 		"content": "hello",
+		"channel": "telegram",
+		"chat_id": "123",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -149,7 +151,6 @@ func TestMessageTool_Execute_NoCallback(t *testing.T) {
 
 func TestMessageTool_Execute_NoChannel(t *testing.T) {
 	tool := NewMessageTool()
-	// Don't set context — no default channel/chatID
 	tool.SetSendCallback(func(channel, chatID, content string, media []string) error {
 		return nil
 	})
@@ -167,13 +168,14 @@ func TestMessageTool_Execute_NoChannel(t *testing.T) {
 
 func TestMessageTool_Execute_CallbackError(t *testing.T) {
 	tool := NewMessageTool()
-	tool.SetContext("telegram", "123")
 	tool.SetSendCallback(func(channel, chatID, content string, media []string) error {
 		return fmt.Errorf("network error")
 	})
 
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
 		"content": "hello",
+		"channel": "telegram",
+		"chat_id": "123",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -183,33 +185,59 @@ func TestMessageTool_Execute_CallbackError(t *testing.T) {
 	}
 }
 
-func TestMessageTool_SetContextConcurrentWithExecute_NoRace(t *testing.T) {
+func TestMessageTool_ExecuteWithRegistryContext(t *testing.T) {
 	tool := NewMessageTool()
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	var gotChannel, gotChatID string
 	tool.SetSendCallback(func(channel, chatID, content string, media []string) error {
+		gotChannel = channel
+		gotChatID = chatID
 		return nil
 	})
-	tool.SetContext("telegram", "init")
+
+	_, err := registry.ExecuteWithContext(context.Background(), "message", map[string]interface{}{
+		"content": "hello",
+	}, "telegram", "ctx-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotChannel != "telegram" || gotChatID != "ctx-1" {
+		t.Fatalf("expected injected context telegram:ctx-1, got %s:%s", gotChannel, gotChatID)
+	}
+}
+
+func TestMessageTool_ConcurrentExecuteWithDifferentContext_NoCrossTalk(t *testing.T) {
+	tool := NewMessageTool()
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	var mismatches atomic.Int32
+	tool.SetSendCallback(func(channel, chatID, content string, media []string) error {
+		if content != chatID {
+			mismatches.Add(1)
+		}
+		return nil
+	})
 
 	ctx := context.Background()
-
 	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 500; i++ {
-			tool.SetContext("telegram", fmt.Sprintf("%d", i))
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 500; i++ {
-			_, _ = tool.Execute(ctx, map[string]interface{}{
-				"content": "hello",
-			})
-		}
-	}()
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			chatID := fmt.Sprintf("chat-%d", i)
+			_, _ = registry.ExecuteWithContext(ctx, "message", map[string]interface{}{
+				"content": chatID,
+			}, "telegram", chatID)
+		}(i)
+	}
 
 	wg.Wait()
+
+	if got := mismatches.Load(); got != 0 {
+		t.Fatalf("detected %d context/content mismatches", got)
+	}
 }

@@ -54,13 +54,10 @@ func (r *ToolRegistry) ExecuteWithContext(ctx context.Context, name string, args
 		return "", fmt.Errorf("tool '%s' not found", name)
 	}
 
-	// If tool implements ContextualTool, set context
-	if contextualTool, ok := tool.(ContextualTool); ok && channel != "" && chatID != "" {
-		contextualTool.SetContext(channel, chatID)
-	}
+	execArgs := withExecutionContext(args, channel, chatID)
 
 	start := time.Now()
-	result, err := tool.Execute(ctx, args)
+	result, err := tool.Execute(ctx, execArgs)
 	duration := time.Since(start)
 
 	if err != nil {

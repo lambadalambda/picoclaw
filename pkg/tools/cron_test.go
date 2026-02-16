@@ -58,15 +58,42 @@ func TestCronTool_AddJobRequiresSessionContext(t *testing.T) {
 	}
 }
 
+func TestCronTool_AddJobWithRegistryContextInjection(t *testing.T) {
+	tool, service, _, _ := newCronToolWithService(t)
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	result, err := registry.ExecuteWithContext(context.Background(), "cron", map[string]interface{}{
+		"action":     "add",
+		"message":    "send reminder",
+		"at_seconds": float64(60),
+	}, "telegram", "ctx-chat")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "Created job") {
+		t.Fatalf("expected created message, got %q", result)
+	}
+
+	jobs := service.ListJobs(true)
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+	if jobs[0].Payload.Channel != "telegram" || jobs[0].Payload.To != "ctx-chat" {
+		t.Fatalf("job payload channel/chat = %s/%s, want telegram/ctx-chat", jobs[0].Payload.Channel, jobs[0].Payload.To)
+	}
+}
+
 func TestCronTool_AddAndListJobs(t *testing.T) {
 	tool, service, _, _ := newCronToolWithService(t)
-	tool.SetContext("telegram", "chat-1")
 
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
 		"action":        "add",
 		"message":       "remind me",
 		"at_seconds":    float64(120),
 		"deliver":       true,
+		"channel":       "telegram",
+		"chat_id":       "chat-1",
 		"cron_expr":     "ignored",
 		"every_seconds": float64(10),
 	})
@@ -95,12 +122,13 @@ func TestCronTool_AddAndListJobs(t *testing.T) {
 
 func TestCronTool_AddJobPriorityAtOverEvery(t *testing.T) {
 	tool, service, _, _ := newCronToolWithService(t)
-	tool.SetContext("telegram", "chat-2")
 
 	_, err := tool.Execute(context.Background(), map[string]interface{}{
 		"action":        "add",
 		"message":       "priority test",
 		"at_seconds":    float64(30),
+		"channel":       "telegram",
+		"chat_id":       "chat-2",
 		"every_seconds": float64(5),
 	})
 	if err != nil {
@@ -121,12 +149,13 @@ func TestCronTool_AddJobPriorityAtOverEvery(t *testing.T) {
 
 func TestCronTool_RemoveAndEnableDisableJobs(t *testing.T) {
 	tool, service, _, _ := newCronToolWithService(t)
-	tool.SetContext("slack", "channel-1")
 
 	if _, err := tool.Execute(context.Background(), map[string]interface{}{
 		"action":        "add",
 		"message":       "recurring",
 		"every_seconds": float64(120),
+		"channel":       "slack",
+		"chat_id":       "channel-1",
 	}); err != nil {
 		t.Fatalf("unexpected error adding job")
 	}
@@ -280,11 +309,12 @@ func TestCronTool_ListNoJobs(t *testing.T) {
 
 func TestCronTool_AddJobMissingMessage(t *testing.T) {
 	tool, _, _, _ := newCronToolWithService(t)
-	tool.SetContext("telegram", "chat-1")
 
 	got, err := tool.Execute(context.Background(), map[string]interface{}{
 		"action":     "add",
 		"at_seconds": float64(30),
+		"channel":    "telegram",
+		"chat_id":    "chat-1",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

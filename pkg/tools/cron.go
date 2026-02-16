@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -21,9 +20,6 @@ type CronTool struct {
 	cronService *cron.CronService
 	executor    JobExecutor
 	msgBus      *bus.MessageBus
-	channel     string
-	chatID      string
-	mu          sync.RWMutex
 }
 
 // NewCronTool creates a new CronTool
@@ -79,17 +75,17 @@ func (t *CronTool) Parameters() map[string]interface{} {
 				"type":        "boolean",
 				"description": "If true, send message directly to channel. If false, let agent process the message (for complex tasks). Default: true",
 			},
+			"channel": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional: target channel override for the job",
+			},
+			"chat_id": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional: target chat/user ID override for the job",
+			},
 		},
 		"required": []string{"action"},
 	}
-}
-
-// SetContext sets the current session context for job creation
-func (t *CronTool) SetContext(channel, chatID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.channel = channel
-	t.chatID = chatID
 }
 
 // Execute runs the tool with given arguments
@@ -116,10 +112,17 @@ func (t *CronTool) Execute(ctx context.Context, args map[string]interface{}) (st
 }
 
 func (t *CronTool) addJob(args map[string]interface{}) (string, error) {
-	t.mu.RLock()
-	channel := t.channel
-	chatID := t.chatID
-	t.mu.RUnlock()
+	channel, _ := args["channel"].(string)
+	chatID, _ := args["chat_id"].(string)
+	if channel == "" || chatID == "" {
+		ctxChannel, ctxChatID := getExecutionContext(args)
+		if channel == "" {
+			channel = ctxChannel
+		}
+		if chatID == "" {
+			chatID = ctxChatID
+		}
+	}
 
 	if channel == "" || chatID == "" {
 		return "Error: no session context (channel/chat_id not set). Use this tool in an active conversation.", nil

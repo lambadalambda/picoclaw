@@ -9,10 +9,8 @@ import (
 type SendCallback func(channel, chatID, content string, media []string) error
 
 type MessageTool struct {
-	mu             sync.RWMutex
-	sendCallback   SendCallback
-	defaultChannel string
-	defaultChatID  string
+	mu           sync.RWMutex
+	sendCallback SendCallback
 }
 
 func NewMessageTool() *MessageTool {
@@ -56,13 +54,6 @@ func (t *MessageTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *MessageTool) SetContext(channel, chatID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.defaultChannel = channel
-	t.defaultChatID = chatID
-}
-
 func (t *MessageTool) SetSendCallback(callback SendCallback) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -77,19 +68,17 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 
 	channel, _ := args["channel"].(string)
 	chatID, _ := args["chat_id"].(string)
-
-	t.mu.RLock()
-	defaultChannel := t.defaultChannel
-	defaultChatID := t.defaultChatID
-	callback := t.sendCallback
-	t.mu.RUnlock()
-
+	ctxChannel, ctxChatID := getExecutionContext(args)
 	if channel == "" {
-		channel = defaultChannel
+		channel = ctxChannel
 	}
 	if chatID == "" {
-		chatID = defaultChatID
+		chatID = ctxChatID
 	}
+
+	t.mu.RLock()
+	callback := t.sendCallback
+	t.mu.RUnlock()
 
 	if channel == "" || chatID == "" {
 		return "Error: No target channel/chat specified", nil

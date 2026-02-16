@@ -3,21 +3,15 @@ package tools
 import (
 	"context"
 	"fmt"
-	"sync"
 )
 
 type SpawnTool struct {
-	mu            sync.RWMutex
-	manager       *SubagentManager
-	originChannel string
-	originChatID  string
+	manager *SubagentManager
 }
 
 func NewSpawnTool(manager *SubagentManager) *SpawnTool {
 	return &SpawnTool{
-		manager:       manager,
-		originChannel: "cli",
-		originChatID:  "direct",
+		manager: manager,
 	}
 }
 
@@ -46,13 +40,6 @@ func (t *SpawnTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *SpawnTool) SetContext(channel, chatID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.originChannel = channel
-	t.originChatID = chatID
-}
-
 func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
 	task, ok := args["task"].(string)
 	if !ok {
@@ -60,12 +47,15 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (s
 	}
 
 	label, _ := args["label"].(string)
+	originChannel, originChatID := getExecutionContext(args)
+	if originChannel == "" {
+		originChannel = "cli"
+	}
+	if originChatID == "" {
+		originChatID = "direct"
+	}
 
-	t.mu.RLock()
 	mgr := t.manager
-	originChannel := t.originChannel
-	originChatID := t.originChatID
-	t.mu.RUnlock()
 
 	if mgr == nil {
 		return "Error: Subagent manager not configured", nil
