@@ -7,10 +7,13 @@ import (
 )
 
 type MessageBus struct {
-	inbound  chan InboundMessage
-	outbound chan OutboundMessage
-	handlers map[string]MessageHandler
-	mu       sync.RWMutex
+	inbound   chan InboundMessage
+	outbound  chan OutboundMessage
+	handlers  map[string]MessageHandler
+	closed    bool
+	closeOnce sync.Once
+	done      chan struct{}
+	mu        sync.RWMutex
 }
 
 func NewMessageBus() *MessageBus {
@@ -18,10 +21,17 @@ func NewMessageBus() *MessageBus {
 		inbound:  make(chan InboundMessage, 100),
 		outbound: make(chan OutboundMessage, 100),
 		handlers: make(map[string]MessageHandler),
+		done:     make(chan struct{}),
 	}
 }
 
 func (mb *MessageBus) PublishInbound(msg InboundMessage) {
+	mb.mu.RLock()
+	defer mb.mu.RUnlock()
+	if mb.closed {
+		return
+	}
+
 	select {
 	case mb.inbound <- msg:
 	default:
@@ -30,15 +40,30 @@ func (mb *MessageBus) PublishInbound(msg InboundMessage) {
 }
 
 func (mb *MessageBus) ConsumeInbound(ctx context.Context) (InboundMessage, bool) {
+	mb.mu.RLock()
+	closed := mb.closed
+	mb.mu.RUnlock()
+	if closed {
+		return InboundMessage{}, false
+	}
+
 	select {
 	case msg := <-mb.inbound:
 		return msg, true
+	case <-mb.done:
+		return InboundMessage{}, false
 	case <-ctx.Done():
 		return InboundMessage{}, false
 	}
 }
 
 func (mb *MessageBus) PublishOutbound(msg OutboundMessage) {
+	mb.mu.RLock()
+	defer mb.mu.RUnlock()
+	if mb.closed {
+		return
+	}
+
 	select {
 	case mb.outbound <- msg:
 	default:
@@ -47,9 +72,18 @@ func (mb *MessageBus) PublishOutbound(msg OutboundMessage) {
 }
 
 func (mb *MessageBus) SubscribeOutbound(ctx context.Context) (OutboundMessage, bool) {
+	mb.mu.RLock()
+	closed := mb.closed
+	mb.mu.RUnlock()
+	if closed {
+		return OutboundMessage{}, false
+	}
+
 	select {
 	case msg := <-mb.outbound:
 		return msg, true
+	case <-mb.done:
+		return OutboundMessage{}, false
 	case <-ctx.Done():
 		return OutboundMessage{}, false
 	}
@@ -69,6 +103,10 @@ func (mb *MessageBus) GetHandler(channel string) (MessageHandler, bool) {
 }
 
 func (mb *MessageBus) Close() {
-	close(mb.inbound)
-	close(mb.outbound)
+	mb.closeOnce.Do(func() {
+		mb.mu.Lock()
+		mb.closed = true
+		close(mb.done)
+		mb.mu.Unlock()
+	})
 }
