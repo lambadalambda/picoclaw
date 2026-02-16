@@ -33,6 +33,7 @@ type SubagentManager struct {
 	mu               sync.RWMutex
 	provider         providers.LLMProvider
 	model            string
+	chatOptions      providers.ChatOptions
 	llmTimeout       time.Duration
 	toolTimeout      time.Duration
 	maxParallelTools int
@@ -47,6 +48,7 @@ func NewSubagentManager(provider providers.LLMProvider, model string, workspace 
 		tasks:            make(map[string]*SubagentTask),
 		provider:         provider,
 		model:            model,
+		chatOptions:      providers.ChatOptions{MaxTokens: 4096, Temperature: 0.3},
 		llmTimeout:       120 * time.Second,
 		toolTimeout:      60 * time.Second,
 		maxParallelTools: 4,
@@ -131,6 +133,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 	sm.mu.RLock()
 	maxIterations := sm.maxIterations
 	model := sm.model
+	chatOptions := sm.chatOptions
 	llmTimeout := sm.llmTimeout
 	toolTimeout := sm.toolTimeout
 	maxParallelTools := sm.maxParallelTools
@@ -140,17 +143,12 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask) {
 		model = sm.provider.GetDefaultModel()
 	}
 
-	chatOptions := map[string]interface{}{
-		"max_tokens":  4096,
-		"temperature": 0.3,
-	}
-
 	loopRes, finalErr := llmloop.Run(ctx, llmloop.RunOptions{
 		Provider:      sm.provider,
 		Model:         model,
 		MaxIterations: maxIterations,
 		LLMTimeout:    llmTimeout,
-		ChatOptions:   chatOptions,
+		ChatOptions:   chatOptions.ToMap(),
 		Messages:      messages,
 		BuildToolDefs: func(iteration int, _ []providers.Message) []providers.ToolDefinition {
 			return registry.GetProviderDefinitions()

@@ -85,10 +85,7 @@ func (al *AgentLoop) extractAndStoreMemories(ctx context.Context, messages []pro
 	prompt := fmt.Sprintf(memoryExtractionPrompt, conversation)
 	response, err := al.provider.Chat(extractCtx, []providers.Message{
 		{Role: "user", Content: prompt},
-	}, nil, al.model, map[string]interface{}{
-		"max_tokens":  1024,
-		"temperature": 0.3,
-	})
+	}, nil, al.model, al.compactOptions.ToMap())
 	if err != nil {
 		logger.WarnCF("agent", "Memory extraction failed",
 			map[string]interface{}{"error": err.Error()})

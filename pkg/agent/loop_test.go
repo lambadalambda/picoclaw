@@ -105,14 +105,16 @@ func newTestAgentLoop(t *testing.T, provider providers.LLMProvider, maxIter int,
 	}
 
 	return &AgentLoop{
-		bus:           bus.NewMessageBus(),
-		provider:      provider,
-		workspace:     tmpDir,
-		model:         "test-model",
-		maxIterations: maxIter,
-		sessions:      session.NewSessionManager(filepath.Join(tmpDir, "sessions")),
-		tools:         registry,
-		summarizing:   sync.Map{},
+		bus:            bus.NewMessageBus(),
+		provider:       provider,
+		workspace:      tmpDir,
+		model:          "test-model",
+		chatOptions:    providers.ChatOptions{MaxTokens: 8192, Temperature: 0.7},
+		compactOptions: providers.ChatOptions{MaxTokens: 1024, Temperature: 0.3},
+		maxIterations:  maxIter,
+		sessions:       session.NewSessionManager(filepath.Join(tmpDir, "sessions")),
+		tools:          registry,
+		summarizing:    sync.Map{},
 	}
 }
 

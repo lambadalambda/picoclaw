@@ -32,7 +32,9 @@ type AgentLoop struct {
 	provider         providers.LLMProvider
 	workspace        string
 	model            string
-	contextWindow    int // Maximum context window size in tokens
+	contextWindow    int                   // Maximum context window size in tokens
+	chatOptions      providers.ChatOptions // Standard chat response options
+	compactOptions   providers.ChatOptions // Summarization/extraction options
 	maxIterations    int
 	llmTimeout       time.Duration // Per-LLM-call timeout (0 = disabled)
 	toolTimeout      time.Duration // Per-tool-call timeout (0 = disabled)
@@ -110,12 +112,19 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	contextBuilder := NewContextBuilder(workspace)
 	contextBuilder.SetToolsRegistry(toolsRegistry)
 
+	chatTemperature := cfg.Agents.Defaults.Temperature
+	if chatTemperature == 0 {
+		chatTemperature = 0.7
+	}
+
 	return &AgentLoop{
 		bus:              msgBus,
 		provider:         provider,
 		workspace:        workspace,
 		model:            cfg.Agents.Defaults.Model,
 		contextWindow:    cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
+		chatOptions:      providers.ChatOptions{MaxTokens: 8192, Temperature: chatTemperature},
+		compactOptions:   providers.ChatOptions{MaxTokens: 1024, Temperature: 0.3},
 		maxIterations:    cfg.Agents.Defaults.MaxToolIterations,
 		llmTimeout:       time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds) * time.Second,
 		toolTimeout:      time.Duration(cfg.Agents.Defaults.ToolTimeoutSeconds) * time.Second,
@@ -346,10 +355,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 // runLLMIteration executes the LLM call loop with tool handling.
 // Returns the final content, iteration count, and any error.
 func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.Message, opts processOptions) (string, int, error) {
-	chatOptions := map[string]interface{}{
-		"max_tokens":  8192,
-		"temperature": 0.7,
-	}
+	chatOptions := al.chatOptions.ToMap()
 
 	loopRes, err := llmloop.Run(ctx, llmloop.RunOptions{
 		Provider:      al.provider,
@@ -383,8 +389,8 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 						"model":             al.model,
 						"messages_count":    len(currentMessages),
 						"tools_count":       len(toolDefs),
-						"max_tokens":        chatOptions["max_tokens"],
-						"temperature":       chatOptions["temperature"],
+						"max_tokens":        al.chatOptions.MaxTokens,
+						"temperature":       al.chatOptions.Temperature,
 						"system_prompt_len": systemPromptLen,
 					})
 
@@ -461,10 +467,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			Content: "You've reached your tool call iteration limit. Please summarize what you've accomplished so far and what still needs to be done. The user can tell you to continue.",
 		})
 
-		response, err := providers.ChatWithTimeout(ctx, al.llmTimeout, al.provider, messages, nil, al.model, map[string]interface{}{
-			"max_tokens":  8192,
-			"temperature": 0.7,
-		})
+		response, err := providers.ChatWithTimeout(ctx, al.llmTimeout, al.provider, messages, nil, al.model, al.chatOptions.ToMap())
 		if err != nil {
 			logger.ErrorCF("agent", "Summary call failed after iteration limit",
 				map[string]interface{}{"error": err.Error()})
@@ -621,10 +624,7 @@ func (al *AgentLoop) summarizeSession(sessionKey string) {
 
 		// Merge them
 		mergePrompt := fmt.Sprintf("Merge these two conversation summaries into one cohesive summary:\n\n1: %s\n\n2: %s", s1, s2)
-		resp, err := al.provider.Chat(ctx, []providers.Message{{Role: "user", Content: mergePrompt}}, nil, al.model, map[string]interface{}{
-			"max_tokens":  1024,
-			"temperature": 0.3,
-		})
+		resp, err := al.provider.Chat(ctx, []providers.Message{{Role: "user", Content: mergePrompt}}, nil, al.model, al.compactOptions.ToMap())
 		if err == nil {
 			finalSummary = resp.Content
 		} else {
@@ -659,10 +659,7 @@ func (al *AgentLoop) summarizeBatch(ctx context.Context, batch []providers.Messa
 		prompt += fmt.Sprintf("%s: %s\n", m.Role, m.Content)
 	}
 
-	response, err := al.provider.Chat(ctx, []providers.Message{{Role: "user", Content: prompt}}, nil, al.model, map[string]interface{}{
-		"max_tokens":  1024,
-		"temperature": 0.3,
-	})
+	response, err := al.provider.Chat(ctx, []providers.Message{{Role: "user", Content: prompt}}, nil, al.model, al.compactOptions.ToMap())
 	if err != nil {
 		return "", err
 	}
