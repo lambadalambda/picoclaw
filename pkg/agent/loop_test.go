@@ -914,3 +914,31 @@ func TestProcessSystemMessage_SubagentProgress_IsInternal(t *testing.T) {
 		t.Errorf("history content should look like internal note; got %q", history[0].Content)
 	}
 }
+
+func TestProcessSystemMessage_SubagentCancelled_IsInternal(t *testing.T) {
+	al := newTestAgentLoop(t, &mockProvider{responses: []mockResponse{{Content: "unused"}}}, 1, nil)
+	defer al.bus.Close()
+
+	msg := bus.InboundMessage{
+		Channel:  "system",
+		SenderID: "subagent:subagent-2",
+		ChatID:   "telegram:chat2",
+		Content:  "Task was cancelled",
+		Metadata: map[string]string{"subagent_event": "cancelled"},
+	}
+
+	resp, err := al.processSystemMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("processSystemMessage error: %v", err)
+	}
+	if resp != "" {
+		t.Errorf("response = %q, want empty", resp)
+	}
+
+	// No outbound user message should be published
+	outCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, ok := al.bus.SubscribeOutbound(outCtx); ok {
+		t.Fatal("unexpected outbound message for subagent cancelled event")
+	}
+}

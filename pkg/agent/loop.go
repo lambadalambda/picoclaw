@@ -257,7 +257,7 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 
 		// Progress-like events are internal only: store and return no user response.
 		switch event {
-		case "progress", "note", "warning":
+		case "progress", "note", "warning", "cancelled":
 			internal := fmt.Sprintf("[Internal: %s] %s", msg.SenderID, msg.Content)
 			al.sessions.AddMessage(sessionKey, "assistant", internal)
 			_ = al.sessions.Save(al.sessions.GetOrCreate(sessionKey))

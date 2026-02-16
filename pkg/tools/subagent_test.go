@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,21 @@ func (p *scriptedProvider) Chat(_ context.Context, _ []providers.Message, _ []pr
 }
 
 func (p *scriptedProvider) GetDefaultModel() string { return "test-model" }
+
+type blockingProvider struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (p *blockingProvider) Chat(ctx context.Context, _ []providers.Message, _ []providers.ToolDefinition, _ string, _ map[string]interface{}) (*providers.LLMResponse, error) {
+	p.once.Do(func() {
+		close(p.started)
+	})
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *blockingProvider) GetDefaultModel() string { return "test-model" }
 
 func TestSubagentManager_SubagentReportPublishesInbound(t *testing.T) {
 	msgBus := bus.NewMessageBus()
@@ -95,5 +111,71 @@ func TestSubagentManager_SubagentReportPublishesInbound(t *testing.T) {
 	}
 	if !gotComplete {
 		t.Fatal("expected completion inbound message")
+	}
+}
+
+func TestSubagentManager_CancelRunningTask(t *testing.T) {
+	prov := &blockingProvider{started: make(chan struct{})}
+	sm := NewSubagentManager(prov, "test-model", t.TempDir(), nil)
+
+	taskID, err := sm.Spawn(context.Background(), "do long work", "long", "telegram", "chat1")
+	if err != nil {
+		t.Fatalf("Spawn() error: %v", err)
+	}
+
+	select {
+	case <-prov.started:
+		// task entered provider call
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("subagent did not start provider call")
+	}
+
+	if err := sm.Cancel(taskID); err != nil {
+		t.Fatalf("Cancel() error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		task, ok := sm.GetTask(taskID)
+		if !ok {
+			t.Fatalf("task %s disappeared", taskID)
+		}
+		if task.Status == "cancelled" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected task to become cancelled, current status=%q", task.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestSubagentManager_CancelNotRunning(t *testing.T) {
+	prov := &scriptedProvider{responses: []*providers.LLMResponse{{Content: "done"}}}
+	sm := NewSubagentManager(prov, "test-model", t.TempDir(), nil)
+
+	taskID, err := sm.Spawn(context.Background(), "quick work", "quick", "telegram", "chat1")
+	if err != nil {
+		t.Fatalf("Spawn() error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		task, ok := sm.GetTask(taskID)
+		if !ok {
+			t.Fatalf("task %s disappeared", taskID)
+		}
+		if task.Status == "completed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected task to complete, current status=%q", task.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	err = sm.Cancel(taskID)
+	if !errors.Is(err, ErrSubagentNotRunning) {
+		t.Fatalf("expected ErrSubagentNotRunning, got %v", err)
 	}
 }
