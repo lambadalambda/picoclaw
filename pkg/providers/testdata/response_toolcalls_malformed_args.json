@@ -1,0 +1,25 @@
+{
+  "choices": [
+    {
+      "message": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_bad",
+            "type": "function",
+            "function": {
+              "name": "write_file",
+              "arguments": "{not valid json"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 5,
+    "completion_tokens": 2,
+    "total_tokens": 7
+  }
+}
