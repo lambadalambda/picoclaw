@@ -43,17 +43,27 @@ func (sm *SessionManager) GetOrCreate(key string) *Session {
 	session, ok := sm.sessions[key]
 	sm.mu.RUnlock()
 
-	if !ok {
-		sm.mu.Lock()
-		session = &Session{
-			Key:      key,
-			Messages: []providers.Message{},
-			Created:  time.Now(),
-			Updated:  time.Now(),
-		}
-		sm.sessions[key] = session
-		sm.mu.Unlock()
+	if ok {
+		return session
 	}
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Re-check under write lock to avoid duplicate create/overwrite when
+	// multiple goroutines race on first access.
+	if session, ok = sm.sessions[key]; ok {
+		return session
+	}
+
+	now := time.Now()
+	session = &Session{
+		Key:      key,
+		Messages: []providers.Message{},
+		Created:  now,
+		Updated:  now,
+	}
+	sm.sessions[key] = session
 
 	return session
 }

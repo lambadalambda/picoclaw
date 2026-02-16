@@ -250,3 +250,39 @@ func TestConcurrentAccess(t *testing.T) {
 		}
 	}
 }
+
+func TestGetOrCreate_ConcurrentSameKey_SingleInstance(t *testing.T) {
+	const attempts = 200
+	const workers = 16
+
+	for attempt := 0; attempt < attempts; attempt++ {
+		sm := NewSessionManager("")
+		key := "shared-session"
+
+		start := make(chan struct{})
+		results := make(chan *Session, workers)
+		var wg sync.WaitGroup
+
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				results <- sm.GetOrCreate(key)
+			}()
+		}
+
+		close(start)
+		wg.Wait()
+		close(results)
+
+		unique := make(map[*Session]struct{})
+		for s := range results {
+			unique[s] = struct{}{}
+		}
+
+		if len(unique) != 1 {
+			t.Fatalf("attempt %d: expected exactly 1 session instance, got %d", attempt, len(unique))
+		}
+	}
+}
