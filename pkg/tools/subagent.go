@@ -42,6 +42,7 @@ type SubagentManager struct {
 	provider         providers.LLMProvider
 	model            string
 	chatOptions      providers.ChatOptions
+	messageBudget    providers.MessageBudget
 	llmTimeout       time.Duration
 	toolTimeout      time.Duration
 	maxParallelTools int
@@ -58,6 +59,7 @@ func NewSubagentManager(provider providers.LLMProvider, model string, workspace 
 		provider:         provider,
 		model:            model,
 		chatOptions:      providers.ChatOptions{MaxTokens: 4096, Temperature: 0.3},
+		messageBudget:    providers.BudgetFromContextWindow(8192),
 		llmTimeout:       120 * time.Second,
 		toolTimeout:      60 * time.Second,
 		maxParallelTools: 4,
@@ -84,6 +86,12 @@ func (sm *SubagentManager) ConfigureExecution(llmTimeout, toolTimeout time.Durat
 	if maxIterations > 0 {
 		sm.maxIterations = maxIterations
 	}
+}
+
+func (sm *SubagentManager) ConfigureMessageBudget(budget providers.MessageBudget) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.messageBudget = budget
 }
 
 func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel, originChatID string) (string, error) {
@@ -156,6 +164,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 	maxIterations := sm.maxIterations
 	model := sm.model
 	chatOptions := sm.chatOptions
+	messageBudget := sm.messageBudget
 	llmTimeout := sm.llmTimeout
 	toolTimeout := sm.toolTimeout
 	maxParallelTools := sm.maxParallelTools
@@ -182,6 +191,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 		MaxIterations: maxIterations,
 		LLMTimeout:    llmTimeout,
 		ChatOptions:   chatOptions.ToMap(),
+		MessageBudget: messageBudget,
 		Messages:      messages,
 		BuildToolDefs: func(iteration int, _ []providers.Message) []providers.ToolDefinition {
 			return registry.GetProviderDefinitions()
@@ -205,6 +215,19 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 			})
 		},
 		Hooks: llmloop.Hooks{
+			MessagesBudgeted: func(iteration int, stats providers.MessageBudgetStats) {
+				logger.WarnCF("subagent", "LLM request payload budget applied",
+					map[string]interface{}{
+						"task_id":            initial.ID,
+						"iteration":          iteration,
+						"messages_before":    stats.InputMessages,
+						"messages_after":     stats.OutputMessages,
+						"chars_before":       stats.CharsBefore,
+						"chars_after":        stats.CharsAfter,
+						"truncated_messages": stats.TruncatedMessages,
+						"dropped_messages":   stats.DroppedMessages,
+					})
+			},
 			BeforeLLMCall: func(iteration int, currentMessages []providers.Message, toolDefs []providers.ToolDefinition) {
 				logger.InfoCF("subagent", "Calling LLM",
 					map[string]interface{}{

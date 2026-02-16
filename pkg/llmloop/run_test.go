@@ -3,6 +3,7 @@ package llmloop
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -12,10 +13,14 @@ type mockProvider struct {
 	responses []*providers.LLMResponse
 	err       error
 	calls     int
+	seenMsgs  [][]providers.Message
 }
 
-func (m *mockProvider) Chat(_ context.Context, _ []providers.Message, _ []providers.ToolDefinition, _ string, _ map[string]interface{}) (*providers.LLMResponse, error) {
+func (m *mockProvider) Chat(_ context.Context, messages []providers.Message, _ []providers.ToolDefinition, _ string, _ map[string]interface{}) (*providers.LLMResponse, error) {
 	m.calls++
+	cloned := make([]providers.Message, len(messages))
+	copy(cloned, messages)
+	m.seenMsgs = append(m.seenMsgs, cloned)
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -140,5 +145,71 @@ func TestRun_ProviderError(t *testing.T) {
 	}
 	if !failedCalled {
 		t.Fatal("expected failure hook to be called")
+	}
+}
+
+func TestRun_AppliesMessageBudget_BeforeProviderCall(t *testing.T) {
+	p := &mockProvider{responses: []*providers.LLMResponse{{Content: "ok"}}}
+
+	longTool := strings.Repeat("x", 120)
+	_, err := Run(context.Background(), RunOptions{
+		Provider:      p,
+		Model:         "test-model",
+		MaxIterations: 1,
+		MessageBudget: providers.MessageBudget{
+			MaxToolMessageChars: 24,
+		},
+		Messages: []providers.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "tool", Content: longTool},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(p.seenMsgs) != 1 || len(p.seenMsgs[0]) != 2 {
+		t.Fatalf("unexpected captured messages: %+v", p.seenMsgs)
+	}
+	if got := len(p.seenMsgs[0][1].Content); got > 24 {
+		t.Fatalf("tool message len = %d, want <= 24", got)
+	}
+	if !strings.Contains(p.seenMsgs[0][1].Content, "truncated") {
+		t.Fatalf("expected truncation marker, got %q", p.seenMsgs[0][1].Content)
+	}
+}
+
+func TestRun_AppliesMessageBudget_MaxTotalChars(t *testing.T) {
+	p := &mockProvider{responses: []*providers.LLMResponse{{Content: "ok"}}}
+
+	_, err := Run(context.Background(), RunOptions{
+		Provider:      p,
+		Model:         "test-model",
+		MaxIterations: 1,
+		MessageBudget: providers.MessageBudget{
+			MaxTotalChars:   32,
+			MaxMessageChars: 32,
+		},
+		Messages: []providers.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: strings.Repeat("a", 20)},
+			{Role: "user", Content: strings.Repeat("b", 20)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(p.seenMsgs) != 1 {
+		t.Fatalf("expected 1 captured call, got %d", len(p.seenMsgs))
+	}
+	call := p.seenMsgs[0]
+	if len(call) != 2 {
+		t.Fatalf("expected 2 messages after budgeting, got %d", len(call))
+	}
+	if call[0].Role != "system" {
+		t.Fatalf("first message role = %q, want system", call[0].Role)
+	}
+	if !strings.Contains(call[1].Content, "b") {
+		t.Fatalf("expected latest user message to be kept, got %q", call[1].Content)
 	}
 }

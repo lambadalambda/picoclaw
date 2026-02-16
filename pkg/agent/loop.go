@@ -35,6 +35,7 @@ type AgentLoop struct {
 	contextWindow    int                   // Maximum context window size in tokens
 	chatOptions      providers.ChatOptions // Standard chat response options
 	compactOptions   providers.ChatOptions // Summarization/extraction options
+	messageBudget    providers.MessageBudget
 	maxIterations    int
 	llmTimeout       time.Duration // Per-LLM-call timeout (0 = disabled)
 	toolTimeout      time.Duration // Per-tool-call timeout (0 = disabled)
@@ -87,6 +88,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		cfg.Agents.Defaults.MaxParallelToolCalls,
 		cfg.Agents.Defaults.MaxToolIterations,
 	)
+	subagentManager.ConfigureMessageBudget(providers.BudgetFromContextWindow(cfg.Agents.Defaults.MaxTokens))
 	spawnTool := tools.NewSpawnTool(subagentManager)
 	toolsRegistry.Register(spawnTool)
 
@@ -125,6 +127,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		contextWindow:    cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
 		chatOptions:      providers.ChatOptions{MaxTokens: 8192, Temperature: chatTemperature},
 		compactOptions:   providers.ChatOptions{MaxTokens: 1024, Temperature: 0.3},
+		messageBudget:    providers.BudgetFromContextWindow(cfg.Agents.Defaults.MaxTokens),
 		maxIterations:    cfg.Agents.Defaults.MaxToolIterations,
 		llmTimeout:       time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds) * time.Second,
 		toolTimeout:      time.Duration(cfg.Agents.Defaults.ToolTimeoutSeconds) * time.Second,
@@ -363,6 +366,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		MaxIterations: al.maxIterations,
 		LLMTimeout:    al.llmTimeout,
 		ChatOptions:   chatOptions,
+		MessageBudget: al.messageBudget,
 		Messages:      messages,
 		BuildToolDefs: func(iteration int, _ []providers.Message) []providers.ToolDefinition {
 			return al.tools.GetProviderDefinitions()
@@ -371,6 +375,18 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			return al.executeToolsConcurrently(ctx, toolCalls, iteration, opts)
 		},
 		Hooks: llmloop.Hooks{
+			MessagesBudgeted: func(iteration int, stats providers.MessageBudgetStats) {
+				logger.WarnCF("agent", "LLM request payload budget applied",
+					map[string]interface{}{
+						"iteration":          iteration,
+						"messages_before":    stats.InputMessages,
+						"messages_after":     stats.OutputMessages,
+						"chars_before":       stats.CharsBefore,
+						"chars_after":        stats.CharsAfter,
+						"truncated_messages": stats.TruncatedMessages,
+						"dropped_messages":   stats.DroppedMessages,
+					})
+			},
 			BeforeLLMCall: func(iteration int, currentMessages []providers.Message, toolDefs []providers.ToolDefinition) {
 				logger.DebugCF("agent", "LLM iteration",
 					map[string]interface{}{
@@ -467,7 +483,20 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			Content: "You've reached your tool call iteration limit. Please summarize what you've accomplished so far and what still needs to be done. The user can tell you to continue.",
 		})
 
-		response, err := providers.ChatWithTimeout(ctx, al.llmTimeout, al.provider, messages, nil, al.model, al.chatOptions.ToMap())
+		summaryMessages, summaryBudgetStats := providers.ApplyMessageBudget(messages, al.messageBudget)
+		if summaryBudgetStats.Changed() {
+			logger.WarnCF("agent", "Summary request payload budget applied",
+				map[string]interface{}{
+					"messages_before":    summaryBudgetStats.InputMessages,
+					"messages_after":     summaryBudgetStats.OutputMessages,
+					"chars_before":       summaryBudgetStats.CharsBefore,
+					"chars_after":        summaryBudgetStats.CharsAfter,
+					"truncated_messages": summaryBudgetStats.TruncatedMessages,
+					"dropped_messages":   summaryBudgetStats.DroppedMessages,
+				})
+		}
+
+		response, err := providers.ChatWithTimeout(ctx, al.llmTimeout, al.provider, summaryMessages, nil, al.model, al.chatOptions.ToMap())
 		if err != nil {
 			logger.ErrorCF("agent", "Summary call failed after iteration limit",
 				map[string]interface{}{"error": err.Error()})

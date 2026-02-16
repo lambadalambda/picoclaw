@@ -9,6 +9,7 @@ import (
 
 type Hooks struct {
 	BeforeLLMCall      func(iteration int, messages []providers.Message, toolDefs []providers.ToolDefinition)
+	MessagesBudgeted   func(iteration int, stats providers.MessageBudgetStats)
 	LLMCallFailed      func(iteration int, err error)
 	ToolCallsRequested func(iteration int, toolCalls []providers.ToolCall)
 	DirectResponse     func(iteration int, content string)
@@ -22,6 +23,7 @@ type RunOptions struct {
 	MaxIterations int
 	LLMTimeout    time.Duration
 	ChatOptions   map[string]interface{}
+	MessageBudget providers.MessageBudget
 	Messages      []providers.Message
 
 	BuildToolDefs func(iteration int, messages []providers.Message) []providers.ToolDefinition
@@ -52,21 +54,29 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 
 	for iteration := 1; iteration <= opts.MaxIterations; iteration++ {
 		result.Iterations = iteration
+		requestMessages := result.Messages
+		if opts.MessageBudget.Enabled() {
+			budgeted, stats := providers.ApplyMessageBudget(result.Messages, opts.MessageBudget)
+			requestMessages = budgeted
+			if opts.Hooks.MessagesBudgeted != nil && stats.Changed() {
+				opts.Hooks.MessagesBudgeted(iteration, stats)
+			}
+		}
 
 		var toolDefs []providers.ToolDefinition
 		if opts.BuildToolDefs != nil {
-			toolDefs = opts.BuildToolDefs(iteration, result.Messages)
+			toolDefs = opts.BuildToolDefs(iteration, requestMessages)
 		}
 
 		if opts.Hooks.BeforeLLMCall != nil {
-			opts.Hooks.BeforeLLMCall(iteration, result.Messages, toolDefs)
+			opts.Hooks.BeforeLLMCall(iteration, requestMessages, toolDefs)
 		}
 
 		resp, err := providers.ChatWithTimeout(
 			ctx,
 			opts.LLMTimeout,
 			opts.Provider,
-			result.Messages,
+			requestMessages,
 			toolDefs,
 			opts.Model,
 			opts.ChatOptions,
