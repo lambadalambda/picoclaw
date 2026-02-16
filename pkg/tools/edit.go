@@ -84,7 +84,12 @@ func (t *EditFileTool) Execute(ctx context.Context, args map[string]interface{})
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve allowed directory: %w", err)
 		}
-		if !strings.HasPrefix(resolvedPath, allowedAbs) {
+		allowedAbs = filepath.Clean(allowedAbs)
+		rel, err := filepath.Rel(allowedAbs, resolvedPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to validate allowed directory: %w", err)
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 			return "", fmt.Errorf("path %s is outside allowed directory %s", path, t.allowedDir)
 		}
 	}
