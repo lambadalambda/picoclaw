@@ -254,6 +254,9 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 
 	// If deliver=true, send message directly without agent processing
 	if job.Payload.Deliver {
+		if t.msgBus == nil {
+			return "Error: message bus not configured"
+		}
 		t.msgBus.PublishOutbound(bus.OutboundMessage{
 			Channel: channel,
 			ChatID:  chatID,
@@ -263,6 +266,10 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 	}
 
 	// For deliver=false, process through agent (for complex tasks)
+	if t.executor == nil {
+		return "Error: executor not configured"
+	}
+
 	sessionKey := fmt.Sprintf("cron-%s", job.ID)
 
 	// Call agent with the job's message
