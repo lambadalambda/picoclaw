@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,6 +29,7 @@ const (
 	defaultMaxRetries    = 5                // up to 5 retries (6 attempts total)
 	defaultRetryBaseWait = 1 * time.Second  // base wait before first retry
 	defaultRetryMaxWait  = 60 * time.Second // cap on backoff duration
+	defaultRetryJitter   = 0.2              // +/-20% jitter for non-Retry-After waits
 	defaultHTTPTimeout   = 2 * time.Minute  // safety net; ctx controls cancellation per call
 )
 
@@ -38,6 +40,8 @@ type HTTPProvider struct {
 	maxRetries    int
 	retryBaseWait time.Duration
 	retryMaxWait  time.Duration
+	retryJitter   float64
+	randFloat     func() float64
 	routing       map[string]interface{}
 }
 
@@ -48,6 +52,8 @@ func NewHTTPProvider(apiKey, apiBase string) *HTTPProvider {
 		maxRetries:    defaultMaxRetries,
 		retryBaseWait: defaultRetryBaseWait,
 		retryMaxWait:  defaultRetryMaxWait,
+		retryJitter:   defaultRetryJitter,
+		randFloat:     rand.Float64,
 		httpClient: &http.Client{
 			Timeout: defaultHTTPTimeout,
 		},
@@ -186,6 +192,24 @@ func (p *HTTPProvider) computeRetryWait(attempt int, retryAfterHint time.Duratio
 	wait := p.retryBaseWait * time.Duration(1<<(attempt-1)) // exponential: 1s, 2s, 4s, 8s, 16s
 	if wait > p.retryMaxWait {
 		wait = p.retryMaxWait
+	}
+
+	if !hasRetryAfterHint && p.retryJitter > 0 {
+		rf := p.randFloat
+		if rf == nil {
+			rf = rand.Float64
+		}
+		factor := 1 + (rf()*2-1)*p.retryJitter
+		if factor < 0 {
+			factor = 0
+		}
+		wait = time.Duration(float64(wait) * factor)
+		if wait <= 0 {
+			wait = time.Millisecond
+		}
+		if wait > p.retryMaxWait {
+			wait = p.retryMaxWait
+		}
 	}
 
 	if hasRetryAfterHint {

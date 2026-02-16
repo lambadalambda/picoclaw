@@ -66,6 +66,7 @@ func newTestProvider(apiKey, apiBase string) *HTTPProvider {
 	p := NewHTTPProvider(apiKey, apiBase)
 	p.retryBaseWait = 1 * time.Millisecond
 	p.retryMaxWait = 10 * time.Millisecond
+	p.retryJitter = 0
 	return p
 }
 
@@ -494,5 +495,31 @@ func TestParseRetryAfterHeader_HTTPDate(t *testing.T) {
 func TestParseRetryAfterHeader_Invalid(t *testing.T) {
 	if d, ok := parseRetryAfterHeader("not-a-date"); ok {
 		t.Fatalf("expected ok=false for invalid header, got duration %v", d)
+	}
+}
+
+func TestComputeRetryWait_AppliesJitterWhenNoRetryAfter(t *testing.T) {
+	p := newTestProvider("test-key", "https://example.com")
+	p.retryBaseWait = 100 * time.Millisecond
+	p.retryMaxWait = 5 * time.Second
+	p.retryJitter = 0.5
+	p.randFloat = func() float64 { return 1.0 } // max positive jitter
+
+	wait := p.computeRetryWait(1, 0, false)
+	if wait < 149*time.Millisecond || wait > 151*time.Millisecond {
+		t.Fatalf("wait = %v, want about 150ms", wait)
+	}
+}
+
+func TestComputeRetryWait_DoesNotJitterRetryAfterHint(t *testing.T) {
+	p := newTestProvider("test-key", "https://example.com")
+	p.retryBaseWait = 100 * time.Millisecond
+	p.retryMaxWait = 5 * time.Second
+	p.retryJitter = 0.9
+	p.randFloat = func() float64 { return 0.0 } // would reduce wait if jitter were applied
+
+	wait := p.computeRetryWait(1, 400*time.Millisecond, true)
+	if wait != 400*time.Millisecond {
+		t.Fatalf("wait = %v, want 400ms", wait)
 	}
 }
