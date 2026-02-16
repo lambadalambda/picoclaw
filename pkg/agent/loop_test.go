@@ -75,9 +75,11 @@ type noopTool struct {
 	result string
 }
 
-func (t *noopTool) Name() string                       { return t.name }
-func (t *noopTool) Description() string                { return "test tool" }
-func (t *noopTool) Parameters() map[string]interface{} { return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}} }
+func (t *noopTool) Name() string        { return t.name }
+func (t *noopTool) Description() string { return "test tool" }
+func (t *noopTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+}
 func (t *noopTool) Execute(_ context.Context, _ map[string]interface{}) (string, error) {
 	return t.result, nil
 }
@@ -446,8 +448,22 @@ type slowTool struct {
 	finished atomic.Int32
 }
 
+// panicTool simulates a buggy tool implementation that panics during Execute.
+type panicTool struct {
+	name string
+}
+
+func (t *panicTool) Name() string        { return t.name }
+func (t *panicTool) Description() string { return "panic test tool" }
+func (t *panicTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+}
+func (t *panicTool) Execute(_ context.Context, _ map[string]interface{}) (string, error) {
+	panic("boom")
+}
+
 func (t *slowTool) Name() string        { return t.name }
-func (t *slowTool) Description() string  { return "slow test tool" }
+func (t *slowTool) Description() string { return "slow test tool" }
 func (t *slowTool) Parameters() map[string]interface{} {
 	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 }
@@ -620,6 +636,55 @@ func TestRunLLMIteration_ParallelToolNoLeakedToolNames(t *testing.T) {
 		if containsStr(msg.Content, "tool_a") || containsStr(msg.Content, "tool_b") {
 			t.Errorf("outbound message leaked tool name to user: %q", msg.Content)
 		}
+	}
+}
+
+func TestRunLLMIteration_ParallelToolPanic_Recovered(t *testing.T) {
+	prov := &mockProvider{
+		responses: []mockResponse{
+			{ToolCalls: []providers.ToolCall{
+				{ID: "tc1", Name: "panic_tool", Arguments: map[string]interface{}{}},
+			}},
+			{Content: "Recovered and continued."},
+		},
+	}
+
+	al := newTestAgentLoop(t, prov, 5, []tools.Tool{&panicTool{name: "panic_tool"}})
+	defer al.bus.Close()
+
+	messages := []providers.Message{
+		{Role: "system", Content: "test"},
+		{Role: "user", Content: "run panic tool"},
+	}
+	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	content, _, err := al.runLLMIteration(ctx, messages, opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "Recovered and continued." {
+		t.Errorf("content = %q, want %q", content, "Recovered and continued.")
+	}
+
+	// Ensure the second provider call received a tool error result rather than crashing.
+	calls := prov.getCalls()
+	if len(calls) < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", len(calls))
+	}
+	foundToolResult := false
+	for _, msg := range calls[1].Messages {
+		if msg.Role == "tool" && msg.ToolCallID == "tc1" {
+			foundToolResult = true
+			if !containsStr(msg.Content, "panic") {
+				t.Errorf("tool result should mention panic, got %q", msg.Content)
+			}
+		}
+	}
+	if !foundToolResult {
+		t.Fatal("expected tool result message for panicking tool")
 	}
 }
 

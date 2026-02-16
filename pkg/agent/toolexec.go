@@ -41,7 +41,20 @@ func (al *AgentLoop) executeToolsConcurrently(
 	for i, tc := range toolCalls {
 		wg.Add(1)
 		go func(idx int, tc providers.ToolCall) {
-			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					result := fmt.Sprintf("Error: tool %s panicked: %v", tc.Name, r)
+					logger.ErrorCF("agent", "Recovered panic in tool execution",
+						map[string]interface{}{
+							"tool":      tc.Name,
+							"iteration": iteration,
+							"panic":     fmt.Sprintf("%v", r),
+						})
+					results[idx] = providers.ToolResultMessage(tc.ID, result)
+				}
+				doneCh <- idx
+				wg.Done()
+			}()
 
 			// Log tool call
 			argsJSON, _ := json.Marshal(tc.Arguments)
@@ -58,8 +71,6 @@ func (al *AgentLoop) executeToolsConcurrently(
 			}
 
 			results[idx] = providers.ToolResultMessage(tc.ID, result)
-
-			doneCh <- idx
 		}(i, tc)
 	}
 
