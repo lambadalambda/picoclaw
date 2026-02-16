@@ -13,6 +13,7 @@ type HeartbeatService struct {
 	onHeartbeat func(string) (string, error)
 	interval    time.Duration
 	enabled     bool
+	running     bool
 	mu          sync.RWMutex
 	stopChan    chan struct{}
 }
@@ -31,7 +32,7 @@ func (hs *HeartbeatService) Start() error {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
-	if hs.running() {
+	if hs.running {
 		return nil
 	}
 
@@ -39,7 +40,10 @@ func (hs *HeartbeatService) Start() error {
 		return fmt.Errorf("heartbeat service is disabled")
 	}
 
-	go hs.runLoop()
+	// Recreate stop channel on each start so Stop->Start works.
+	hs.stopChan = make(chan struct{})
+	hs.running = true
+	go hs.runLoop(hs.stopChan)
 
 	return nil
 }
@@ -48,29 +52,27 @@ func (hs *HeartbeatService) Stop() {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
-	if !hs.running() {
+	if !hs.running {
 		return
 	}
 
-	close(hs.stopChan)
-}
-
-func (hs *HeartbeatService) running() bool {
-	select {
-	case <-hs.stopChan:
-		return false
-	default:
-		return true
+	hs.running = false
+	if hs.stopChan != nil {
+		close(hs.stopChan)
 	}
 }
 
-func (hs *HeartbeatService) runLoop() {
+func (hs *HeartbeatService) isRunning() bool {
+	return hs.running
+}
+
+func (hs *HeartbeatService) runLoop(stopChan <-chan struct{}) {
 	ticker := time.NewTicker(hs.interval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-hs.stopChan:
+		case <-stopChan:
 			return
 		case <-ticker.C:
 			hs.checkHeartbeat()
@@ -80,7 +82,7 @@ func (hs *HeartbeatService) runLoop() {
 
 func (hs *HeartbeatService) checkHeartbeat() {
 	hs.mu.RLock()
-	if !hs.enabled || !hs.running() {
+	if !hs.enabled || !hs.isRunning() {
 		hs.mu.RUnlock()
 		return
 	}
