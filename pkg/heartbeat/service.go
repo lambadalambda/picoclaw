@@ -39,6 +39,9 @@ func (hs *HeartbeatService) Start() error {
 	if !hs.enabled {
 		return fmt.Errorf("heartbeat service is disabled")
 	}
+	if hs.interval <= 0 {
+		return fmt.Errorf("heartbeat interval must be greater than 0")
+	}
 
 	// Recreate stop channel on each start so Stop->Start works.
 	hs.stopChan = make(chan struct{})

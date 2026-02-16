@@ -50,3 +50,13 @@ func TestHeartbeatService_StartAfterStop_RecreatesStopChannel(t *testing.T) {
 		t.Fatal("expected heartbeat callback after Stop+Start")
 	}
 }
+
+func TestHeartbeatService_StartWithNonPositiveInterval_ReturnsError(t *testing.T) {
+	hs := NewHeartbeatService(t.TempDir(), func(prompt string) (string, error) {
+		return "ok", nil
+	}, 0, true)
+
+	if err := hs.Start(); err == nil {
+		t.Fatal("expected error for non-positive heartbeat interval")
+	}
+}
