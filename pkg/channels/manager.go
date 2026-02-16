@@ -160,6 +160,11 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.dispatchTask != nil {
+		logger.DebugC("channels", "StartAll called while already running; ignoring")
+		return nil
+	}
+
 	if len(m.channels) == 0 {
 		logger.WarnC("channels", "No channels enabled")
 		return nil
