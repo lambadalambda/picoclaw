@@ -94,6 +94,8 @@ patch_config '.providers.openai.api_key'     "${PICOCLAW_PROVIDERS_OPENAI_API_KE
 patch_config '.providers.openai.api_base'    "${PICOCLAW_PROVIDERS_OPENAI_API_BASE:-}"
 patch_config '.providers.groq.api_key'       "${PICOCLAW_PROVIDERS_GROQ_API_KEY:-}"
 patch_config '.providers.groq.api_base'      "${PICOCLAW_PROVIDERS_GROQ_API_BASE:-}"
+patch_config '.providers.modal.api_key'      "${PICOCLAW_PROVIDERS_MODAL_API_KEY:-}"
+patch_config '.providers.modal.api_base'     "${PICOCLAW_PROVIDERS_MODAL_API_BASE:-}"
 patch_config '.providers.zhipu.api_key'      "${PICOCLAW_PROVIDERS_ZHIPU_API_KEY:-}"
 patch_config '.providers.zhipu.api_base'     "${PICOCLAW_PROVIDERS_ZHIPU_API_BASE:-}"
 patch_config '.providers.gemini.api_key'     "${PICOCLAW_PROVIDERS_GEMINI_API_KEY:-}"

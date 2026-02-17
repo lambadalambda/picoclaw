@@ -500,6 +500,13 @@ func CreateProvider(cfg *config.Config) (LLMProvider, error) {
 			apiBase = "https://api.groq.com/openai/v1"
 		}
 
+	case (strings.Contains(lowerModel, "glm-5") || strings.HasPrefix(lowerModel, "zai-org/")) && cfg.Providers.Modal.APIKey != "":
+		apiKey = cfg.Providers.Modal.APIKey
+		apiBase = cfg.Providers.Modal.APIBase
+		if apiBase == "" {
+			apiBase = "https://api.us-west-2.modal.direct/v1"
+		}
+
 	case cfg.Providers.VLLM.APIBase != "":
 		apiKey = cfg.Providers.VLLM.APIKey
 		apiBase = cfg.Providers.VLLM.APIBase

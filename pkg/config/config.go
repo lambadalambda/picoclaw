@@ -110,6 +110,7 @@ type ProvidersConfig struct {
 	OpenAI     ProviderConfig `json:"openai"`
 	OpenRouter ProviderConfig `json:"openrouter"`
 	Groq       ProviderConfig `json:"groq"`
+	Modal      ProviderConfig `json:"modal"`
 	Zhipu      ProviderConfig `json:"zhipu"`
 	VLLM       ProviderConfig `json:"vllm"`
 	Gemini     ProviderConfig `json:"gemini"`
@@ -222,6 +223,7 @@ func DefaultConfig() *Config {
 			OpenAI:     ProviderConfig{},
 			OpenRouter: ProviderConfig{},
 			Groq:       ProviderConfig{},
+			Modal:      ProviderConfig{},
 			Zhipu:      ProviderConfig{},
 			VLLM:       ProviderConfig{},
 			Gemini:     ProviderConfig{},
@@ -313,6 +315,9 @@ func (c *Config) GetAPIKey() string {
 	if c.Providers.Groq.APIKey != "" {
 		return c.Providers.Groq.APIKey
 	}
+	if c.Providers.Modal.APIKey != "" {
+		return c.Providers.Modal.APIKey
+	}
 	if c.Providers.VLLM.APIKey != "" {
 		return c.Providers.VLLM.APIKey
 	}
@@ -330,6 +335,12 @@ func (c *Config) GetAPIBase() string {
 	}
 	if c.Providers.Zhipu.APIKey != "" {
 		return c.Providers.Zhipu.APIBase
+	}
+	if c.Providers.Modal.APIKey != "" {
+		if c.Providers.Modal.APIBase != "" {
+			return c.Providers.Modal.APIBase
+		}
+		return "https://api.us-west-2.modal.direct/v1"
 	}
 	if c.Providers.VLLM.APIKey != "" && c.Providers.VLLM.APIBase != "" {
 		return c.Providers.VLLM.APIBase

@@ -10,6 +10,7 @@
 | Orchestration | Parallel tools, bounded concurrency, per-call timeouts |
 | Background Work | Subagents with `spawn/status/list/cancel` controls |
 | Reliability | Retry-After aware retries, jittered backoff, panic-safe tool workers |
+| Model Endpoints | OpenAI-compatible providers, including Modal GLM-5 |
 | Safety | Optional tool policy (`allow`/`deny` + safe mode) |
 | Scalability | Payload budgeting before provider calls + configurable retention |
 

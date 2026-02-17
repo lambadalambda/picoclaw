@@ -71,6 +71,33 @@ Common examples:
 - `providers.openrouter.api_key`
 - `providers.openai.api_key`
 - `providers.anthropic.api_key`
+- `providers.modal.api_key`
+
+### Modal GLM-5
+
+This fork supports Modal's OpenAI-compatible GLM-5 endpoint.
+
+Recommended model and provider settings:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "model": "zai-org/GLM-5-FP8"
+    }
+  },
+  "providers": {
+    "modal": {
+      "api_key": "YOUR_MODAL_API_KEY",
+      "api_base": "https://api.us-west-2.modal.direct/v1"
+    }
+  }
+}
+```
+
+If `providers.modal.api_base` is omitted, this default is used:
+
+- `https://api.us-west-2.modal.direct/v1`
 
 ## Channels
 

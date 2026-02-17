@@ -77,6 +77,10 @@
       "api_key": "gsk_xxx",
       "api_base": ""
     },
+    "modal": {
+      "api_key": "YOUR_MODAL_API_KEY",
+      "api_base": "https://api.us-west-2.modal.direct/v1"
+    },
     "zhipu": {
       "api_key": "YOUR_ZHIPU_API_KEY",
       "api_base": ""
