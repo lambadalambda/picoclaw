@@ -148,10 +148,10 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 			continue
 		}
 
-		// Non-OK status: retry on 5xx and 429, fail immediately on other 4xx
+		// Non-OK status: retry on retryable HTTP errors, fail immediately otherwise.
 		if statusCode != http.StatusOK {
 			lastErr = fmt.Errorf("API error (HTTP %d): %s", statusCode, utils.Truncate(string(body), 500))
-			if isRetryableStatus(statusCode) {
+			if isRetryableHTTPError(statusCode, body) {
 				retryAfterHint = retryAfter
 				hasRetryAfterHint = hasRetryAfter
 				continue // retryable
@@ -228,8 +228,31 @@ func (p *HTTPProvider) computeRetryWait(attempt int, retryAfterHint time.Duratio
 	return wait
 }
 
-func isRetryableStatus(statusCode int) bool {
-	return statusCode == http.StatusTooManyRequests || statusCode >= 500
+func isRetryableHTTPError(statusCode int, body []byte) bool {
+	if statusCode == http.StatusTooManyRequests || statusCode >= 500 {
+		return true
+	}
+
+	// OpenRouter sometimes transiently returns HTTP 401 with
+	// "User not found." even for valid credentials. Treat it as retryable.
+	if statusCode == http.StatusUnauthorized {
+		var payload struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &payload); err == nil {
+			if strings.Contains(strings.ToLower(payload.Error.Message), "user not found") {
+				return true
+			}
+		}
+		// Fallback for non-standard payload shapes.
+		if strings.Contains(strings.ToLower(string(body)), "user not found") {
+			return true
+		}
+	}
+
+	return false
 }
 
 func parseRetryAfterHeader(header string) (time.Duration, bool) {

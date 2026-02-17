@@ -318,6 +318,56 @@ func TestChat_RetryAfterHeaderRespectsRetryMaxWait(t *testing.T) {
 	}
 }
 
+// TestChat_RetryOnTransientHTTP401UserNotFound verifies that OpenRouter-style
+// transient 401 "User not found" responses are retried.
+func TestChat_RetryOnTransientHTTP401UserNotFound(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n < 2 {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error":{"message":"User not found.","code":401}}`)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, validResponse("after transient 401"))
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider("test-key", srv.URL)
+	resp, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if resp.Content != "after transient 401" {
+		t.Fatalf("expected content 'after transient 401', got: %q", resp.Content)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected 2 calls, got: %d", calls.Load())
+	}
+}
+
+// TestChat_NoRetryOnHTTP401Other verifies that regular unauthorized responses
+// are still treated as non-retryable client errors.
+func TestChat_NoRetryOnHTTP401Other(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":{"message":"invalid api key","code":401}}`)
+	}))
+	defer srv.Close()
+
+	p := newTestProvider("test-key", srv.URL)
+	_, err := p.Chat(context.Background(), newTestMessages(), nil, "test-model", newTestOptions())
+	if err == nil {
+		t.Fatal("expected error for 401, got nil")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected exactly 1 call (no retry), got: %d", calls.Load())
+	}
+}
+
 // TestChat_NoRetryOnHTTP400 verifies that client errors (4xx, not 429) are NOT retried.
 func TestChat_NoRetryOnHTTP400(t *testing.T) {
 	var calls atomic.Int32
