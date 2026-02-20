@@ -61,6 +61,22 @@ Behavior:
 - if `allow` is non-empty, only allowlisted tools run
 - `safe_mode` adds default deny on risky tools (`exec`, `write_file`, `edit_file`)
 
+## Web Search Backends
+
+`tools.web.search` supports multiple backends for the `web_search` tool:
+
+- `api_key` (Brave key)
+- `provider` (`auto`, `brave`, `zai`)
+- `zai_api_key`
+- `zai_api_base` (default used by tool: `https://api.z.ai/api`)
+- `zai_search_engine` (default: `search-prime`)
+
+Behavior:
+
+- `provider=auto`: use Z.AI only when `zai_api_key` is set; otherwise use Brave
+- `provider=brave`: force Brave backend
+- `provider=zai`: force Z.AI backend
+
 ## Providers
 
 Configure provider keys under `providers.*`.

@@ -103,7 +103,11 @@
     "web": {
       "search": {
         "api_key": "YOUR_BRAVE_API_KEY",
-        "max_results": 5
+        "max_results": 5,
+        "provider": "auto",
+        "zai_api_key": "",
+        "zai_api_base": "",
+        "zai_search_engine": "search-prime"
       }
     },
     "policy": {
