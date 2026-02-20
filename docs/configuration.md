@@ -73,9 +73,12 @@ Behavior:
 
 Behavior:
 
-- `provider=auto`: use Z.AI only when `zai_api_key` is set; otherwise use Brave
+- `provider=auto`: prefer Z.AI when any Z.AI-compatible key exists (`zai_api_key`, `providers.zhipu.api_key`, then `providers.modal.api_key`); otherwise use Brave
 - `provider=brave`: force Brave backend
 - `provider=zai`: force Z.AI backend
+- `provider=auto` with both keys configured: if Z.AI search fails, fallback to Brave for that request
+
+If `zai_api_base` is not set, PicoClaw reuses `providers.zhipu.api_base` when available (including normalizing `/paas/v4` or `/coding/paas/v4` style bases for search).
 
 ## Providers
 
