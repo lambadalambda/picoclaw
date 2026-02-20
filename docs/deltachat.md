@@ -79,6 +79,14 @@ Example:
 /react 12345 👍
 ```
 
+- Outbound profile picture updates are supported with:
+
+```text
+/set_profile_picture <path>
+```
+
+You can also send `/set_profile_picture` with `media: ["<path>"]`; the first media path is used as the avatar image.
+
 ## Bring Your Own Credentials
 
 Instead of onboarding QR setup, you can provide explicit credentials:
