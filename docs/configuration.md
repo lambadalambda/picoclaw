@@ -14,7 +14,7 @@ Base template:
 | Key | Purpose |
 |---|---|
 | `agents.defaults.model` | LLM model name |
-| `agents.defaults.max_tokens` | Context window estimate used for compaction/budget defaults |
+| `agents.defaults.max_tokens` | Context window estimate used for compaction heuristics |
 | `agents.defaults.max_tool_iterations` | Tool loop cap per turn |
 | `agents.defaults.llm_timeout_seconds` | Per-LLM-call timeout |
 | `agents.defaults.tool_timeout_seconds` | Per-tool-call timeout |
@@ -22,14 +22,14 @@ Base template:
 
 ## Request Payload Budgeting
 
-These prevent oversized requests to providers:
+These optional limits prevent oversized requests to providers:
 
 - `agents.defaults.request_max_messages`
 - `agents.defaults.request_max_total_chars`
 - `agents.defaults.request_max_message_chars`
 - `agents.defaults.request_max_tool_message_chars`
 
-Set to `0` to use auto-derived defaults from `max_tokens`.
+Budgeting is disabled by default. Set one or more values above `0` to enable it.
 
 ## Subagent Retention
 

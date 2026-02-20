@@ -967,3 +967,12 @@ func TestMessageBudgetFromDefaults_AppliesOverrides(t *testing.T) {
 		t.Fatalf("MaxToolMessageChars = %d, want 321", b.MaxToolMessageChars)
 	}
 }
+
+func TestMessageBudgetFromDefaults_DefaultsDisabled(t *testing.T) {
+	d := config.AgentDefaults{MaxTokens: 8192}
+	b := messageBudgetFromDefaults(d)
+
+	if b.Enabled() {
+		t.Fatalf("expected request budget disabled by default, got %+v", b)
+	}
+}

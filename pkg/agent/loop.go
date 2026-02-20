@@ -554,7 +554,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 }
 
 func messageBudgetFromDefaults(d config.AgentDefaults) providers.MessageBudget {
-	budget := providers.BudgetFromContextWindow(d.MaxTokens)
+	budget := providers.MessageBudget{}
 	if d.RequestMaxMessages > 0 {
 		budget.MaxMessages = d.RequestMaxMessages
 	}
