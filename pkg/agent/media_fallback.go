@@ -46,7 +46,7 @@ func (al *AgentLoop) buildUserMessageWithMediaContext(ctx context.Context, conte
 		return strings.Join(parts, "\n")
 	}
 
-	if al.modelCapabilities.SupportsVision {
+	if al.modelCapabilities.SupportsVision && al.modelCapabilities.SupportsInlineVision {
 		return strings.Join(parts, "\n")
 	}
 

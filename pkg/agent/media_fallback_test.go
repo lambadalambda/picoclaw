@@ -65,7 +65,30 @@ func TestBuildUserMessageWithMediaContext_NoAnalyzerAddsNotice(t *testing.T) {
 	}
 }
 
-func TestBuildUserMessageWithMediaContext_VisionModelSkipsFallback(t *testing.T) {
+func TestBuildUserMessageWithMediaContext_VisionModelWithoutInlineTransportUsesFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	imagePath := filepath.Join(tmpDir, "input.webp")
+	if err := os.WriteFile(imagePath, []byte("webp"), 0644); err != nil {
+		t.Fatalf("failed to write image fixture: %v", err)
+	}
+
+	analyzer := &stubVisionAnalyzer{result: "Detected a settings dialog."}
+	al := &AgentLoop{
+		modelCapabilities: providers.ModelCapabilities{SupportsVision: true},
+		visionAnalyzer:    analyzer,
+	}
+
+	got := al.buildUserMessageWithMediaContext(context.Background(), "Describe", []string{imagePath}, "trace-test")
+
+	if analyzer.calls != 1 {
+		t.Fatalf("analyzer call count = %d, want 1", analyzer.calls)
+	}
+	if !strings.Contains(got, "Automatic image analysis") {
+		t.Fatalf("message should include fallback section, got: %q", got)
+	}
+}
+
+func TestBuildUserMessageWithMediaContext_VisionModelWithInlineTransportSkipsFallback(t *testing.T) {
 	tmpDir := t.TempDir()
 	imagePath := filepath.Join(tmpDir, "input.webp")
 	if err := os.WriteFile(imagePath, []byte("webp"), 0644); err != nil {
@@ -74,7 +97,7 @@ func TestBuildUserMessageWithMediaContext_VisionModelSkipsFallback(t *testing.T)
 
 	analyzer := &stubVisionAnalyzer{result: "should not be called"}
 	al := &AgentLoop{
-		modelCapabilities: providers.ModelCapabilities{SupportsVision: true},
+		modelCapabilities: providers.ModelCapabilities{SupportsVision: true, SupportsInlineVision: true},
 		visionAnalyzer:    analyzer,
 	}
 
@@ -84,6 +107,6 @@ func TestBuildUserMessageWithMediaContext_VisionModelSkipsFallback(t *testing.T)
 		t.Fatalf("analyzer call count = %d, want 0", analyzer.calls)
 	}
 	if strings.Contains(got, "Automatic image analysis") {
-		t.Fatalf("vision-capable model should skip fallback section, got: %q", got)
+		t.Fatalf("inline-vision model should skip fallback section, got: %q", got)
 	}
 }
