@@ -69,6 +69,7 @@ Behavior:
 - `provider` (`auto`, `brave`, `zai`)
 - `zai_api_key`
 - `zai_api_base` (default used by tool: `https://api.z.ai/api`)
+- `zai_mcp_url` (default: `https://api.z.ai/api/mcp/web_search_prime/mcp`)
 - `zai_search_engine` (default: `search-prime`)
 
 Behavior:
@@ -76,7 +77,8 @@ Behavior:
 - `provider=auto`: prefer Z.AI when any Z.AI-compatible key exists (`zai_api_key`, `providers.zhipu.api_key`, then `providers.modal.api_key`); otherwise use Brave
 - `provider=brave`: force Brave backend
 - `provider=zai`: force Z.AI backend
-- `provider=auto` with both keys configured: if Z.AI search fails, fallback to Brave for that request
+- Z.AI backend tries MCP first (`zai_mcp_url`) and then direct API (`/paas/v4/web_search`)
+- `provider=auto` with both keys configured: if Z.AI search still fails, fallback to Brave for that request
 
 If `zai_api_base` is not set, PicoClaw reuses `providers.zhipu.api_base` when available (including normalizing `/paas/v4` or `/coding/paas/v4` style bases for search).
 
