@@ -78,3 +78,16 @@ Important host paths:
 ```bash
 docker compose exec picoclaw picoclaw agent
 ```
+
+## Optional DeltaChat Sidecar
+
+This repo ships an optional `deltachat-bridge` service under the `deltachat` profile.
+
+```bash
+docker compose --profile deltachat up -d --build
+docker compose logs -f deltachat-bridge
+```
+
+Set `channels.deltachat.bridge_url` to `ws://deltachat-bridge:3100` in `picoclaw-home/config.json`.
+For onboarding with nine.testrun.org, set `DELTACHAT_SETUP_QR=DCACCOUNT:https://nine.testrun.org/new` in `.env`.
+If PicoClaw started before the bridge was ready, run `docker compose restart picoclaw` once.

@@ -47,6 +47,7 @@ docker compose exec picoclaw picoclaw agent -m "hello"
 |---|---|
 | [`docs/docker.md`](docs/docker.md) | Full Docker setup, data persistence, lifecycle commands |
 | [`docs/configuration.md`](docs/configuration.md) | Config reference and important tuning knobs |
+| [`docs/deltachat.md`](docs/deltachat.md) | DeltaChat bridge setup (including nine.testrun.org onboarding) |
 | [`docs/features.md`](docs/features.md) | Capability overview, architecture, subagents |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Common errors and fixes |
 

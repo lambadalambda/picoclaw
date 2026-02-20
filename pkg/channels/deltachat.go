@@ -24,6 +24,50 @@ type DeltaChatChannel struct {
 	connected bool
 }
 
+func (c *DeltaChatChannel) connect() error {
+	dialer := websocket.DefaultDialer
+	dialer.HandshakeTimeout = 10 * time.Second
+
+	conn, _, err := dialer.Dial(c.url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to connect to DeltaChat bridge: %w", err)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn != nil {
+		if err := conn.Close(); err != nil {
+			logger.ErrorCF("deltachat", "Error closing redundant DeltaChat connection", map[string]interface{}{"error": err.Error()})
+		}
+		return nil
+	}
+
+	c.conn = conn
+	c.connected = true
+
+	logger.InfoCF("deltachat", "DeltaChat channel connected", nil)
+	return nil
+}
+
+func (c *DeltaChatChannel) markDisconnected(conn *websocket.Conn) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if conn != nil && c.conn != conn {
+		return
+	}
+
+	if c.conn != nil {
+		if err := c.conn.Close(); err != nil {
+			logger.ErrorCF("deltachat", "Error closing DeltaChat connection", map[string]interface{}{"error": err.Error()})
+		}
+		c.conn = nil
+	}
+
+	c.connected = false
+}
+
 func NewDeltaChatChannel(cfg config.DeltaChatConfig, bus *bus.MessageBus) (*DeltaChatChannel, error) {
 	base := NewBaseChannel("deltachat", cfg, bus, cfg.AllowFrom)
 
@@ -38,21 +82,11 @@ func NewDeltaChatChannel(cfg config.DeltaChatConfig, bus *bus.MessageBus) (*Delt
 func (c *DeltaChatChannel) Start(ctx context.Context) error {
 	logger.InfoCF("deltachat", "Starting DeltaChat channel", map[string]interface{}{"url": c.url})
 
-	dialer := websocket.DefaultDialer
-	dialer.HandshakeTimeout = 10 * time.Second
-
-	conn, _, err := dialer.Dial(c.url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to connect to DeltaChat bridge: %w", err)
+	if err := c.connect(); err != nil {
+		return err
 	}
 
-	c.mu.Lock()
-	c.conn = conn
-	c.connected = true
-	c.mu.Unlock()
-
 	c.setRunning(true)
-	logger.InfoCF("deltachat", "DeltaChat channel connected", nil)
 
 	go c.listen(ctx)
 
@@ -80,10 +114,21 @@ func (c *DeltaChatChannel) Stop(ctx context.Context) error {
 
 func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	conn := c.conn
+	c.mu.Unlock()
 
-	if c.conn == nil {
-		return fmt.Errorf("deltachat connection not established")
+	if conn == nil {
+		if err := c.connect(); err != nil {
+			return err
+		}
+
+		c.mu.Lock()
+		conn = c.conn
+		c.mu.Unlock()
+
+		if conn == nil {
+			return fmt.Errorf("deltachat connection not established")
+		}
 	}
 
 	payload := map[string]interface{}{
@@ -100,7 +145,26 @@ func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) er
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	c.mu.Lock()
+	if c.conn == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("deltachat connection not established")
+	}
+
+	conn = c.conn
+	err = conn.WriteMessage(websocket.TextMessage, data)
+	if err != nil {
+		if c.conn == conn {
+			c.conn = nil
+			c.connected = false
+		}
+	}
+	c.mu.Unlock()
+
+	if err != nil {
+		if closeErr := conn.Close(); closeErr != nil {
+			logger.ErrorCF("deltachat", "Error closing DeltaChat connection after send failure", map[string]interface{}{"error": closeErr.Error()})
+		}
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 
@@ -118,13 +182,17 @@ func (c *DeltaChatChannel) listen(ctx context.Context) {
 			c.mu.Unlock()
 
 			if conn == nil {
-				time.Sleep(1 * time.Second)
+				if err := c.connect(); err != nil {
+					logger.ErrorCF("deltachat", "DeltaChat reconnect failed", map[string]interface{}{"error": err.Error()})
+					time.Sleep(2 * time.Second)
+				}
 				continue
 			}
 
 			_, message, err := conn.ReadMessage()
 			if err != nil {
 				logger.ErrorCF("deltachat", "DeltaChat read error", map[string]interface{}{"error": err.Error()})
+				c.markDisconnected(conn)
 				time.Sleep(2 * time.Second)
 				continue
 			}

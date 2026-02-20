@@ -26,6 +26,19 @@ docker compose exec picoclaw picoclaw status
 messaging channels (Telegram, Discord, Slack, etc.) by setting the
 appropriate variables in `.env` or editing the config directly.
 
+### DeltaChat bridge mode (optional)
+
+Run the optional DeltaChat sidecar profile:
+
+```bash
+docker compose --profile deltachat up -d --build
+docker compose logs -f deltachat-bridge
+```
+
+When using this sidecar, set `channels.deltachat.bridge_url` to
+`ws://deltachat-bridge:3100` in `picoclaw-home/config.json`.
+If PicoClaw started before the bridge finished booting, run `docker compose restart picoclaw` once.
+
 ### Interactive chat
 
 ```bash

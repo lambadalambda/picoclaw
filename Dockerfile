@@ -38,6 +38,9 @@ ENV PATH="/opt/picoclaw/bin:${PATH}"
 # Copy builtin skills
 COPY skills/ /opt/picoclaw/builtin-skills/
 
+# Utility scripts (for optional sidecar services, etc.)
+COPY scripts/ /opt/picoclaw/scripts/
+
 # Bootstrap: set up picoclaw home with builtin skills.
 # The entrypoint script handles first-run initialization
 # when volumes are mounted.

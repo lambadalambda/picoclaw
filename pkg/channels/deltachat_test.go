@@ -19,7 +19,7 @@ func startDeltaBridge(t *testing.T) (string, <-chan *websocket.Conn, func()) {
 	t.Helper()
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-	connCh := make(chan *websocket.Conn, 1)
+	connCh := make(chan *websocket.Conn, 4)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -215,5 +215,63 @@ func TestDeltaChatChannelAllowlist(t *testing.T) {
 
 	if _, ok := mb.ConsumeInbound(consumeCtx); ok {
 		t.Fatal("expected blocked sender message to be dropped")
+	}
+}
+
+func TestDeltaChatChannelReconnectAfterDisconnect(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	firstConn := waitDeltaConn(t, connCh)
+	if err := firstConn.Close(); err != nil {
+		t.Fatalf("failed to close first bridge connection: %v", err)
+	}
+
+	var secondConn *websocket.Conn
+	select {
+	case secondConn = <-connCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for websocket client reconnection")
+	}
+	defer secondConn.Close()
+
+	out := bus.OutboundMessage{
+		Channel: "deltachat",
+		ChatID:  "chat-reconnect",
+		Content: "hello after reconnect",
+	}
+	if err := ch.Send(ctx, out); err != nil {
+		t.Fatalf("Send failed after reconnect: %v", err)
+	}
+
+	_ = secondConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, err := secondConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("bridge read failed after reconnect: %v", err)
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal bridge payload after reconnect: %v", err)
+	}
+
+	if got["content"] != "hello after reconnect" {
+		t.Fatalf("content = %v, want hello after reconnect", got["content"])
 	}
 }

@@ -124,9 +124,11 @@ DeltaChat bridge example:
   "channels": {
     "deltachat": {
       "enabled": true,
-      "bridge_url": "ws://localhost:3100",
+      "bridge_url": "ws://deltachat-bridge:3100",
       "allow_from": ["alice@example.org"]
     }
   }
 }
 ```
+
+If you run PicoClaw without Docker sidecar/profile, use your local bridge address (for example `ws://localhost:3100`).

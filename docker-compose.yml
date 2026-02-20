@@ -5,6 +5,10 @@ services:
       dockerfile: Dockerfile
     container_name: ${PICOCLAW_CONTAINER_NAME:-picoclaw-alice}
     restart: unless-stopped
+    depends_on:
+      deltachat-bridge:
+        condition: service_healthy
+        required: false
     ports:
       - "${PICOCLAW_HOST_PORT:-18790}:18790"
     volumes:
@@ -27,9 +31,46 @@ services:
       - path: .env
         required: false
 
+  deltachat-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ${PICOCLAW_DELTACHAT_CONTAINER_NAME:-picoclaw-alice-deltachat}
+    restart: unless-stopped
+    profiles: ["deltachat"]
+    volumes:
+      - ./picoclaw-home:/root/.picoclaw
+      - picoclaw-pip:/root/.local
+      - picoclaw-deltachat-accounts:/accounts
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DELTACHAT_BRIDGE_HOST: "${DELTACHAT_BRIDGE_HOST:-0.0.0.0}"
+      DELTACHAT_BRIDGE_PORT: "${DELTACHAT_BRIDGE_PORT:-3100}"
+      DELTACHAT_ACCOUNTS_DIR: "${DELTACHAT_ACCOUNTS_DIR:-/accounts}"
+      DELTACHAT_RPC_SERVER_PATH: "${DELTACHAT_RPC_SERVER_PATH:-/root/.local/deltachat-bridge-venv/bin/deltachat-rpc-server}"
+      DELTACHAT_BRIDGE_READY_FILE: "${DELTACHAT_BRIDGE_READY_FILE:-/tmp/deltachat-bridge.ready}"
+      DELTACHAT_SETUP_QR: "${DELTACHAT_SETUP_QR:-DCACCOUNT:https://nine.testrun.org/new}"
+      DELTACHAT_CONTACT_QR_TEXT_FILE: "${DELTACHAT_CONTACT_QR_TEXT_FILE:-/root/.picoclaw/deltachat-contact.qr.txt}"
+      DELTACHAT_CONTACT_QR_SVG_FILE: "${DELTACHAT_CONTACT_QR_SVG_FILE:-/root/.picoclaw/deltachat-contact.qr.svg}"
+      DELTACHAT_DISPLAY_NAME: "${DELTACHAT_DISPLAY_NAME:-PicoClaw Bridge}"
+      DELTACHAT_EMAIL: "${DELTACHAT_EMAIL:-}"
+      DELTACHAT_PASSWORD: "${DELTACHAT_PASSWORD:-}"
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - if [ ! -x /root/.local/deltachat-bridge-venv/bin/python ]; then python3 -m venv /root/.local/deltachat-bridge-venv && /root/.local/deltachat-bridge-venv/bin/pip install --no-cache-dir deltachat-rpc-server==2.43.0 deltachat-rpc-client==2.43.0 websockets==16.0; fi && exec /root/.local/deltachat-bridge-venv/bin/python /opt/picoclaw/scripts/deltachat_bridge.py
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/deltachat-bridge.ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
 volumes:
   picoclaw-usr-local:
   picoclaw-var-lib-apt:
   picoclaw-var-cache-apt:
   picoclaw-var-lib-dpkg:
   picoclaw-pip:
+  picoclaw-deltachat-accounts:
