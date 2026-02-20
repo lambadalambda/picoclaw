@@ -38,6 +38,8 @@ type DeltaChatChannel struct {
 	mu             sync.Mutex
 	stopTyping     sync.Map // chatID -> typingCancel
 	typingInterval time.Duration
+	thinkingDelay  time.Duration
+	thinkingText   string
 	connected      bool
 }
 
@@ -93,6 +95,8 @@ func NewDeltaChatChannel(cfg config.DeltaChatConfig, bus *bus.MessageBus) (*Delt
 		config:         cfg,
 		url:            cfg.BridgeURL,
 		typingInterval: 4 * time.Second,
+		thinkingDelay:  3 * time.Second,
+		thinkingText:   "thinking...",
 		connected:      false,
 	}, nil
 }
@@ -246,6 +250,35 @@ func (c *DeltaChatChannel) startTypingIndicator(chatID string) {
 
 	if err := c.sendTyping(chatID, true); err != nil {
 		logger.DebugCF("deltachat", "Failed to send typing signal", map[string]interface{}{"chat_id": chatID, "error": err.Error()})
+	}
+
+	thinkingText := strings.TrimSpace(c.thinkingText)
+	if c.thinkingDelay > 0 && thinkingText != "" {
+		go func(typingCtx context.Context, targetChatID string, delay time.Duration, content string) {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+
+			select {
+			case <-typingCtx.Done():
+				return
+			case <-timer.C:
+			}
+
+			select {
+			case <-typingCtx.Done():
+				return
+			default:
+			}
+
+			payload := map[string]interface{}{
+				"type":    "message",
+				"to":      targetChatID,
+				"content": content,
+			}
+			if err := c.sendPayload(payload); err != nil {
+				logger.DebugCF("deltachat", "Failed to send thinking fallback message", map[string]interface{}{"chat_id": targetChatID, "error": err.Error()})
+			}
+		}(typingCtx, chatID, c.thinkingDelay, thinkingText)
 	}
 
 	go func() {

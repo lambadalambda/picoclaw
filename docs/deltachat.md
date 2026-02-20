@@ -63,6 +63,7 @@ docker compose restart picoclaw
 ## Typing + Reactions
 
 - While PicoClaw is processing an incoming DeltaChat message, the channel sends a best-effort typing signal via draft updates.
+- If a response takes longer than about 3 seconds, PicoClaw sends a visible `thinking...` message as fallback feedback.
 - Delta Chat core does not currently expose remote typing events to bots, so user -> PicoClaw typing indicators are not available.
 - Incoming DeltaChat reactions are forwarded to PicoClaw as synthetic inbound messages with metadata `event=reaction`.
 - Outbound reactions are supported with a command-style message content:

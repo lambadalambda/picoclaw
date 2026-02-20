@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -413,6 +414,127 @@ func TestDeltaChatChannelTypingIndicatorLifecycle(t *testing.T) {
 	messagePayload := waitDeltaPayloadType(t, conn, "message", 2*time.Second)
 	if messagePayload["content"] != "response" {
 		t.Fatalf("message content = %v, want response", messagePayload["content"])
+	}
+}
+
+func TestDeltaChatChannelSendsThinkingFallbackForSlowResponses(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	incoming := map[string]interface{}{
+		"type":    "message",
+		"id":      "m-thinking",
+		"from":    "dc-user-thinking",
+		"chat":    "chat-thinking",
+		"content": "hello",
+	}
+	if err := conn.WriteJSON(incoming); err != nil {
+		t.Fatalf("bridge write failed: %v", err)
+	}
+
+	typingStart := waitDeltaPayloadType(t, conn, "typing", 2*time.Second)
+	if typingStart["typing"] != true {
+		t.Fatalf("typing start payload has typing=%v, want true", typingStart["typing"])
+	}
+
+	thinkingPayload := waitDeltaPayloadType(t, conn, "message", 5*time.Second)
+	if thinkingPayload["content"] != "thinking..." {
+		t.Fatalf("thinking message content = %v, want thinking...", thinkingPayload["content"])
+	}
+	if thinkingPayload["to"] != "chat-thinking" {
+		t.Fatalf("thinking message to = %v, want chat-thinking", thinkingPayload["to"])
+	}
+}
+
+func TestDeltaChatChannelSkipsThinkingFallbackWhenReplyIsImmediate(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+	ch.thinkingDelay = 100 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	incoming := map[string]interface{}{
+		"type":    "message",
+		"id":      "m-fast",
+		"from":    "dc-user-fast",
+		"chat":    "chat-fast",
+		"content": "hello",
+	}
+	if err := conn.WriteJSON(incoming); err != nil {
+		t.Fatalf("bridge write failed: %v", err)
+	}
+
+	typingStart := waitDeltaPayloadType(t, conn, "typing", 2*time.Second)
+	if typingStart["typing"] != true {
+		t.Fatalf("typing start payload has typing=%v, want true", typingStart["typing"])
+	}
+
+	if err := ch.Send(ctx, bus.OutboundMessage{Channel: "deltachat", ChatID: "chat-fast", Content: "response"}); err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	typingStop := waitDeltaPayloadType(t, conn, "typing", 2*time.Second)
+	if typingStop["typing"] != false {
+		t.Fatalf("typing stop payload has typing=%v, want false", typingStop["typing"])
+	}
+
+	messagePayload := waitDeltaPayloadType(t, conn, "message", 2*time.Second)
+	if messagePayload["content"] != "response" {
+		t.Fatalf("message content = %v, want response", messagePayload["content"])
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return
+		}
+		t.Fatalf("bridge read failed: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("failed to unmarshal extra bridge payload: %v", err)
+	}
+
+	if payload["type"] == "message" && payload["content"] == "thinking..." {
+		t.Fatal("unexpected thinking fallback message for immediate response")
 	}
 }
 
