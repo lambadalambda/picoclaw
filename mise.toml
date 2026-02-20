@@ -1,0 +1,75 @@
+[tasks.up]
+description = "Start docker compose services"
+run = "docker compose up -d"
+
+[tasks.up_deltachat]
+description = "Start services with DeltaChat profile"
+run = "docker compose --profile deltachat up -d"
+
+[tasks.rebuild]
+description = "Rebuild images and restart services"
+run = "docker compose up -d --build"
+
+[tasks.rebuild_clean]
+description = "Rebuild from scratch without cache"
+run = "docker compose build --no-cache && docker compose up -d"
+
+[tasks.restart]
+description = "Restart all services"
+run = "docker compose restart"
+
+[tasks.restart_picoclaw]
+description = "Restart picoclaw service"
+run = "docker compose restart picoclaw"
+
+[tasks.restart_deltachat]
+description = "Restart DeltaChat bridge service"
+run = "docker compose restart deltachat-bridge"
+
+[tasks.stop]
+description = "Stop services"
+run = "docker compose stop"
+
+[tasks.down]
+description = "Stop and remove containers"
+run = "docker compose down"
+
+[tasks.down_volumes]
+description = "Destroy containers and volumes"
+run = "docker compose down -v"
+
+[tasks.ps]
+description = "Show compose service status"
+run = "docker compose ps"
+
+[tasks.logs]
+description = "Show recent logs from all services"
+run = "docker compose logs --tail=200"
+
+[tasks.logs_follow]
+description = "Follow logs from all services"
+run = "docker compose logs -f"
+
+[tasks.status]
+description = "Show picoclaw runtime status"
+run = "docker compose exec -T picoclaw picoclaw status"
+
+[tasks.agent]
+description = "Open interactive picoclaw agent"
+run = "docker compose exec picoclaw picoclaw agent"
+
+[tasks.cron_list]
+description = "List scheduled cron jobs"
+run = "docker compose exec -T picoclaw picoclaw cron list"
+
+[tasks.cron_json]
+description = "Print persisted cron jobs JSON"
+run = "docker compose exec -T picoclaw /bin/sh -lc 'if [ -f /root/.picoclaw/workspace/cron/jobs.json ]; then python3 -m json.tool /root/.picoclaw/workspace/cron/jobs.json; else echo \"No cron store found\"; fi'"
+
+[tasks.cron_logs]
+description = "Show recent cron-related logs"
+run = "docker compose logs --tail=300 picoclaw | grep -i cron || true"
+
+[tasks.health]
+description = "Run quick runtime health checks"
+run = "docker compose ps && docker compose exec -T picoclaw picoclaw status && docker compose exec -T picoclaw picoclaw cron list"
