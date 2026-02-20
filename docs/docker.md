@@ -76,6 +76,7 @@ Optional toggle:
 
 ```env
 PICOCLAW_RESTORE_APT_PACKAGES=false
+# PICOCLAW_APT_RESTORE_MIN_FREE_KB=20480
 ```
 
 ## First-Run Behavior

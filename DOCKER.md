@@ -168,6 +168,15 @@ Optional marker path override:
 PICOCLAW_APT_RESTORE_MARKER_FILE=/opt/picoclaw/.apt-restore.done
 ```
 
+Optional minimum free-space guard (in KB) before rehydration runs:
+
+```bash
+PICOCLAW_APT_RESTORE_MIN_FREE_KB=20480
+```
+
+If Docker disk is nearly full, rehydration is skipped with a warning and retried
+on the next startup.
+
 ## Architecture
 
 ```
