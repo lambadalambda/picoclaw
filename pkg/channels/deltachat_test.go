@@ -683,6 +683,173 @@ func TestDeltaChatChannelSkipsThinkingFallbackWhenReplyIsImmediate(t *testing.T)
 	}
 }
 
+func TestDeltaChatChannelSendProfilePictureCommandWithPath(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	out := bus.OutboundMessage{
+		Channel: "deltachat",
+		ChatID:  "chat-profile",
+		Content: "/set_profile_picture /root/.picoclaw/workspace/avatar.png",
+	}
+
+	payloadCh := make(chan map[string]interface{}, 1)
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		payload, readErr := readDeltaPayloadResult(conn, 2*time.Second)
+		if readErr != nil {
+			bridgeErrCh <- readErr
+			return
+		}
+		if ackErr := writeDeltaAckForPayload(conn, payload, true, ""); ackErr != nil {
+			bridgeErrCh <- ackErr
+			return
+		}
+		payloadCh <- payload
+		bridgeErrCh <- nil
+	}()
+
+	if err := ch.Send(ctx, out); err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge ack failed: %v", bridgeErr)
+	}
+
+	payload := <-payloadCh
+	if payload["type"] != "profile_image" {
+		t.Fatalf("type = %v, want profile_image", payload["type"])
+	}
+	if payload["path"] != "/root/.picoclaw/workspace/avatar.png" {
+		t.Fatalf("path = %v, want /root/.picoclaw/workspace/avatar.png", payload["path"])
+	}
+}
+
+func TestDeltaChatChannelSendProfilePictureCommandUsesMediaFallback(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	out := bus.OutboundMessage{
+		Channel: "deltachat",
+		ChatID:  "chat-profile",
+		Content: "/set_profile_picture",
+		Media:   []string{"/root/.picoclaw/workspace/avatar-from-media.png"},
+	}
+
+	payloadCh := make(chan map[string]interface{}, 1)
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		payload, readErr := readDeltaPayloadResult(conn, 2*time.Second)
+		if readErr != nil {
+			bridgeErrCh <- readErr
+			return
+		}
+		if ackErr := writeDeltaAckForPayload(conn, payload, true, ""); ackErr != nil {
+			bridgeErrCh <- ackErr
+			return
+		}
+		payloadCh <- payload
+		bridgeErrCh <- nil
+	}()
+
+	if err := ch.Send(ctx, out); err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge ack failed: %v", bridgeErr)
+	}
+
+	payload := <-payloadCh
+	if payload["type"] != "profile_image" {
+		t.Fatalf("type = %v, want profile_image", payload["type"])
+	}
+	if payload["path"] != "/root/.picoclaw/workspace/avatar-from-media.png" {
+		t.Fatalf("path = %v, want /root/.picoclaw/workspace/avatar-from-media.png", payload["path"])
+	}
+}
+
+func TestDeltaChatChannelSendProfilePictureCommandRequiresPathOrMedia(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	err = ch.Send(ctx, bus.OutboundMessage{
+		Channel: "deltachat",
+		ChatID:  "chat-profile",
+		Content: "/set_profile_picture",
+	})
+	if err == nil {
+		t.Fatal("expected Send to fail when profile picture path is missing")
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	_, _, readErr := conn.ReadMessage()
+	if readErr != nil {
+		if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+			return
+		}
+		t.Fatalf("unexpected websocket read error: %v", readErr)
+	}
+
+	t.Fatal("expected no payload to be sent for invalid profile picture command")
+}
+
 func TestDeltaChatChannelSendReactionCommand(t *testing.T) {
 	mb := bus.NewMessageBus()
 	defer mb.Close()

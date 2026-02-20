@@ -19,6 +19,7 @@ import (
 )
 
 var deltaReactionCommandPattern = regexp.MustCompile(`(?i)^/react\s+([0-9]+)\s+(.+)$`)
+var deltaSetProfilePictureCommandPattern = regexp.MustCompile(`(?i)^/(?:set_profile_picture|set_profile_photo)(?:\s+(.+))?$`)
 
 type typingCancel struct {
 	fn context.CancelFunc
@@ -169,6 +170,34 @@ func parseDeltaReactionCommand(content string) (string, string, bool) {
 	}
 
 	return matches[1], reaction, true
+}
+
+func parseDeltaSetProfilePictureCommand(content string, media []string) (string, bool, error) {
+	trimmed := strings.TrimSpace(content)
+	matches := deltaSetProfilePictureCommandPattern.FindStringSubmatch(trimmed)
+	if len(matches) == 0 {
+		return "", false, nil
+	}
+
+	path := ""
+	if len(matches) > 1 {
+		path = strings.TrimSpace(matches[1])
+	}
+	if path == "" {
+		for _, item := range media {
+			candidate := strings.TrimSpace(item)
+			if candidate != "" {
+				path = candidate
+				break
+			}
+		}
+	}
+
+	if path == "" {
+		return "", true, fmt.Errorf("DeltaChat profile picture command requires a file path or media attachment")
+	}
+
+	return path, true, nil
 }
 
 func (c *DeltaChatChannel) nextAckRequestID() string {
@@ -447,6 +476,18 @@ func (c *DeltaChatChannel) startTypingIndicator(chatID string) {
 
 func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	c.stopTypingIndicator(msg.ChatID)
+
+	if profileImagePath, isCommand, commandErr := parseDeltaSetProfilePictureCommand(msg.Content, msg.Media); isCommand {
+		if commandErr != nil {
+			return commandErr
+		}
+
+		profileImagePayload := map[string]interface{}{
+			"type": "profile_image",
+			"path": profileImagePath,
+		}
+		return c.sendPayloadWithAck(ctx, profileImagePayload)
+	}
 
 	if messageID, reaction, ok := parseDeltaReactionCommand(msg.Content); ok && len(msg.Media) == 0 {
 		reactionPayload := map[string]interface{}{

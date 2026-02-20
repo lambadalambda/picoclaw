@@ -396,6 +396,18 @@ class DeltaChatBridge:
         contact = self.account.create_contact(target)
         return contact.create_chat()
 
+    def _resolve_outbound_file(self, file_path_raw: Any) -> str:
+        file_path = str(file_path_raw).strip() if file_path_raw is not None else ""
+        if file_path == "":
+            raise ValueError("Missing file path")
+
+        normalized = self._normalize_media_path(file_path, self.settings.accounts_dir)
+        candidate = Path(normalized)
+        if not candidate.exists():
+            raise FileNotFoundError(f"file does not exist: {normalized}")
+
+        return str(candidate)
+
     def _send_to_deltachat(self, payload: dict[str, Any]) -> None:
         target_raw = payload.get("to")
         target = str(target_raw).strip() if target_raw is not None else ""
@@ -418,14 +430,14 @@ class DeltaChatBridge:
             media_items = [str(item) for item in media if isinstance(item, str)]
 
         if media_items:
-            first_file = media_items[0]
+            first_file = self._resolve_outbound_file(media_items[0])
             if content != "":
                 chat.send_message(text=content, file=first_file)
             else:
                 chat.send_file(first_file)
 
             for extra_file in media_items[1:]:
-                chat.send_file(extra_file)
+                chat.send_file(self._resolve_outbound_file(extra_file))
             return
 
         if content != "":
@@ -433,6 +445,16 @@ class DeltaChatBridge:
             return
 
         logging.warning("Ignoring empty outbound message for target %s", target)
+
+    def _set_profile_image(self, payload: dict[str, Any]) -> None:
+        assert self.account is not None
+
+        path_raw = payload.get("path")
+        if path_raw is None:
+            raise ValueError("Missing 'path' in profile_image payload")
+
+        path = self._resolve_outbound_file(path_raw)
+        self.account.set_avatar(path)
 
     def _set_typing(self, payload: dict[str, Any]) -> None:
         target_raw = payload.get("to")
@@ -590,6 +612,18 @@ class DeltaChatBridge:
                 return
             if require_ack:
                 await self._send_ws_ack(websocket, request_id, "reaction", True)
+            return
+
+        if payload_type == "profile_image":
+            try:
+                await asyncio.to_thread(self._set_profile_image, payload)
+            except Exception as exc:
+                logging.error("Failed to set Delta Chat profile image: %s", exc)
+                if require_ack:
+                    await self._send_ws_ack(websocket, request_id, "profile_image", False, str(exc))
+                return
+            if require_ack:
+                await self._send_ws_ack(websocket, request_id, "profile_image", True)
             return
 
         if require_ack:
