@@ -27,7 +27,7 @@ func NewExecTool(workingDir string) *ExecTool {
 		regexp.MustCompile(`\brmdir\s+/s\b`),
 		regexp.MustCompile(`\b(format|mkfs|diskpart)\b\s`), // Match disk wiping commands (must be followed by space/args)
 		regexp.MustCompile(`\bdd\s+if=`),
-		regexp.MustCompile(`>\s*/dev/sd[a-z]\b`),            // Block writes to disk devices (but allow /dev/null)
+		regexp.MustCompile(`>\s*/dev/sd[a-z]\b`), // Block writes to disk devices (but allow /dev/null)
 		regexp.MustCompile(`\b(shutdown|reboot|poweroff)\b`),
 		regexp.MustCompile(`:\(\)\s*\{.*\};\s*:`),
 	}
@@ -46,7 +46,8 @@ func (t *ExecTool) Name() string {
 }
 
 func (t *ExecTool) Description() string {
-	return "Execute a shell command and return its output. Use with caution."
+	return "Execute a shell command and return its output. Use with caution. " +
+		"Do not use this for chat slash commands (for example /react or /set_profile_picture); use the message tool for those."
 }
 
 func (t *ExecTool) Parameters() map[string]interface{} {
@@ -129,6 +130,10 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 	cmd := strings.TrimSpace(command)
 	lower := strings.ToLower(cmd)
 
+	if looksLikeChatSlashCommand(cmd) {
+		return "This looks like a chat slash command. Use the message tool instead of exec."
+	}
+
 	for _, pattern := range t.denyPatterns {
 		if pattern.MatchString(lower) {
 			return "Command blocked by safety guard (dangerous pattern detected)"
@@ -179,6 +184,21 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 	}
 
 	return ""
+}
+
+func looksLikeChatSlashCommand(command string) bool {
+	parts := strings.Fields(strings.TrimSpace(command))
+	if len(parts) == 0 {
+		return false
+	}
+
+	first := strings.ToLower(parts[0])
+	switch first {
+	case "/react", "/set_profile_picture", "/set_profile_photo":
+		return true
+	default:
+		return false
+	}
 }
 
 func (t *ExecTool) SetTimeout(timeout time.Duration) {

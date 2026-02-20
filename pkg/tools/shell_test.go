@@ -66,6 +66,7 @@ func TestGuardCommand_SafeCommands(t *testing.T) {
 		{"write to dev null", "echo test > /dev/null"},
 		{"python", "python3 script.py"},
 		{"curl", "curl https://example.com"},
+		{"absolute executable path", "/bin/ls -la"},
 	}
 
 	for _, tt := range allowed {
@@ -73,6 +74,28 @@ func TestGuardCommand_SafeCommands(t *testing.T) {
 			result := tool.guardCommand(tt.command, t.TempDir())
 			if result != "" {
 				t.Errorf("expected command %q to be allowed, but got: %s", tt.command, result)
+			}
+		})
+	}
+}
+
+func TestGuardCommand_BlocksChatSlashCommands(t *testing.T) {
+	tool := NewExecTool(t.TempDir())
+
+	blocked := []string{
+		"/react 123 👍",
+		"/set_profile_picture /root/.picoclaw/workspace/avatar.png",
+		"/set_profile_photo /root/.picoclaw/workspace/avatar.png",
+	}
+
+	for _, cmd := range blocked {
+		t.Run(cmd, func(t *testing.T) {
+			result := tool.guardCommand(cmd, t.TempDir())
+			if result == "" {
+				t.Fatalf("expected command %q to be blocked", cmd)
+			}
+			if !strings.Contains(strings.ToLower(result), "message tool") {
+				t.Fatalf("expected guidance to use message tool, got %q", result)
 			}
 		})
 	}
