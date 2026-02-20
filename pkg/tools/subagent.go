@@ -198,7 +198,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 
 	// Build a subagent-only tool registry.
 	registry := NewToolRegistry()
-	RegisterCoreTools(registry, sm.workspace, "", 5) // web search will self-report if key missing
+	RegisterCoreTools(registry, sm.workspace, WebSearchToolConfig{MaxResults: 5}) // web search will self-report if key missing
 	registry.Register(NewSubagentReportTool(sm.bus, initial.ID, initial.Label, initial.OriginChannel, initial.OriginChatID))
 
 	systemPrompt := sm.buildSubagentSystemPrompt(registry)

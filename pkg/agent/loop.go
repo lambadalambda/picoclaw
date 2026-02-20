@@ -69,9 +69,26 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	workspace := cfg.WorkspacePath()
 	os.MkdirAll(workspace, 0755)
 	messageBudget := messageBudgetFromDefaults(cfg.Agents.Defaults)
+	webSearchCfg := cfg.Tools.Web.Search
+	zaiSearchKey := strings.TrimSpace(webSearchCfg.ZAIAPIKey)
+	zaiSearchProvider := strings.ToLower(strings.TrimSpace(webSearchCfg.Provider))
+	if zaiSearchProvider == "zai" && zaiSearchKey == "" {
+		zaiSearchKey = strings.TrimSpace(cfg.Providers.Zhipu.APIKey)
+	}
+	zaiSearchBase := strings.TrimSpace(webSearchCfg.ZAIAPIBase)
+	if zaiSearchProvider == "zai" && zaiSearchBase == "" {
+		zaiSearchBase = strings.TrimSpace(cfg.Providers.Zhipu.APIBase)
+	}
 
 	toolsRegistry := tools.NewToolRegistry()
-	tools.RegisterCoreTools(toolsRegistry, workspace, cfg.Tools.Web.Search.APIKey, cfg.Tools.Web.Search.MaxResults)
+	tools.RegisterCoreTools(toolsRegistry, workspace, tools.WebSearchToolConfig{
+		BraveAPIKey:     webSearchCfg.APIKey,
+		MaxResults:      webSearchCfg.MaxResults,
+		Provider:        webSearchCfg.Provider,
+		ZAIAPIKey:       zaiSearchKey,
+		ZAIAPIBase:      zaiSearchBase,
+		ZAISearchEngine: webSearchCfg.ZAISearchEngine,
+	})
 
 	policyEnabled := cfg.Tools.Policy.Enabled || cfg.Tools.Policy.SafeMode || len(cfg.Tools.Policy.Allow) > 0 || len(cfg.Tools.Policy.Deny) > 0
 	denyTools := append([]string{}, cfg.Tools.Policy.Deny...)

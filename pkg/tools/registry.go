@@ -162,14 +162,14 @@ func (r *ToolRegistry) Count() int {
 
 // RegisterCoreTools registers the standard set of tools shared between the
 // main agent and subagents: filesystem ops, exec, edit, web search, and web fetch.
-func RegisterCoreTools(r *ToolRegistry, workspace string, braveAPIKey string, searchMaxResults int) {
+func RegisterCoreTools(r *ToolRegistry, workspace string, webSearchCfg WebSearchToolConfig) {
 	r.Register(&ReadFileTool{})
 	r.Register(&WriteFileTool{})
 	r.Register(&ListDirTool{})
 	r.Register(NewExecTool(workspace))
 	r.Register(NewEditFileTool(workspace))
 	r.Register(NewWebFetchTool(50000))
-	r.Register(NewWebSearchTool(braveAPIKey, searchMaxResults))
+	r.Register(NewWebSearchTool(webSearchCfg))
 }
 
 // GetSummaries returns human-readable summaries of all registered tools.

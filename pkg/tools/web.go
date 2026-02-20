@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,21 +14,49 @@ import (
 )
 
 const (
-	userAgent = "Mozilla/5.0 (compatible; picoclaw/1.0)"
+	userAgent               = "Mozilla/5.0 (compatible; picoclaw/1.0)"
+	defaultZAISearchAPIBase = "https://api.z.ai/api"
 )
 
-type WebSearchTool struct {
-	apiKey     string
-	maxResults int
+type WebSearchToolConfig struct {
+	BraveAPIKey     string
+	MaxResults      int
+	Provider        string
+	ZAIAPIKey       string
+	ZAIAPIBase      string
+	ZAISearchEngine string
 }
 
-func NewWebSearchTool(apiKey string, maxResults int) *WebSearchTool {
+type WebSearchTool struct {
+	braveAPIKey     string
+	maxResults      int
+	provider        string
+	zaiAPIKey       string
+	zaiAPIBase      string
+	zaiSearchEngine string
+	braveAPIBase    string
+	httpClient      *http.Client
+}
+
+func NewWebSearchTool(cfg WebSearchToolConfig) *WebSearchTool {
+	maxResults := cfg.MaxResults
 	if maxResults <= 0 || maxResults > 10 {
 		maxResults = 5
 	}
+
+	zaiSearchEngine := strings.TrimSpace(cfg.ZAISearchEngine)
+	if zaiSearchEngine == "" {
+		zaiSearchEngine = "search-prime"
+	}
+
 	return &WebSearchTool{
-		apiKey:     apiKey,
-		maxResults: maxResults,
+		braveAPIKey:     strings.TrimSpace(cfg.BraveAPIKey),
+		maxResults:      maxResults,
+		provider:        strings.ToLower(strings.TrimSpace(cfg.Provider)),
+		zaiAPIKey:       strings.TrimSpace(cfg.ZAIAPIKey),
+		zaiAPIBase:      strings.TrimSpace(cfg.ZAIAPIBase),
+		zaiSearchEngine: zaiSearchEngine,
+		braveAPIBase:    "https://api.search.brave.com",
 	}
 }
 
@@ -59,10 +88,6 @@ func (t *WebSearchTool) Parameters() map[string]interface{} {
 }
 
 func (t *WebSearchTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
-	if t.apiKey == "" {
-		return "Error: BRAVE_API_KEY not configured", nil
-	}
-
 	query, ok := args["query"].(string)
 	if !ok {
 		return "", fmt.Errorf("query is required")
@@ -75,8 +100,47 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]interface{}
 		}
 	}
 
-	searchURL := fmt.Sprintf("https://api.search.brave.com/res/v1/web/search?q=%s&count=%d",
-		url.QueryEscape(query), count)
+	backend := t.resolveSearchBackend()
+	switch backend {
+	case "zai":
+		if t.zaiAPIKey == "" {
+			return "Error: ZAI web search API key not configured", nil
+		}
+		return t.executeZAISearch(ctx, query, count)
+	case "brave":
+		if t.braveAPIKey == "" {
+			if t.zaiAPIKey == "" {
+				return "Error: web_search is not configured (set BRAVE API key or ZAI web search API key)", nil
+			}
+			return "Error: BRAVE_API_KEY not configured", nil
+		}
+		return t.executeBraveSearch(ctx, query, count)
+	default:
+		return "", fmt.Errorf("unsupported web search provider: %s", backend)
+	}
+}
+
+func (t *WebSearchTool) resolveSearchBackend() string {
+	provider := strings.ToLower(strings.TrimSpace(t.provider))
+	switch provider {
+	case "zai", "brave":
+		return provider
+	default:
+		if t.zaiAPIKey != "" {
+			return "zai"
+		}
+		return "brave"
+	}
+}
+
+func (t *WebSearchTool) executeBraveSearch(ctx context.Context, query string, count int) (string, error) {
+	braveAPIBase := strings.TrimRight(strings.TrimSpace(t.braveAPIBase), "/")
+	if braveAPIBase == "" {
+		braveAPIBase = "https://api.search.brave.com"
+	}
+
+	searchURL := fmt.Sprintf("%s/res/v1/web/search?q=%s&count=%d",
+		braveAPIBase, url.QueryEscape(query), count)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
@@ -84,9 +148,12 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]interface{}
 	}
 
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Subscription-Token", t.apiKey)
+	req.Header.Set("X-Subscription-Token", t.braveAPIKey)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := t.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
@@ -126,6 +193,86 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]interface{}
 		lines = append(lines, fmt.Sprintf("%d. %s\n   %s", i+1, item.Title, item.URL))
 		if item.Description != "" {
 			lines = append(lines, fmt.Sprintf("   %s", item.Description))
+		}
+	}
+
+	return strings.Join(lines, "\n"), nil
+}
+
+func (t *WebSearchTool) executeZAISearch(ctx context.Context, query string, count int) (string, error) {
+	apiBase := strings.TrimRight(strings.TrimSpace(t.zaiAPIBase), "/")
+	if apiBase == "" {
+		apiBase = defaultZAISearchAPIBase
+	}
+
+	reqBody := map[string]interface{}{
+		"search_engine": t.zaiSearchEngine,
+		"search_query":  query,
+		"count":         count,
+	}
+
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal z.ai search request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiBase+"/paas/v4/web_search", bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("failed to create z.ai search request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+t.zaiAPIKey)
+	req.Header.Set("Accept", "application/json")
+
+	client := t.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("z.ai search request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read z.ai search response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("z.ai web search API error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var searchResp struct {
+		SearchResult []struct {
+			Title   string `json:"title"`
+			Link    string `json:"link"`
+			Content string `json:"content"`
+			Media   string `json:"media"`
+		} `json:"search_result"`
+	}
+
+	if err := json.Unmarshal(body, &searchResp); err != nil {
+		return "", fmt.Errorf("failed to parse z.ai search response: %w", err)
+	}
+
+	if len(searchResp.SearchResult) == 0 {
+		return fmt.Sprintf("No results for: %s", query), nil
+	}
+
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Results for: %s", query))
+	for i, item := range searchResp.SearchResult {
+		if i >= count {
+			break
+		}
+		lines = append(lines, fmt.Sprintf("%d. %s\n   %s", i+1, item.Title, item.Link))
+		if item.Content != "" {
+			lines = append(lines, fmt.Sprintf("   %s", item.Content))
+		}
+		if item.Media != "" {
+			lines = append(lines, fmt.Sprintf("   Source: %s", item.Media))
 		}
 	}
 

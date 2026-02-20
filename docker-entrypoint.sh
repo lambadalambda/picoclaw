@@ -228,6 +228,11 @@ patch_config '.channels.slack.app_token'     "${PICOCLAW_CHANNELS_SLACK_APP_TOKE
 
 # Tools
 patch_config '.tools.web.search.api_key'     "${PICOCLAW_TOOLS_WEB_SEARCH_API_KEY:-}"
+patch_config '.tools.web.search.max_results' "${PICOCLAW_TOOLS_WEB_SEARCH_MAX_RESULTS:-}"
+patch_config '.tools.web.search.provider'    "${PICOCLAW_TOOLS_WEB_SEARCH_PROVIDER:-}"
+patch_config '.tools.web.search.zai_api_key' "${PICOCLAW_TOOLS_WEB_SEARCH_ZAI_API_KEY:-}"
+patch_config '.tools.web.search.zai_api_base' "${PICOCLAW_TOOLS_WEB_SEARCH_ZAI_API_BASE:-}"
+patch_config '.tools.web.search.zai_search_engine' "${PICOCLAW_TOOLS_WEB_SEARCH_ZAI_SEARCH_ENGINE:-}"
 
 echo "[entrypoint] Starting picoclaw $*"
 exec picoclaw "$@"

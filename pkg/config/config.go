@@ -136,8 +136,12 @@ type GatewayConfig struct {
 }
 
 type WebSearchConfig struct {
-	APIKey     string `json:"api_key" env:"PICOCLAW_TOOLS_WEB_SEARCH_API_KEY"`
-	MaxResults int    `json:"max_results" env:"PICOCLAW_TOOLS_WEB_SEARCH_MAX_RESULTS"`
+	APIKey          string `json:"api_key" env:"PICOCLAW_TOOLS_WEB_SEARCH_API_KEY"`
+	MaxResults      int    `json:"max_results" env:"PICOCLAW_TOOLS_WEB_SEARCH_MAX_RESULTS"`
+	Provider        string `json:"provider" env:"PICOCLAW_TOOLS_WEB_SEARCH_PROVIDER"`
+	ZAIAPIKey       string `json:"zai_api_key" env:"PICOCLAW_TOOLS_WEB_SEARCH_ZAI_API_KEY"`
+	ZAIAPIBase      string `json:"zai_api_base" env:"PICOCLAW_TOOLS_WEB_SEARCH_ZAI_API_BASE"`
+	ZAISearchEngine string `json:"zai_search_engine" env:"PICOCLAW_TOOLS_WEB_SEARCH_ZAI_SEARCH_ENGINE"`
 }
 
 type WebToolsConfig struct {
@@ -257,8 +261,12 @@ func DefaultConfig() *Config {
 		Tools: ToolsConfig{
 			Web: WebToolsConfig{
 				Search: WebSearchConfig{
-					APIKey:     "",
-					MaxResults: 5,
+					APIKey:          "",
+					MaxResults:      5,
+					Provider:        "auto",
+					ZAIAPIKey:       "",
+					ZAIAPIBase:      "",
+					ZAISearchEngine: "search-prime",
 				},
 			},
 			Policy: ToolPolicyConfig{
