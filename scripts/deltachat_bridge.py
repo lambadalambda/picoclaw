@@ -252,6 +252,99 @@ class DeltaChatBridge:
 
         return payload
 
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        if isinstance(value, (int, float)):
+            return value != 0
+        return default
+
+    def _reaction_event_to_bridge_payload(self, event: Any) -> dict[str, Any] | None:
+        assert self.account is not None
+
+        msg_id_raw = event.get("msg_id")
+        if msg_id_raw is None:
+            return None
+
+        try:
+            msg_id = int(msg_id_raw)
+        except (TypeError, ValueError):
+            return None
+
+        if msg_id <= 0:
+            return None
+
+        message = self.account.get_message_by_id(msg_id)
+        snapshot = message.get_snapshot()
+
+        contact_id_raw = event.get("contact_id")
+        reactor_contact_id = 0
+        try:
+            reactor_contact_id = int(contact_id_raw)
+        except (TypeError, ValueError):
+            reactor_contact_id = 0
+
+        reactor_addr = ""
+        reactor_name = ""
+        if reactor_contact_id > 0:
+            try:
+                contact_snapshot = self.account.get_contact_by_id(reactor_contact_id).get_snapshot()
+                reactor_addr = contact_snapshot.get("address") or ""
+                reactor_name = contact_snapshot.get("display_name") or contact_snapshot.get("name") or ""
+            except Exception:
+                reactor_addr = ""
+
+        if reactor_addr == "":
+            sender_snapshot = snapshot.sender.get_snapshot()
+            reactor_addr = sender_snapshot.get("address") or str(reactor_contact_id or snapshot.from_id)
+            reactor_name = sender_snapshot.get("display_name") or sender_snapshot.get("name") or reactor_addr
+
+        reactions_value = message.get_reactions()
+        reaction_text = ""
+        all_emojis: list[str] = []
+
+        if reactions_value:
+            by_contact = reactions_value.get("reactions_by_contact") or {}
+            contact_emojis: list[str] = []
+            if reactor_contact_id > 0:
+                maybe = by_contact.get(str(reactor_contact_id))
+                if isinstance(maybe, list):
+                    contact_emojis = [str(item) for item in maybe if str(item).strip() != ""]
+
+            if contact_emojis:
+                reaction_text = " ".join(contact_emojis)
+                all_emojis = contact_emojis
+            else:
+                merged: list[str] = []
+                for item in reactions_value.get("reactions", []):
+                    emoji = item.get("emoji") if isinstance(item, dict) else None
+                    if emoji:
+                        merged.append(str(emoji))
+                if merged:
+                    reaction_text = " ".join(merged)
+                    all_emojis = merged
+
+        payload: dict[str, Any] = {
+            "type": "reaction",
+            "id": str(snapshot.id),
+            "message_id": str(snapshot.id),
+            "from": reactor_addr,
+            "from_name": reactor_name,
+            "chat": str(snapshot.chat_id),
+            "reaction": reaction_text,
+        }
+        if all_emojis:
+            payload["reactions"] = all_emojis
+
+        return payload
+
     def _reader_loop(self) -> None:
         assert self.account is not None
 
@@ -260,11 +353,23 @@ class DeltaChatBridge:
             EventType.INCOMING_MSG_BUNCH.value,
             EventType.MSGS_CHANGED.value,
         }
+        reaction_kinds = {
+            EventType.INCOMING_REACTION.value,
+            EventType.REACTIONS_CHANGED.value,
+        }
 
         while not self.stop_event.is_set():
             try:
                 event = self.account.wait_for_event()
-                if str(event.get("kind", "")) not in incoming_kinds:
+                kind = str(event.get("kind", ""))
+
+                if kind in reaction_kinds:
+                    payload = self._reaction_event_to_bridge_payload(event)
+                    if payload is not None:
+                        self.delta_to_ws_queue.put(payload)
+                    continue
+
+                if kind not in incoming_kinds:
                     continue
 
                 for message in self.account.get_next_messages():
@@ -329,6 +434,54 @@ class DeltaChatBridge:
 
         logging.warning("Ignoring empty outbound message for target %s", target)
 
+    def _set_typing(self, payload: dict[str, Any]) -> None:
+        target_raw = payload.get("to")
+        target = str(target_raw).strip() if target_raw is not None else ""
+        if target == "":
+            raise ValueError("Missing 'to' in typing payload")
+
+        chat = self._resolve_chat(target)
+        is_typing = self._coerce_bool(payload.get("typing"), default=False)
+
+        if is_typing:
+            draft_text_raw = payload.get("content")
+            draft_text = str(draft_text_raw).strip() if draft_text_raw is not None else ""
+            if draft_text == "":
+                draft_text = "..."
+            chat.set_draft(text=draft_text)
+            return
+
+        chat.remove_draft()
+
+    def _send_reaction(self, payload: dict[str, Any]) -> None:
+        assert self.account is not None
+
+        message_id_raw = payload.get("message_id")
+        if message_id_raw is None:
+            raise ValueError("Missing 'message_id' in reaction payload")
+
+        try:
+            message_id = int(str(message_id_raw).strip())
+        except ValueError as exc:
+            raise ValueError("Invalid 'message_id' in reaction payload") from exc
+
+        reaction_raw = payload.get("reaction")
+        if reaction_raw is None:
+            raise ValueError("Missing 'reaction' in reaction payload")
+
+        reaction_items: list[str]
+        if isinstance(reaction_raw, list):
+            reaction_items = [str(item).strip() for item in reaction_raw if str(item).strip() != ""]
+        else:
+            reaction_items = [str(reaction_raw).strip()]
+
+        reaction_items = [item for item in reaction_items if item != ""]
+        if not reaction_items:
+            raise ValueError("Reaction payload contained no emoji")
+
+        message = self.account.get_message_by_id(message_id)
+        message.send_reaction(*reaction_items)
+
     async def _broadcast(self, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=True)
 
@@ -368,13 +521,27 @@ class DeltaChatBridge:
             logging.warning("Dropped websocket payload with non-object JSON")
             return
 
-        if payload.get("type") != "message":
+        payload_type = payload.get("type")
+        if payload_type == "message":
+            try:
+                await asyncio.to_thread(self._send_to_deltachat, payload)
+            except Exception as exc:
+                logging.error("Failed to send message to Delta Chat: %s", exc)
             return
 
-        try:
-            await asyncio.to_thread(self._send_to_deltachat, payload)
-        except Exception as exc:
-            logging.error("Failed to send message to Delta Chat: %s", exc)
+        if payload_type == "typing":
+            try:
+                await asyncio.to_thread(self._set_typing, payload)
+            except Exception as exc:
+                logging.error("Failed to update Delta Chat typing state: %s", exc)
+            return
+
+        if payload_type == "reaction":
+            try:
+                await asyncio.to_thread(self._send_reaction, payload)
+            except Exception as exc:
+                logging.error("Failed to send Delta Chat reaction: %s", exc)
+            return
 
     async def _ws_handler(self, websocket: Any) -> None:
         peer = websocket.remote_address

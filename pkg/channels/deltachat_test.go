@@ -48,6 +48,40 @@ func waitDeltaConn(t *testing.T, connCh <-chan *websocket.Conn) *websocket.Conn 
 	}
 }
 
+func readDeltaPayload(t *testing.T, conn *websocket.Conn, timeout time.Duration) map[string]interface{} {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("bridge read failed: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("failed to unmarshal bridge payload: %v", err)
+	}
+	return payload
+}
+
+func waitDeltaPayloadType(t *testing.T, conn *websocket.Conn, expectedType string, timeout time.Duration) map[string]interface{} {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+
+		payload := readDeltaPayload(t, conn, remaining)
+		if payload["type"] == expectedType {
+			return payload
+		}
+	}
+
+	t.Fatalf("timed out waiting for payload type %q", expectedType)
+	return nil
+}
+
 func TestDeltaChatChannelSend(t *testing.T) {
 	mb := bus.NewMessageBus()
 	defer mb.Close()
@@ -173,6 +207,58 @@ func TestDeltaChatChannelIncomingMessage(t *testing.T) {
 	}
 }
 
+func TestDeltaChatChannelIncomingMediaOnlyMessage(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	incoming := map[string]interface{}{
+		"type": "message",
+		"id":   "m-media",
+		"from": "dc-user-43",
+		"chat": "chat-43",
+		"media": []interface{}{
+			"/accounts/1/blob/image.jpg",
+		},
+	}
+	if err := conn.WriteJSON(incoming); err != nil {
+		t.Fatalf("bridge write failed: %v", err)
+	}
+
+	consumeCtx, consumeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer consumeCancel()
+
+	msg, ok := mb.ConsumeInbound(consumeCtx)
+	if !ok {
+		t.Fatal("expected inbound media-only message from DeltaChat")
+	}
+
+	if msg.Content != "[file]" {
+		t.Fatalf("content = %q, want [file]", msg.Content)
+	}
+	if len(msg.Media) != 1 || msg.Media[0] != "/accounts/1/blob/image.jpg" {
+		t.Fatalf("media = %v, want [/accounts/1/blob/image.jpg]", msg.Media)
+	}
+}
+
 func TestDeltaChatChannelAllowlist(t *testing.T) {
 	mb := bus.NewMessageBus()
 	defer mb.Close()
@@ -273,5 +359,163 @@ func TestDeltaChatChannelReconnectAfterDisconnect(t *testing.T) {
 
 	if got["content"] != "hello after reconnect" {
 		t.Fatalf("content = %v, want hello after reconnect", got["content"])
+	}
+}
+
+func TestDeltaChatChannelTypingIndicatorLifecycle(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	incoming := map[string]interface{}{
+		"type":    "message",
+		"id":      "m-typing",
+		"from":    "dc-user-typing",
+		"chat":    "chat-typing",
+		"content": "hello",
+	}
+	if err := conn.WriteJSON(incoming); err != nil {
+		t.Fatalf("bridge write failed: %v", err)
+	}
+
+	typingStart := waitDeltaPayloadType(t, conn, "typing", 2*time.Second)
+	if typingStart["typing"] != true {
+		t.Fatalf("typing start payload has typing=%v, want true", typingStart["typing"])
+	}
+
+	if err := ch.Send(ctx, bus.OutboundMessage{Channel: "deltachat", ChatID: "chat-typing", Content: "response"}); err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	typingStop := waitDeltaPayloadType(t, conn, "typing", 2*time.Second)
+	if typingStop["typing"] != false {
+		t.Fatalf("typing stop payload has typing=%v, want false", typingStop["typing"])
+	}
+
+	messagePayload := waitDeltaPayloadType(t, conn, "message", 2*time.Second)
+	if messagePayload["content"] != "response" {
+		t.Fatalf("message content = %v, want response", messagePayload["content"])
+	}
+}
+
+func TestDeltaChatChannelSendReactionCommand(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	out := bus.OutboundMessage{
+		Channel: "deltachat",
+		ChatID:  "chat-7",
+		Content: "/react 42 👍",
+	}
+	if err := ch.Send(ctx, out); err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	payload := waitDeltaPayloadType(t, conn, "reaction", 2*time.Second)
+	if payload["message_id"] != "42" {
+		t.Fatalf("message_id = %v, want 42", payload["message_id"])
+	}
+	if payload["reaction"] != "👍" {
+		t.Fatalf("reaction = %v, want 👍", payload["reaction"])
+	}
+}
+
+func TestDeltaChatChannelIncomingReaction(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	incoming := map[string]interface{}{
+		"type":       "reaction",
+		"from":       "dc-user-99",
+		"from_name":  "Reaction User",
+		"chat":       "chat-r",
+		"message_id": "77",
+		"reaction":   "🔥",
+	}
+	if err := conn.WriteJSON(incoming); err != nil {
+		t.Fatalf("bridge write failed: %v", err)
+	}
+
+	consumeCtx, consumeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer consumeCancel()
+
+	msg, ok := mb.ConsumeInbound(consumeCtx)
+	if !ok {
+		t.Fatal("expected inbound reaction from DeltaChat")
+	}
+
+	if msg.Channel != "deltachat" {
+		t.Fatalf("channel = %q, want deltachat", msg.Channel)
+	}
+	if msg.SenderID != "dc-user-99" {
+		t.Fatalf("sender = %q, want dc-user-99", msg.SenderID)
+	}
+	if msg.ChatID != "chat-r" {
+		t.Fatalf("chat = %q, want chat-r", msg.ChatID)
+	}
+	if msg.Metadata["event"] != "reaction" {
+		t.Fatalf("metadata.event = %q, want reaction", msg.Metadata["event"])
+	}
+	if msg.Metadata["reacted_message_id"] != "77" {
+		t.Fatalf("metadata.reacted_message_id = %q, want 77", msg.Metadata["reacted_message_id"])
+	}
+	if msg.Metadata["reaction"] != "🔥" {
+		t.Fatalf("metadata.reaction = %q, want 🔥", msg.Metadata["reaction"])
 	}
 }

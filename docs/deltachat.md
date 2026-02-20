@@ -57,6 +57,25 @@ docker compose restart picoclaw
 - Account state is persisted in Docker volume `picoclaw-deltachat-accounts`.
 - The bridge listens inside Docker at `ws://deltachat-bridge:3100`.
 - If `allow_from` is empty, all senders are accepted. Restrict it once you know the sender addresses you trust.
+- File attachments are supported both ways. Inbound DeltaChat files are delivered as media paths under `/accounts/...`.
+- For outbound files, prefer paths under `/root/.picoclaw/workspace/...` so both containers can access them.
+
+## Typing + Reactions
+
+- While PicoClaw is processing an incoming DeltaChat message, the channel sends a best-effort typing signal via draft updates.
+- Delta Chat core does not currently expose remote typing events to bots, so user -> PicoClaw typing indicators are not available.
+- Incoming DeltaChat reactions are forwarded to PicoClaw as synthetic inbound messages with metadata `event=reaction`.
+- Outbound reactions are supported with a command-style message content:
+
+```text
+/react <message_id> <emoji>
+```
+
+Example:
+
+```text
+/react 12345 👍
+```
 
 ## Bring Your Own Credentials
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,13 +17,28 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
+var deltaReactionCommandPattern = regexp.MustCompile(`(?i)^/react\s+([0-9]+)\s+(.+)$`)
+
+type typingCancel struct {
+	fn context.CancelFunc
+}
+
+func (c *typingCancel) Cancel() {
+	if c == nil || c.fn == nil {
+		return
+	}
+	c.fn()
+}
+
 type DeltaChatChannel struct {
 	*BaseChannel
-	conn      *websocket.Conn
-	config    config.DeltaChatConfig
-	url       string
-	mu        sync.Mutex
-	connected bool
+	conn           *websocket.Conn
+	config         config.DeltaChatConfig
+	url            string
+	mu             sync.Mutex
+	stopTyping     sync.Map // chatID -> typingCancel
+	typingInterval time.Duration
+	connected      bool
 }
 
 func (c *DeltaChatChannel) connect() error {
@@ -72,10 +89,11 @@ func NewDeltaChatChannel(cfg config.DeltaChatConfig, bus *bus.MessageBus) (*Delt
 	base := NewBaseChannel("deltachat", cfg, bus, cfg.AllowFrom)
 
 	return &DeltaChatChannel{
-		BaseChannel: base,
-		config:      cfg,
-		url:         cfg.BridgeURL,
-		connected:   false,
+		BaseChannel:    base,
+		config:         cfg,
+		url:            cfg.BridgeURL,
+		typingInterval: 4 * time.Second,
+		connected:      false,
 	}, nil
 }
 
@@ -96,6 +114,13 @@ func (c *DeltaChatChannel) Start(ctx context.Context) error {
 func (c *DeltaChatChannel) Stop(ctx context.Context) error {
 	logger.InfoCF("deltachat", "Stopping DeltaChat channel", nil)
 
+	c.stopTyping.Range(func(_, value interface{}) bool {
+		if cf, ok := value.(*typingCancel); ok && cf != nil {
+			cf.Cancel()
+		}
+		return true
+	})
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -112,7 +137,22 @@ func (c *DeltaChatChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+func parseDeltaReactionCommand(content string) (string, string, bool) {
+	trimmed := strings.TrimSpace(content)
+	matches := deltaReactionCommandPattern.FindStringSubmatch(trimmed)
+	if len(matches) != 3 {
+		return "", "", false
+	}
+
+	reaction := strings.TrimSpace(matches[2])
+	if reaction == "" {
+		return "", "", false
+	}
+
+	return matches[1], reaction, true
+}
+
+func (c *DeltaChatChannel) sendPayload(payload map[string]interface{}) error {
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()
@@ -131,18 +171,9 @@ func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) er
 		}
 	}
 
-	payload := map[string]interface{}{
-		"type":    "message",
-		"to":      msg.ChatID,
-		"content": msg.Content,
-	}
-	if len(msg.Media) > 0 {
-		payload["media"] = msg.Media
-	}
-
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
+		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
 	c.mu.Lock()
@@ -165,10 +196,97 @@ func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) er
 		if closeErr := conn.Close(); closeErr != nil {
 			logger.ErrorCF("deltachat", "Error closing DeltaChat connection after send failure", map[string]interface{}{"error": closeErr.Error()})
 		}
-		return fmt.Errorf("failed to send message: %w", err)
+		return fmt.Errorf("failed to send payload: %w", err)
 	}
 
 	return nil
+}
+
+func (c *DeltaChatChannel) sendTyping(chatID string, isTyping bool) error {
+	payload := map[string]interface{}{
+		"type":   "typing",
+		"to":     chatID,
+		"typing": isTyping,
+	}
+	if isTyping {
+		payload["content"] = "..."
+	}
+	return c.sendPayload(payload)
+}
+
+func (c *DeltaChatChannel) stopTypingIndicator(chatID string) {
+	stopped := false
+	if stop, ok := c.stopTyping.Load(chatID); ok {
+		if cf, ok := stop.(*typingCancel); ok && cf != nil {
+			cf.Cancel()
+		}
+		c.stopTyping.Delete(chatID)
+		stopped = true
+	}
+
+	if !stopped {
+		return
+	}
+
+	if err := c.sendTyping(chatID, false); err != nil {
+		logger.DebugCF("deltachat", "Failed to send stop typing signal", map[string]interface{}{"chat_id": chatID, "error": err.Error()})
+	}
+}
+
+func (c *DeltaChatChannel) startTypingIndicator(chatID string) {
+	c.stopTypingIndicator(chatID)
+
+	interval := c.typingInterval
+	if interval <= 0 {
+		interval = 4 * time.Second
+	}
+
+	typingCtx, typingCancelFn := context.WithTimeout(context.Background(), 5*time.Minute)
+	c.stopTyping.Store(chatID, &typingCancel{fn: typingCancelFn})
+
+	if err := c.sendTyping(chatID, true); err != nil {
+		logger.DebugCF("deltachat", "Failed to send typing signal", map[string]interface{}{"chat_id": chatID, "error": err.Error()})
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-typingCtx.Done():
+				return
+			case <-ticker.C:
+				if err := c.sendTyping(chatID, true); err != nil {
+					logger.DebugCF("deltachat", "Failed to refresh typing signal", map[string]interface{}{"chat_id": chatID, "error": err.Error()})
+				}
+			}
+		}
+	}()
+}
+
+func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+	c.stopTypingIndicator(msg.ChatID)
+
+	if messageID, reaction, ok := parseDeltaReactionCommand(msg.Content); ok && len(msg.Media) == 0 {
+		reactionPayload := map[string]interface{}{
+			"type":       "reaction",
+			"to":         msg.ChatID,
+			"message_id": messageID,
+			"reaction":   reaction,
+		}
+		return c.sendPayload(reactionPayload)
+	}
+
+	payload := map[string]interface{}{
+		"type":    "message",
+		"to":      msg.ChatID,
+		"content": msg.Content,
+	}
+	if len(msg.Media) > 0 {
+		payload["media"] = msg.Media
+	}
+
+	return c.sendPayload(payload)
 }
 
 func (c *DeltaChatChannel) listen(ctx context.Context) {
@@ -208,8 +326,11 @@ func (c *DeltaChatChannel) listen(ctx context.Context) {
 				continue
 			}
 
-			if msgType == "message" {
+			switch msgType {
+			case "message":
 				c.handleIncomingMessage(msg)
+			case "reaction":
+				c.handleIncomingReaction(msg)
 			}
 		}
 	}
@@ -241,8 +362,12 @@ func (c *DeltaChatChannel) handleIncomingMessage(msg map[string]interface{}) {
 		}
 	}
 
-	if content == "" && len(mediaPaths) == 0 {
-		content = "[empty message]"
+	if content == "" {
+		if len(mediaPaths) > 0 {
+			content = "[file]"
+		} else {
+			content = "[empty message]"
+		}
 	}
 
 	metadata := make(map[string]string)
@@ -256,4 +381,68 @@ func (c *DeltaChatChannel) handleIncomingMessage(msg map[string]interface{}) {
 	logger.DebugCF("deltachat", "Received message", map[string]interface{}{"sender": senderID, "preview": utils.Truncate(content, 50)})
 
 	c.HandleMessage(senderID, chatID, content, mediaPaths, metadata)
+	c.startTypingIndicator(chatID)
+}
+
+func (c *DeltaChatChannel) handleIncomingReaction(msg map[string]interface{}) {
+	senderID, ok := msg["from"].(string)
+	if !ok {
+		return
+	}
+
+	chatID, ok := msg["chat"].(string)
+	if !ok {
+		chatID = senderID
+	}
+
+	reactedMessageID := ""
+	if messageID, ok := msg["message_id"].(string); ok {
+		reactedMessageID = messageID
+	} else if messageID, ok := msg["id"].(string); ok {
+		reactedMessageID = messageID
+	}
+
+	reaction := ""
+	if singleReaction, ok := msg["reaction"].(string); ok {
+		reaction = strings.TrimSpace(singleReaction)
+	}
+	if reaction == "" {
+		if reactionList, ok := msg["reactions"].([]interface{}); ok {
+			emojis := make([]string, 0, len(reactionList))
+			for _, item := range reactionList {
+				if emoji, ok := item.(string); ok && strings.TrimSpace(emoji) != "" {
+					emojis = append(emojis, strings.TrimSpace(emoji))
+				}
+			}
+			reaction = strings.Join(emojis, " ")
+		}
+	}
+
+	content := "[reaction]"
+	if reactedMessageID != "" {
+		if reaction != "" {
+			content = fmt.Sprintf("[reaction to %s] %s", reactedMessageID, reaction)
+		} else {
+			content = fmt.Sprintf("[reaction to %s]", reactedMessageID)
+		}
+	} else if reaction != "" {
+		content = fmt.Sprintf("[reaction] %s", reaction)
+	}
+
+	metadata := map[string]string{
+		"event": "reaction",
+	}
+	if reactedMessageID != "" {
+		metadata["reacted_message_id"] = reactedMessageID
+	}
+	if reaction != "" {
+		metadata["reaction"] = reaction
+	}
+	if userName, ok := msg["from_name"].(string); ok {
+		metadata["user_name"] = userName
+	}
+
+	logger.DebugCF("deltachat", "Received reaction", map[string]interface{}{"sender": senderID, "reaction": reaction, "message_id": reactedMessageID})
+
+	c.HandleMessage(senderID, chatID, content, nil, metadata)
 }
