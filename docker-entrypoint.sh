@@ -4,6 +4,120 @@ set -e
 PICOCLAW_HOME="${PICOCLAW_HOME:-/root/.picoclaw}"
 BUILTIN_SKILLS="/opt/picoclaw/builtin-skills"
 CONFIG="$PICOCLAW_HOME/config.json"
+BASE_APT_PACKAGES_FILE="${PICOCLAW_BASE_APT_PACKAGES_FILE:-/opt/picoclaw/base-apt-packages.txt}"
+BASE_APT_MANUAL_PACKAGES_FILE="${PICOCLAW_BASE_APT_MANUAL_PACKAGES_FILE:-/opt/picoclaw/base-apt-manual-packages.txt}"
+RESTORE_APT_PACKAGES="${PICOCLAW_RESTORE_APT_PACKAGES:-true}"
+APT_RESTORE_MARKER_FILE="${PICOCLAW_APT_RESTORE_MARKER_FILE:-/opt/picoclaw/.apt-restore.done}"
+
+restore_runtime_apt_packages() {
+    case "$RESTORE_APT_PACKAGES" in
+        0|false|FALSE|no|NO)
+            echo "[entrypoint] Runtime APT package restore disabled"
+            return
+            ;;
+    esac
+
+    if [ ! -f "$BASE_APT_PACKAGES_FILE" ]; then
+        echo "[entrypoint] Base APT package manifest not found, skipping restore"
+        return
+    fi
+
+    if [ -f "$APT_RESTORE_MARKER_FILE" ]; then
+        return
+    fi
+
+    current_manual_packages_file=$(mktemp)
+    base_manual_packages_file=$(mktemp)
+    extra_packages_file=$(mktemp)
+
+    if [ -f "$BASE_APT_MANUAL_PACKAGES_FILE" ] && apt-mark showmanual 2>/dev/null | sort -u > "$current_manual_packages_file"; then
+        sort -u "$BASE_APT_MANUAL_PACKAGES_FILE" > "$base_manual_packages_file"
+        comm -13 "$base_manual_packages_file" "$current_manual_packages_file" > "$extra_packages_file"
+    else
+        current_packages_file=$(mktemp)
+        base_packages_file=$(mktemp)
+        if ! dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | sort -u > "$current_packages_file"; then
+            echo "[entrypoint] Failed to read installed package list, skipping restore"
+            rm -f "$current_manual_packages_file" "$base_manual_packages_file" "$extra_packages_file" "$current_packages_file" "$base_packages_file"
+            return
+        fi
+        sort -u "$BASE_APT_PACKAGES_FILE" > "$base_packages_file"
+        comm -13 "$base_packages_file" "$current_packages_file" > "$extra_packages_file"
+        rm -f "$current_packages_file" "$base_packages_file"
+    fi
+
+    repair_dpkg_statoverrides
+
+    extra_count=$(grep -c . "$extra_packages_file" || true)
+    if [ "$extra_count" -eq 0 ]; then
+        marker_dir=$(dirname "$APT_RESTORE_MARKER_FILE")
+        mkdir -p "$marker_dir" && touch "$APT_RESTORE_MARKER_FILE"
+        rm -f "$current_manual_packages_file" "$base_manual_packages_file" "$extra_packages_file"
+        return
+    fi
+
+    echo "[entrypoint] Restoring $extra_count runtime APT package(s)"
+    if apt-get update >/dev/null 2>&1 && xargs -r apt-get install -y --no-install-recommends --reinstall < "$extra_packages_file"; then
+        marker_dir=$(dirname "$APT_RESTORE_MARKER_FILE")
+        mkdir -p "$marker_dir" && touch "$APT_RESTORE_MARKER_FILE"
+        echo "[entrypoint] Runtime APT package restore complete"
+    else
+        echo "[entrypoint] WARNING: Runtime APT package restore failed; continuing startup"
+    fi
+
+    rm -f "$current_manual_packages_file" "$base_manual_packages_file" "$extra_packages_file"
+}
+
+repair_dpkg_statoverrides() {
+    statoverride_file=$(mktemp)
+    if ! dpkg-statoverride --list > "$statoverride_file" 2>/dev/null; then
+        rm -f "$statoverride_file"
+        return
+    fi
+
+    removed_count=0
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        set -- $line
+        owner="$1"
+        group="$2"
+        shift 3
+        path="$*"
+
+        owner_missing=0
+        group_missing=0
+
+        case "$owner" in
+            ''|*[!0-9]*)
+                if ! getent passwd "$owner" >/dev/null 2>&1; then
+                    owner_missing=1
+                fi
+                ;;
+        esac
+
+        case "$group" in
+            ''|*[!0-9]*)
+                if ! getent group "$group" >/dev/null 2>&1; then
+                    group_missing=1
+                fi
+                ;;
+        esac
+
+        if [ "$owner_missing" -eq 1 ] || [ "$group_missing" -eq 1 ]; then
+            if dpkg-statoverride --remove "$path" >/dev/null 2>&1; then
+                removed_count=$((removed_count + 1))
+            fi
+        fi
+    done < "$statoverride_file"
+
+    rm -f "$statoverride_file"
+
+    if [ "$removed_count" -gt 0 ]; then
+        echo "[entrypoint] Removed $removed_count invalid dpkg-statoverride entr$( [ "$removed_count" -eq 1 ] && echo y || echo ies )"
+    fi
+}
+
+restore_runtime_apt_packages
 
 # First-run: initialize workspace and copy builtin skills
 if [ ! -d "$PICOCLAW_HOME/workspace/skills" ]; then

@@ -16,9 +16,12 @@ services:
       # Lives in ./picoclaw-home so you can edit config.json directly.
       - ./picoclaw-home:/root/.picoclaw
 
-      # Persist software the assistant installs (apt, pip, etc.)
-      # across container recreations. The picoclaw binary itself
-      # lives in /opt so it always comes from the image.
+      # Persist software the assistant installs.
+      # - /usr/local and /root/.local keep user-installed binaries/packages.
+      # - APT metadata volumes let entrypoint rehydrate extra apt packages
+      #   on container recreation.
+      # The picoclaw binary itself lives in /opt so it always comes
+      # from the image.
       - picoclaw-usr-local:/usr/local
       - picoclaw-var-lib-apt:/var/lib/apt
       - picoclaw-var-cache-apt:/var/cache/apt

@@ -28,6 +28,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-venv \
         build-essential \
         sudo \
+    && mkdir -p /opt/picoclaw \
+    && dpkg-query -W -f='${binary:Package}\n' | sort -u > /opt/picoclaw/base-apt-packages.txt \
+    && apt-mark showmanual | sort -u > /opt/picoclaw/base-apt-manual-packages.txt \
     && rm -rf /var/lib/apt/lists/*
 
 # Install picoclaw binary to /opt so it doesn't collide with

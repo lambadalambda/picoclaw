@@ -100,13 +100,20 @@ A default config is created automatically on first run.
 |---|---|---|
 | `./picoclaw-home/` (bind mount) | `/root/.picoclaw` | Config, workspace, skills, sessions |
 | `picoclaw-usr-local` (volume) | `/usr/local` | Binaries the assistant installs |
-| `picoclaw-var-lib-apt` (volume) | `/var/lib/apt` | APT package state |
+| `picoclaw-var-lib-apt` (volume) | `/var/lib/apt` | APT package state (for restore) |
 | `picoclaw-var-cache-apt` (volume) | `/var/cache/apt` | APT package cache |
-| `picoclaw-var-lib-dpkg` (volume) | `/var/lib/dpkg` | dpkg database |
+| `picoclaw-var-lib-dpkg` (volume) | `/var/lib/dpkg` | dpkg database (for restore) |
 | `picoclaw-pip` (volume) | `/root/.local` | pip-installed packages |
 
 The picoclaw binary itself lives in `/opt/picoclaw/bin` (outside any volume),
 so it always reflects the latest image build.
+
+On startup, the entrypoint compares installed packages against the image's base
+APT manual-package manifest and automatically reinstalls extra runtime packages
+previously added by the agent.
+
+To avoid repeated work on normal container restarts, this restore runs once per
+container instance and writes a marker file in `/opt/picoclaw/.apt-restore.done`.
 
 ### Starting fresh
 
@@ -147,7 +154,19 @@ The runtime image is based on Debian bookworm and comes with:
 - `sudo`
 
 The assistant can install anything else it needs via `apt-get install` or
-`pip install`, and those packages will persist across restarts.
+`pip install`, and those packages will persist across restarts/recreates.
+
+If you ever want to disable automatic APT rehydration, set:
+
+```bash
+PICOCLAW_RESTORE_APT_PACKAGES=false
+```
+
+Optional marker path override:
+
+```bash
+PICOCLAW_APT_RESTORE_MARKER_FILE=/opt/picoclaw/.apt-restore.done
+```
 
 ## Architecture
 

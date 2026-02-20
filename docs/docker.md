@@ -58,12 +58,25 @@ docker compose build
 
 `docker-compose.yml` bind-mounts `./picoclaw-home` to `/root/.picoclaw`.
 
+Runtime software persistence notes:
+
+- `/usr/local` and `/root/.local` are persisted via named volumes.
+- Extra APT packages installed at runtime are automatically rehydrated on
+  startup (based on persisted apt manual-state + image baseline manifest).
+- Rehydration is marker-gated so it runs once per container instance.
+
 Important host paths:
 
 - `picoclaw-home/config.json`
 - `picoclaw-home/workspace/sessions/`
 - `picoclaw-home/workspace/memory/`
 - `picoclaw-home/workspace/skills/`
+
+Optional toggle:
+
+```env
+PICOCLAW_RESTORE_APT_PACKAGES=false
+```
 
 ## First-Run Behavior
 
