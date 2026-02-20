@@ -39,6 +39,7 @@ func TestWebSearchTool_UsesZAIBackendWhenConfigured(t *testing.T) {
 		Provider:        "zai",
 		ZAIAPIKey:       "zai-key",
 		ZAIAPIBase:      server.URL,
+		ZAIMCPURL:       "-",
 		ZAISearchEngine: "search-prime",
 		MaxResults:      5,
 	})
@@ -138,6 +139,7 @@ func TestWebSearchTool_AutoFallsBackToBraveWhenZAIRequestFails(t *testing.T) {
 		BraveAPIKey: "brave-key",
 		ZAIAPIKey:   "zai-key",
 		ZAIAPIBase:  zaiServer.URL,
+		ZAIMCPURL:   "-",
 		MaxResults:  5,
 	})
 	tool.braveAPIBase = braveServer.URL
@@ -149,6 +151,78 @@ func TestWebSearchTool_AutoFallsBackToBraveWhenZAIRequestFails(t *testing.T) {
 	}
 	if !strings.Contains(result, "Brave fallback") {
 		t.Fatalf("expected Brave fallback result, got: %q", result)
+	}
+}
+
+func TestWebSearchTool_UsesZAIMCPWhenAvailable(t *testing.T) {
+	const sessionID = "session-123"
+	var sawToolCall bool
+	var gotSearchQuery string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			t.Fatalf("path = %s, want /mcp", r.URL.Path)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("failed to parse request body: %v", err)
+		}
+
+		method, _ := payload["method"].(string)
+		w.Header().Set("Content-Type", "text/event-stream;charset=UTF-8")
+
+		switch method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", sessionID)
+			_, _ = w.Write([]byte("id:1\nevent:message\ndata:{\"jsonrpc\":\"2.0\",\"id\":\"init-1\",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"mcp-web-search-prime\",\"version\":\"0.0.1\"}}}\n\n"))
+		case "notifications/initialized":
+			if r.Header.Get("Mcp-Session-Id") != sessionID {
+				t.Fatalf("missing/invalid session id on initialized notification")
+			}
+			_, _ = w.Write([]byte("id:2\nevent:message\ndata:{\"jsonrpc\":\"2.0\",\"result\":{}}\n\n"))
+		case "tools/call":
+			sawToolCall = true
+			if r.Header.Get("Mcp-Session-Id") != sessionID {
+				t.Fatalf("missing/invalid session id on tools/call")
+			}
+			params, _ := payload["params"].(map[string]interface{})
+			args, _ := params["arguments"].(map[string]interface{})
+			gotSearchQuery, _ = args["search_query"].(string)
+			_, _ = w.Write([]byte("id:3\nevent:message\ndata:{\"jsonrpc\":\"2.0\",\"id\":\"call-1\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"[{\\\"title\\\":\\\"MCP Result\\\",\\\"link\\\":\\\"https://example.com/mcp\\\",\\\"content\\\":\\\"snippet\\\",\\\"media\\\":\\\"Example\\\"}]\"}]}}\n\n"))
+		default:
+			t.Fatalf("unexpected method: %s", method)
+		}
+	}))
+	defer server.Close()
+
+	tool := NewWebSearchTool(WebSearchToolConfig{
+		Provider:   "zai",
+		ZAIAPIKey:  "zai-key",
+		ZAIMCPURL:  server.URL + "/mcp",
+		ZAIAPIBase: "https://invalid.local",
+		MaxResults: 5,
+	})
+	tool.httpClient = server.Client()
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{"query": "latest golang release"})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	if !sawToolCall {
+		t.Fatal("expected MCP tools/call to be invoked")
+	}
+	if gotSearchQuery != "latest golang release" {
+		t.Fatalf("search_query = %q, want latest golang release", gotSearchQuery)
+	}
+	if !strings.Contains(result, "MCP Result") {
+		t.Fatalf("unexpected formatted output: %q", result)
 	}
 }
 
@@ -165,6 +239,7 @@ func TestWebSearchTool_NormalizesZAIAPIBaseFromCodingPath(t *testing.T) {
 		Provider:   "zai",
 		ZAIAPIKey:  "zai-key",
 		ZAIAPIBase: server.URL + "/coding/paas/v4",
+		ZAIMCPURL:  "-",
 	})
 	tool.httpClient = server.Client()
 

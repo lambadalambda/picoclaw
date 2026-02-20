@@ -16,6 +16,7 @@ import (
 const (
 	userAgent               = "Mozilla/5.0 (compatible; picoclaw/1.0)"
 	defaultZAISearchAPIBase = "https://api.z.ai/api"
+	defaultZAISearchMCPURL  = "https://api.z.ai/api/mcp/web_search_prime/mcp"
 )
 
 type WebSearchToolConfig struct {
@@ -24,6 +25,7 @@ type WebSearchToolConfig struct {
 	Provider        string
 	ZAIAPIKey       string
 	ZAIAPIBase      string
+	ZAIMCPURL       string
 	ZAISearchEngine string
 }
 
@@ -33,6 +35,7 @@ type WebSearchTool struct {
 	provider        string
 	zaiAPIKey       string
 	zaiAPIBase      string
+	zaiMCPURL       string
 	zaiSearchEngine string
 	braveAPIBase    string
 	httpClient      *http.Client
@@ -55,6 +58,7 @@ func NewWebSearchTool(cfg WebSearchToolConfig) *WebSearchTool {
 		provider:        strings.ToLower(strings.TrimSpace(cfg.Provider)),
 		zaiAPIKey:       strings.TrimSpace(cfg.ZAIAPIKey),
 		zaiAPIBase:      strings.TrimSpace(cfg.ZAIAPIBase),
+		zaiMCPURL:       strings.TrimSpace(cfg.ZAIMCPURL),
 		zaiSearchEngine: zaiSearchEngine,
 		braveAPIBase:    "https://api.search.brave.com",
 	}
@@ -218,6 +222,58 @@ func (t *WebSearchTool) executeBraveSearch(ctx context.Context, query string, co
 }
 
 func (t *WebSearchTool) executeZAISearch(ctx context.Context, query string, count int) (string, error) {
+	mcpEnabled := strings.TrimSpace(t.zaiMCPURL) != "-"
+	mcpErr := fmt.Errorf("disabled")
+	if mcpEnabled {
+		mcpResult, err := t.executeZAISearchMCP(ctx, query, count)
+		if err == nil {
+			return mcpResult, nil
+		}
+		mcpErr = err
+	}
+
+	directResult, directErr := t.executeZAISearchAPI(ctx, query, count)
+	if directErr == nil {
+		return directResult, nil
+	}
+	if !mcpEnabled {
+		return "", directErr
+	}
+
+	return "", fmt.Errorf("z.ai search failed (mcp: %v; api: %v)", mcpErr, directErr)
+}
+
+type zaiSearchResultItem struct {
+	Title   string `json:"title"`
+	Link    string `json:"link"`
+	Content string `json:"content"`
+	Media   string `json:"media"`
+}
+
+func formatZAISearchResults(query string, count int, items []zaiSearchResultItem) string {
+	if len(items) == 0 {
+		return fmt.Sprintf("No results for: %s", query)
+	}
+
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Results for: %s", query))
+	for i, item := range items {
+		if i >= count {
+			break
+		}
+		lines = append(lines, fmt.Sprintf("%d. %s\n   %s", i+1, item.Title, item.Link))
+		if item.Content != "" {
+			lines = append(lines, fmt.Sprintf("   %s", item.Content))
+		}
+		if item.Media != "" {
+			lines = append(lines, fmt.Sprintf("   Source: %s", item.Media))
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (t *WebSearchTool) executeZAISearchAPI(ctx context.Context, query string, count int) (string, error) {
 	apiBase := normalizeZAISearchAPIBase(t.zaiAPIBase)
 
 	reqBody := map[string]interface{}{
@@ -260,38 +316,182 @@ func (t *WebSearchTool) executeZAISearch(ctx context.Context, query string, coun
 	}
 
 	var searchResp struct {
-		SearchResult []struct {
-			Title   string `json:"title"`
-			Link    string `json:"link"`
-			Content string `json:"content"`
-			Media   string `json:"media"`
-		} `json:"search_result"`
+		SearchResult []zaiSearchResultItem `json:"search_result"`
 	}
 
 	if err := json.Unmarshal(body, &searchResp); err != nil {
 		return "", fmt.Errorf("failed to parse z.ai search response: %w", err)
 	}
 
-	if len(searchResp.SearchResult) == 0 {
-		return fmt.Sprintf("No results for: %s", query), nil
+	return formatZAISearchResults(query, count, searchResp.SearchResult), nil
+}
+
+func (t *WebSearchTool) executeZAISearchMCP(ctx context.Context, query string, count int) (string, error) {
+	mcpURL := strings.TrimSpace(t.zaiMCPURL)
+	if mcpURL == "" {
+		mcpURL = defaultZAISearchMCPURL
 	}
 
-	var lines []string
-	lines = append(lines, fmt.Sprintf("Results for: %s", query))
-	for i, item := range searchResp.SearchResult {
-		if i >= count {
-			break
-		}
-		lines = append(lines, fmt.Sprintf("%d. %s\n   %s", i+1, item.Title, item.Link))
-		if item.Content != "" {
-			lines = append(lines, fmt.Sprintf("   %s", item.Content))
-		}
-		if item.Media != "" {
-			lines = append(lines, fmt.Sprintf("   Source: %s", item.Media))
-		}
+	client := t.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
 	}
 
-	return strings.Join(lines, "\n"), nil
+	initReq := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      "init-1",
+		"method":  "initialize",
+		"params": map[string]interface{}{
+			"protocolVersion": "2025-03-26",
+			"capabilities":    map[string]interface{}{},
+			"clientInfo": map[string]interface{}{
+				"name":    "picoclaw-web-search",
+				"version": "1.0",
+			},
+		},
+	}
+
+	_, initHeaders, _, err := t.postZAIMCP(ctx, client, mcpURL, "", initReq)
+	if err != nil {
+		return "", fmt.Errorf("mcp initialize failed: %w", err)
+	}
+	sessionID := strings.TrimSpace(initHeaders.Get("Mcp-Session-Id"))
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(initHeaders.Get("mcp-session-id"))
+	}
+	if sessionID == "" {
+		return "", fmt.Errorf("mcp initialize did not return session id")
+	}
+
+	_, _, _, _ = t.postZAIMCP(ctx, client, mcpURL, sessionID, map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "notifications/initialized",
+		"params":  map[string]interface{}{},
+	})
+
+	_, _, callBody, err := t.postZAIMCP(ctx, client, mcpURL, sessionID, map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      "call-1",
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name": "webSearchPrime",
+			"arguments": map[string]interface{}{
+				"search_query": query,
+				"count":        count,
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("mcp tools/call failed: %w", err)
+	}
+
+	env, err := parseMCPEnvelope(callBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse mcp response: %w", err)
+	}
+	if env.Error != nil {
+		errPayload, _ := json.Marshal(env.Error)
+		return "", fmt.Errorf("mcp error: %s", strings.TrimSpace(string(errPayload)))
+	}
+	if len(env.Result.Content) == 0 {
+		return "", fmt.Errorf("mcp returned empty content")
+	}
+
+	text := strings.TrimSpace(env.Result.Content[0].Text)
+	if text == "" {
+		return "", fmt.Errorf("mcp returned empty text")
+	}
+
+	unquoted := ""
+	if err := json.Unmarshal([]byte(text), &unquoted); err == nil && strings.TrimSpace(unquoted) != "" {
+		text = strings.TrimSpace(unquoted)
+	}
+
+	var items []zaiSearchResultItem
+	if err := json.Unmarshal([]byte(text), &items); err == nil {
+		return formatZAISearchResults(query, count, items), nil
+	}
+
+	if strings.Contains(strings.ToLower(text), "error") {
+		return "", fmt.Errorf("mcp tool returned error text: %s", text)
+	}
+
+	return fmt.Sprintf("Results for: %s\n%s", query, text), nil
+}
+
+type mcpContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type mcpEnvelope struct {
+	Error  interface{} `json:"error"`
+	Result struct {
+		Content []mcpContentBlock `json:"content"`
+	} `json:"result"`
+}
+
+func parseMCPEnvelope(body []byte) (*mcpEnvelope, error) {
+	data := extractSSEDataPayload(body)
+	if len(data) == 0 {
+		return nil, fmt.Errorf("no data payload in mcp response")
+	}
+
+	var env mcpEnvelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, err
+	}
+	return &env, nil
+}
+
+func extractSSEDataPayload(body []byte) []byte {
+	lines := strings.Split(string(body), "\n")
+	parts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "data:") {
+			parts = append(parts, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return []byte(strings.Join(parts, "\n"))
+}
+
+func (t *WebSearchTool) postZAIMCP(ctx context.Context, client *http.Client, mcpURL, sessionID string, payload map[string]interface{}) (int, http.Header, []byte, error) {
+	requestBody, err := json.Marshal(payload)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("failed to marshal mcp payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpURL, bytes.NewReader(requestBody))
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("failed to create mcp request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+t.zaiAPIKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if strings.TrimSpace(sessionID) != "" {
+		req.Header.Set("Mcp-Session-Id", strings.TrimSpace(sessionID))
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("failed to read mcp response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, resp.Header, body, fmt.Errorf("mcp http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	return resp.StatusCode, resp.Header, body, nil
 }
 
 func normalizeZAISearchAPIBase(rawBase string) string {

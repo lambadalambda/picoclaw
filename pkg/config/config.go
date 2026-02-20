@@ -141,6 +141,7 @@ type WebSearchConfig struct {
 	Provider        string `json:"provider" env:"PICOCLAW_TOOLS_WEB_SEARCH_PROVIDER"`
 	ZAIAPIKey       string `json:"zai_api_key" env:"PICOCLAW_TOOLS_WEB_SEARCH_ZAI_API_KEY"`
 	ZAIAPIBase      string `json:"zai_api_base" env:"PICOCLAW_TOOLS_WEB_SEARCH_ZAI_API_BASE"`
+	ZAIMCPURL       string `json:"zai_mcp_url" env:"PICOCLAW_TOOLS_WEB_SEARCH_ZAI_MCP_URL"`
 	ZAISearchEngine string `json:"zai_search_engine" env:"PICOCLAW_TOOLS_WEB_SEARCH_ZAI_SEARCH_ENGINE"`
 }
 
@@ -266,6 +267,7 @@ func DefaultConfig() *Config {
 					Provider:        "auto",
 					ZAIAPIKey:       "",
 					ZAIAPIBase:      "",
+					ZAIMCPURL:       "https://api.z.ai/api/mcp/web_search_prime/mcp",
 					ZAISearchEngine: "search-prime",
 				},
 			},
