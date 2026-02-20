@@ -510,7 +510,37 @@ class DeltaChatBridge:
                 break
             await self._broadcast(payload)
 
-    async def _handle_ws_message(self, raw_data: str) -> None:
+    async def _send_ws_ack(
+        self,
+        websocket: Any,
+        request_id: str,
+        payload_type: str,
+        ok: bool,
+        error_text: str = "",
+    ) -> None:
+        request_id = request_id.strip()
+        if request_id == "":
+            return
+
+        ack_payload: dict[str, Any] = {
+            "type": "ack",
+            "request_id": request_id,
+            "ok": ok,
+        }
+        payload_type = payload_type.strip()
+        if payload_type != "":
+            ack_payload["op"] = payload_type
+
+        error_text = error_text.strip()
+        if error_text != "":
+            ack_payload["error"] = error_text
+
+        try:
+            await websocket.send(json.dumps(ack_payload, ensure_ascii=True))
+        except Exception as exc:
+            logging.error("Failed to send Delta Chat bridge ack: %s", exc)
+
+    async def _handle_ws_message(self, websocket: Any, raw_data: str) -> None:
         try:
             payload = json.loads(raw_data)
         except json.JSONDecodeError:
@@ -522,11 +552,20 @@ class DeltaChatBridge:
             return
 
         payload_type = payload.get("type")
+        request_id_raw = payload.get("request_id")
+        request_id = str(request_id_raw).strip() if request_id_raw is not None else ""
+        require_ack = self._coerce_bool(payload.get("require_ack"), default=False) and request_id != ""
+
         if payload_type == "message":
             try:
                 await asyncio.to_thread(self._send_to_deltachat, payload)
             except Exception as exc:
                 logging.error("Failed to send message to Delta Chat: %s", exc)
+                if require_ack:
+                    await self._send_ws_ack(websocket, request_id, "message", False, str(exc))
+                return
+            if require_ack:
+                await self._send_ws_ack(websocket, request_id, "message", True)
             return
 
         if payload_type == "typing":
@@ -534,6 +573,11 @@ class DeltaChatBridge:
                 await asyncio.to_thread(self._set_typing, payload)
             except Exception as exc:
                 logging.error("Failed to update Delta Chat typing state: %s", exc)
+                if require_ack:
+                    await self._send_ws_ack(websocket, request_id, "typing", False, str(exc))
+                return
+            if require_ack:
+                await self._send_ws_ack(websocket, request_id, "typing", True)
             return
 
         if payload_type == "reaction":
@@ -541,7 +585,15 @@ class DeltaChatBridge:
                 await asyncio.to_thread(self._send_reaction, payload)
             except Exception as exc:
                 logging.error("Failed to send Delta Chat reaction: %s", exc)
+                if require_ack:
+                    await self._send_ws_ack(websocket, request_id, "reaction", False, str(exc))
+                return
+            if require_ack:
+                await self._send_ws_ack(websocket, request_id, "reaction", True)
             return
+
+        if require_ack:
+            await self._send_ws_ack(websocket, request_id, str(payload_type), False, "unsupported payload type")
 
     async def _ws_handler(self, websocket: Any) -> None:
         peer = websocket.remote_address
@@ -553,7 +605,7 @@ class DeltaChatBridge:
             async for raw_data in websocket:
                 if isinstance(raw_data, bytes):
                     raw_data = raw_data.decode("utf-8", errors="replace")
-                await self._handle_ws_message(raw_data)
+                await self._handle_ws_message(websocket, raw_data)
         except ConnectionClosed:
             pass
         finally:

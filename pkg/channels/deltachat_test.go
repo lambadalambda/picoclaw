@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -51,17 +52,49 @@ func waitDeltaConn(t *testing.T, connCh <-chan *websocket.Conn) *websocket.Conn 
 
 func readDeltaPayload(t *testing.T, conn *websocket.Conn, timeout time.Duration) map[string]interface{} {
 	t.Helper()
+	payload, err := readDeltaPayloadResult(conn, timeout)
+	if err != nil {
+		t.Fatalf("bridge read failed: %v", err)
+	}
+	return payload
+}
+
+func readDeltaPayloadResult(conn *websocket.Conn, timeout time.Duration) (map[string]interface{}, error) {
 	_ = conn.SetReadDeadline(time.Now().Add(timeout))
 	_, raw, err := conn.ReadMessage()
 	if err != nil {
-		t.Fatalf("bridge read failed: %v", err)
+		return nil, err
 	}
 
 	var payload map[string]interface{}
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("failed to unmarshal bridge payload: %v", err)
+		return nil, err
 	}
-	return payload
+	return payload, nil
+}
+
+func writeDeltaAckForPayload(conn *websocket.Conn, payload map[string]interface{}, ok bool, errorText string) error {
+	requestID, _ := payload["request_id"].(string)
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return fmt.Errorf("missing request_id in outbound payload")
+	}
+
+	requireAck, _ := payload["require_ack"].(bool)
+	if !requireAck {
+		return fmt.Errorf("outbound payload %q missing require_ack=true", payload["type"])
+	}
+
+	ackPayload := map[string]interface{}{
+		"type":       "ack",
+		"request_id": requestID,
+		"ok":         ok,
+	}
+	if errorText != "" {
+		ackPayload["error"] = errorText
+	}
+
+	return conn.WriteJSON(ackPayload)
 }
 
 func waitDeltaPayloadType(t *testing.T, conn *websocket.Conn, expectedType string, timeout time.Duration) map[string]interface{} {
@@ -112,20 +145,30 @@ func TestDeltaChatChannelSend(t *testing.T) {
 		Content: "hello from picoclaw",
 		Media:   []string{"/tmp/a.png"},
 	}
+	payloadCh := make(chan map[string]interface{}, 1)
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		payload, readErr := readDeltaPayloadResult(conn, 2*time.Second)
+		if readErr != nil {
+			bridgeErrCh <- readErr
+			return
+		}
+		if ackErr := writeDeltaAckForPayload(conn, payload, true, ""); ackErr != nil {
+			bridgeErrCh <- ackErr
+			return
+		}
+		payloadCh <- payload
+		bridgeErrCh <- nil
+	}()
+
 	if err := ch.Send(ctx, out); err != nil {
 		t.Fatalf("Send failed: %v", err)
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, payload, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("bridge read failed: %v", err)
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge ack failed: %v", bridgeErr)
 	}
-
-	var got map[string]interface{}
-	if err := json.Unmarshal(payload, &got); err != nil {
-		t.Fatalf("unmarshal bridge payload: %v", err)
-	}
+	got := <-payloadCh
 
 	if got["type"] != "message" {
 		t.Fatalf("type = %v, want message", got["type"])
@@ -343,20 +386,30 @@ func TestDeltaChatChannelReconnectAfterDisconnect(t *testing.T) {
 		ChatID:  "chat-reconnect",
 		Content: "hello after reconnect",
 	}
+	payloadCh := make(chan map[string]interface{}, 1)
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		payload, readErr := readDeltaPayloadResult(secondConn, 2*time.Second)
+		if readErr != nil {
+			bridgeErrCh <- readErr
+			return
+		}
+		if ackErr := writeDeltaAckForPayload(secondConn, payload, true, ""); ackErr != nil {
+			bridgeErrCh <- ackErr
+			return
+		}
+		payloadCh <- payload
+		bridgeErrCh <- nil
+	}()
+
 	if err := ch.Send(ctx, out); err != nil {
 		t.Fatalf("Send failed after reconnect: %v", err)
 	}
 
-	_ = secondConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, payload, err := secondConn.ReadMessage()
-	if err != nil {
-		t.Fatalf("bridge read failed after reconnect: %v", err)
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge ack failed after reconnect: %v", bridgeErr)
 	}
-
-	var got map[string]interface{}
-	if err := json.Unmarshal(payload, &got); err != nil {
-		t.Fatalf("unmarshal bridge payload after reconnect: %v", err)
-	}
+	got := <-payloadCh
 
 	if got["content"] != "hello after reconnect" {
 		t.Fatalf("content = %v, want hello after reconnect", got["content"])
@@ -401,17 +454,63 @@ func TestDeltaChatChannelTypingIndicatorLifecycle(t *testing.T) {
 	if typingStart["typing"] != true {
 		t.Fatalf("typing start payload has typing=%v, want true", typingStart["typing"])
 	}
+	typingStopCh := make(chan map[string]interface{}, 1)
+	messageCh := make(chan map[string]interface{}, 1)
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		var typingStop map[string]interface{}
+		var messagePayload map[string]interface{}
+
+		for time.Now().Before(deadline) {
+			remaining := time.Until(deadline)
+			payload, readErr := readDeltaPayloadResult(conn, remaining)
+			if readErr != nil {
+				bridgeErrCh <- readErr
+				return
+			}
+
+			typeName, _ := payload["type"].(string)
+			switch typeName {
+			case "typing":
+				typingValue, _ := payload["typing"].(bool)
+				if !typingValue && typingStop == nil {
+					typingStop = payload
+				}
+			case "message":
+				if messagePayload == nil {
+					if ackErr := writeDeltaAckForPayload(conn, payload, true, ""); ackErr != nil {
+						bridgeErrCh <- ackErr
+						return
+					}
+					messagePayload = payload
+				}
+			}
+
+			if typingStop != nil && messagePayload != nil {
+				typingStopCh <- typingStop
+				messageCh <- messagePayload
+				bridgeErrCh <- nil
+				return
+			}
+		}
+
+		bridgeErrCh <- fmt.Errorf("timed out waiting for typing stop + outbound message")
+	}()
 
 	if err := ch.Send(ctx, bus.OutboundMessage{Channel: "deltachat", ChatID: "chat-typing", Content: "response"}); err != nil {
 		t.Fatalf("Send failed: %v", err)
 	}
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge ack failed: %v", bridgeErr)
+	}
 
-	typingStop := waitDeltaPayloadType(t, conn, "typing", 2*time.Second)
+	typingStop := <-typingStopCh
 	if typingStop["typing"] != false {
 		t.Fatalf("typing stop payload has typing=%v, want false", typingStop["typing"])
 	}
 
-	messagePayload := waitDeltaPayloadType(t, conn, "message", 2*time.Second)
+	messagePayload := <-messageCh
 	if messagePayload["content"] != "response" {
 		t.Fatalf("message content = %v, want response", messagePayload["content"])
 	}
@@ -504,17 +603,63 @@ func TestDeltaChatChannelSkipsThinkingFallbackWhenReplyIsImmediate(t *testing.T)
 	if typingStart["typing"] != true {
 		t.Fatalf("typing start payload has typing=%v, want true", typingStart["typing"])
 	}
+	typingStopCh := make(chan map[string]interface{}, 1)
+	messageCh := make(chan map[string]interface{}, 1)
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		var typingStop map[string]interface{}
+		var messagePayload map[string]interface{}
+
+		for time.Now().Before(deadline) {
+			remaining := time.Until(deadline)
+			payload, readErr := readDeltaPayloadResult(conn, remaining)
+			if readErr != nil {
+				bridgeErrCh <- readErr
+				return
+			}
+
+			typeName, _ := payload["type"].(string)
+			switch typeName {
+			case "typing":
+				typingValue, _ := payload["typing"].(bool)
+				if !typingValue && typingStop == nil {
+					typingStop = payload
+				}
+			case "message":
+				if messagePayload == nil {
+					if ackErr := writeDeltaAckForPayload(conn, payload, true, ""); ackErr != nil {
+						bridgeErrCh <- ackErr
+						return
+					}
+					messagePayload = payload
+				}
+			}
+
+			if typingStop != nil && messagePayload != nil {
+				typingStopCh <- typingStop
+				messageCh <- messagePayload
+				bridgeErrCh <- nil
+				return
+			}
+		}
+
+		bridgeErrCh <- fmt.Errorf("timed out waiting for typing stop + outbound message")
+	}()
 
 	if err := ch.Send(ctx, bus.OutboundMessage{Channel: "deltachat", ChatID: "chat-fast", Content: "response"}); err != nil {
 		t.Fatalf("Send failed: %v", err)
 	}
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge ack failed: %v", bridgeErr)
+	}
 
-	typingStop := waitDeltaPayloadType(t, conn, "typing", 2*time.Second)
+	typingStop := <-typingStopCh
 	if typingStop["typing"] != false {
 		t.Fatalf("typing stop payload has typing=%v, want false", typingStop["typing"])
 	}
 
-	messagePayload := waitDeltaPayloadType(t, conn, "message", 2*time.Second)
+	messagePayload := <-messageCh
 	if messagePayload["content"] != "response" {
 		t.Fatalf("message content = %v, want response", messagePayload["content"])
 	}
@@ -566,16 +711,141 @@ func TestDeltaChatChannelSendReactionCommand(t *testing.T) {
 		ChatID:  "chat-7",
 		Content: "/react 42 👍",
 	}
+	payloadCh := make(chan map[string]interface{}, 1)
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		payload, readErr := readDeltaPayloadResult(conn, 2*time.Second)
+		if readErr != nil {
+			bridgeErrCh <- readErr
+			return
+		}
+		if ackErr := writeDeltaAckForPayload(conn, payload, true, ""); ackErr != nil {
+			bridgeErrCh <- ackErr
+			return
+		}
+		payloadCh <- payload
+		bridgeErrCh <- nil
+	}()
+
 	if err := ch.Send(ctx, out); err != nil {
 		t.Fatalf("Send failed: %v", err)
 	}
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge ack failed: %v", bridgeErr)
+	}
 
-	payload := waitDeltaPayloadType(t, conn, "reaction", 2*time.Second)
+	payload := <-payloadCh
 	if payload["message_id"] != "42" {
 		t.Fatalf("message_id = %v, want 42", payload["message_id"])
 	}
 	if payload["reaction"] != "👍" {
 		t.Fatalf("reaction = %v, want 👍", payload["reaction"])
+	}
+}
+
+func TestDeltaChatChannelSendReturnsErrorWhenBridgeRejectsAttachment(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		payload, readErr := readDeltaPayloadResult(conn, 2*time.Second)
+		if readErr != nil {
+			bridgeErrCh <- readErr
+			return
+		}
+		bridgeErrCh <- writeDeltaAckForPayload(conn, payload, false, "failed to attach file")
+	}()
+
+	err = ch.Send(ctx, bus.OutboundMessage{
+		Channel: "deltachat",
+		ChatID:  "chat-ack-error",
+		Content: "with file",
+		Media:   []string{"/tmp/not-found.png"},
+	})
+
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge ack write failed: %v", bridgeErr)
+	}
+
+	if err == nil {
+		t.Fatal("expected Send to fail when bridge rejects attachment")
+	}
+	if !strings.Contains(err.Error(), "failed to attach file") {
+		t.Fatalf("error = %v, want bridge rejection reason", err)
+	}
+}
+
+func TestDeltaChatChannelSendReturnsErrorWhenAckMissing(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	sendCtx, sendCancel := context.WithTimeout(ctx, 150*time.Millisecond)
+	defer sendCancel()
+
+	bridgeReadCh := make(chan error, 1)
+	go func() {
+		payload, readErr := readDeltaPayloadResult(conn, 2*time.Second)
+		if readErr != nil {
+			bridgeReadCh <- readErr
+			return
+		}
+		if _, ok := payload["request_id"].(string); !ok {
+			bridgeReadCh <- fmt.Errorf("missing request_id in outbound payload")
+			return
+		}
+		bridgeReadCh <- nil
+	}()
+
+	err = ch.Send(sendCtx, bus.OutboundMessage{
+		Channel: "deltachat",
+		ChatID:  "chat-ack-timeout",
+		Content: "with file",
+		Media:   []string{"/tmp/a.png"},
+	})
+	if bridgeReadErr := <-bridgeReadCh; bridgeReadErr != nil {
+		t.Fatalf("bridge read failed: %v", bridgeReadErr)
+	}
+	if err == nil {
+		t.Fatal("expected Send to fail when bridge ack is missing")
 	}
 }
 

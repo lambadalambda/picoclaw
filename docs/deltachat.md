@@ -59,6 +59,7 @@ docker compose restart picoclaw
 - If `allow_from` is empty, all senders are accepted. Restrict it once you know the sender addresses you trust.
 - File attachments are supported both ways. Inbound DeltaChat files are delivered as media paths under `/accounts/...`.
 - For outbound files, prefer paths under `/root/.picoclaw/workspace/...` so both containers can access them.
+- Outbound bridge sends are acknowledged; if DeltaChat rejects a file/message, the `message` tool call returns an error instead of silently succeeding.
 
 ## Typing + Reactions
 

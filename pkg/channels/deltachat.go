@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -30,6 +31,12 @@ func (c *typingCancel) Cancel() {
 	c.fn()
 }
 
+type deltaBridgeAck struct {
+	RequestID string
+	OK        bool
+	Error     string
+}
+
 type DeltaChatChannel struct {
 	*BaseChannel
 	conn           *websocket.Conn
@@ -37,7 +44,10 @@ type DeltaChatChannel struct {
 	url            string
 	mu             sync.Mutex
 	stopTyping     sync.Map // chatID -> typingCancel
+	pendingAcks    sync.Map // requestID -> chan deltaBridgeAck
+	ackSeq         atomic.Uint64
 	typingInterval time.Duration
+	ackTimeout     time.Duration
 	thinkingDelay  time.Duration
 	thinkingText   string
 	connected      bool
@@ -71,9 +81,8 @@ func (c *DeltaChatChannel) connect() error {
 
 func (c *DeltaChatChannel) markDisconnected(conn *websocket.Conn) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if conn != nil && c.conn != conn {
+		c.mu.Unlock()
 		return
 	}
 
@@ -85,6 +94,9 @@ func (c *DeltaChatChannel) markDisconnected(conn *websocket.Conn) {
 	}
 
 	c.connected = false
+	c.mu.Unlock()
+
+	c.failPendingAcks("DeltaChat bridge disconnected")
 }
 
 func NewDeltaChatChannel(cfg config.DeltaChatConfig, bus *bus.MessageBus) (*DeltaChatChannel, error) {
@@ -95,6 +107,7 @@ func NewDeltaChatChannel(cfg config.DeltaChatConfig, bus *bus.MessageBus) (*Delt
 		config:         cfg,
 		url:            cfg.BridgeURL,
 		typingInterval: 4 * time.Second,
+		ackTimeout:     15 * time.Second,
 		thinkingDelay:  3 * time.Second,
 		thinkingText:   "thinking...",
 		connected:      false,
@@ -138,6 +151,8 @@ func (c *DeltaChatChannel) Stop(ctx context.Context) error {
 	c.connected = false
 	c.setRunning(false)
 
+	c.failPendingAcks("DeltaChat channel stopped")
+
 	return nil
 }
 
@@ -154,6 +169,139 @@ func parseDeltaReactionCommand(content string) (string, string, bool) {
 	}
 
 	return matches[1], reaction, true
+}
+
+func (c *DeltaChatChannel) nextAckRequestID() string {
+	seq := c.ackSeq.Add(1)
+	return fmt.Sprintf("req-%d", seq)
+}
+
+func (c *DeltaChatChannel) failPendingAcks(reason string) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "DeltaChat bridge unavailable"
+	}
+
+	c.pendingAcks.Range(func(key, value interface{}) bool {
+		requestID, ok := key.(string)
+		if !ok {
+			return true
+		}
+
+		ackCh, ok := value.(chan deltaBridgeAck)
+		if !ok {
+			c.pendingAcks.Delete(requestID)
+			return true
+		}
+
+		ack := deltaBridgeAck{
+			RequestID: requestID,
+			OK:        false,
+			Error:     reason,
+		}
+		select {
+		case ackCh <- ack:
+		default:
+		}
+
+		c.pendingAcks.Delete(requestID)
+		return true
+	})
+}
+
+func (c *DeltaChatChannel) sendPayloadWithAck(ctx context.Context, payload map[string]interface{}) error {
+	requestID := c.nextAckRequestID()
+	requestPayload := make(map[string]interface{}, len(payload)+2)
+	for key, value := range payload {
+		requestPayload[key] = value
+	}
+	requestPayload["request_id"] = requestID
+	requestPayload["require_ack"] = true
+
+	ackCh := make(chan deltaBridgeAck, 1)
+	c.pendingAcks.Store(requestID, ackCh)
+	defer c.pendingAcks.Delete(requestID)
+
+	if err := c.sendPayload(requestPayload); err != nil {
+		return err
+	}
+
+	ackTimeout := c.ackTimeout
+	if ackTimeout <= 0 {
+		ackTimeout = 15 * time.Second
+	}
+
+	ackTimer := time.NewTimer(ackTimeout)
+	defer ackTimer.Stop()
+
+	payloadType, _ := payload["type"].(string)
+	if payloadType == "" {
+		payloadType = "payload"
+	}
+
+	select {
+	case ack := <-ackCh:
+		if ack.OK {
+			return nil
+		}
+
+		ackErr := strings.TrimSpace(ack.Error)
+		if ackErr == "" {
+			ackErr = "bridge rejected request"
+		}
+		return fmt.Errorf("DeltaChat %s send failed: %s", payloadType, ackErr)
+	case <-ackTimer.C:
+		return fmt.Errorf("timed out waiting for DeltaChat bridge acknowledgement for %s", payloadType)
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for DeltaChat bridge acknowledgement interrupted: %w", ctx.Err())
+	}
+}
+
+func (c *DeltaChatChannel) handleBridgeAck(msg map[string]interface{}) {
+	requestID, ok := msg["request_id"].(string)
+	if !ok {
+		return
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+
+	ack := deltaBridgeAck{
+		RequestID: requestID,
+		OK:        false,
+	}
+
+	if okRaw, exists := msg["ok"]; exists {
+		if parsedOK, ok := okRaw.(bool); ok {
+			ack.OK = parsedOK
+		}
+	}
+
+	if errRaw, exists := msg["error"]; exists {
+		if errText, ok := errRaw.(string); ok {
+			ack.Error = strings.TrimSpace(errText)
+		}
+	}
+
+	if !ack.OK && ack.Error == "" {
+		ack.Error = "bridge send failed"
+	}
+
+	value, loaded := c.pendingAcks.LoadAndDelete(requestID)
+	if !loaded {
+		return
+	}
+
+	ackCh, ok := value.(chan deltaBridgeAck)
+	if !ok {
+		return
+	}
+
+	select {
+	case ackCh <- ack:
+	default:
+	}
 }
 
 func (c *DeltaChatChannel) sendPayload(payload map[string]interface{}) error {
@@ -307,7 +455,7 @@ func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) er
 			"message_id": messageID,
 			"reaction":   reaction,
 		}
-		return c.sendPayload(reactionPayload)
+		return c.sendPayloadWithAck(ctx, reactionPayload)
 	}
 
 	payload := map[string]interface{}{
@@ -319,7 +467,7 @@ func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) er
 		payload["media"] = msg.Media
 	}
 
-	return c.sendPayload(payload)
+	return c.sendPayloadWithAck(ctx, payload)
 }
 
 func (c *DeltaChatChannel) listen(ctx context.Context) {
@@ -364,6 +512,8 @@ func (c *DeltaChatChannel) listen(ctx context.Context) {
 				c.handleIncomingMessage(msg)
 			case "reaction":
 				c.handleIncomingReaction(msg)
+			case "ack":
+				c.handleBridgeAck(msg)
 			}
 		}
 	}
