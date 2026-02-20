@@ -25,29 +25,32 @@ import (
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/sipeed/picoclaw/pkg/vision"
 )
 
 type AgentLoop struct {
-	bus              *bus.MessageBus
-	provider         providers.LLMProvider
-	workspace        string
-	model            string
-	contextWindow    int                   // Maximum context window size in tokens
-	chatOptions      providers.ChatOptions // Standard chat response options
-	compactOptions   providers.ChatOptions // Summarization/extraction options
-	messageBudget    providers.MessageBudget
-	maxIterations    int
-	llmTimeout       time.Duration // Per-LLM-call timeout (0 = disabled)
-	toolTimeout      time.Duration // Per-tool-call timeout (0 = disabled)
-	maxParallelTools int           // Max concurrent tools per iteration (<=0 = unlimited)
-	sessions         *session.SessionManager
-	contextBuilder   *ContextBuilder
-	tools            *tools.ToolRegistry
-	traceSeq         atomic.Uint64
-	running          atomic.Bool
-	summarizing      sync.Map            // Tracks which sessions are currently being summarized
-	statusDelay      time.Duration       // Delay before sending "still working" status updates (0 = disabled)
-	memoryStore      *memory.MemoryStore // Searchable memory DB (nil = disabled)
+	bus               *bus.MessageBus
+	provider          providers.LLMProvider
+	workspace         string
+	model             string
+	contextWindow     int                   // Maximum context window size in tokens
+	chatOptions       providers.ChatOptions // Standard chat response options
+	compactOptions    providers.ChatOptions // Summarization/extraction options
+	messageBudget     providers.MessageBudget
+	maxIterations     int
+	llmTimeout        time.Duration // Per-LLM-call timeout (0 = disabled)
+	toolTimeout       time.Duration // Per-tool-call timeout (0 = disabled)
+	maxParallelTools  int           // Max concurrent tools per iteration (<=0 = unlimited)
+	sessions          *session.SessionManager
+	contextBuilder    *ContextBuilder
+	tools             *tools.ToolRegistry
+	traceSeq          atomic.Uint64
+	running           atomic.Bool
+	summarizing       sync.Map            // Tracks which sessions are currently being summarized
+	statusDelay       time.Duration       // Delay before sending "still working" status updates (0 = disabled)
+	memoryStore       *memory.MemoryStore // Searchable memory DB (nil = disabled)
+	modelCapabilities providers.ModelCapabilities
+	visionAnalyzer    imageAnalyzer
 }
 
 // processOptions configures how a message is processed
@@ -133,25 +136,60 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		chatTemperature = 0.7
 	}
 
+	modelCaps := providers.ModelCapabilitiesFor(cfg.Agents.Defaults.Model)
+
+	var visionAnalyzer imageAnalyzer
+	visionCfg := cfg.Tools.Vision
+	if visionCfg.Enabled {
+		visionAPIKey := strings.TrimSpace(visionCfg.APIKey)
+		if visionAPIKey == "" {
+			visionAPIKey = strings.TrimSpace(cfg.Providers.Zhipu.APIKey)
+		}
+		visionAPIBase := strings.TrimSpace(visionCfg.APIBase)
+		if visionAPIBase == "" {
+			visionAPIBase = strings.TrimSpace(cfg.Providers.Zhipu.APIBase)
+			if visionAPIBase == "" {
+				visionAPIBase = "https://open.bigmodel.cn/api/paas/v4"
+			}
+		}
+		visionModel := strings.TrimSpace(visionCfg.Model)
+		if visionModel == "" {
+			visionModel = "glm-4.6v"
+		}
+
+		if visionAPIKey != "" {
+			visionClient := vision.NewClient(visionAPIKey, visionAPIBase, visionModel)
+			if visionCfg.TimeoutSeconds > 0 {
+				visionClient.Timeout = time.Duration(visionCfg.TimeoutSeconds) * time.Second
+			}
+			if visionCfg.MaxImages > 0 {
+				visionClient.MaxImages = visionCfg.MaxImages
+			}
+			visionAnalyzer = visionClient
+		}
+	}
+
 	return &AgentLoop{
-		bus:              msgBus,
-		provider:         provider,
-		workspace:        workspace,
-		model:            cfg.Agents.Defaults.Model,
-		contextWindow:    cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
-		chatOptions:      providers.ChatOptions{MaxTokens: 8192, Temperature: chatTemperature},
-		compactOptions:   providers.ChatOptions{MaxTokens: 1024, Temperature: 0.3},
-		messageBudget:    messageBudget,
-		maxIterations:    cfg.Agents.Defaults.MaxToolIterations,
-		llmTimeout:       time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds) * time.Second,
-		toolTimeout:      time.Duration(cfg.Agents.Defaults.ToolTimeoutSeconds) * time.Second,
-		maxParallelTools: cfg.Agents.Defaults.MaxParallelToolCalls,
-		sessions:         sessionsManager,
-		contextBuilder:   contextBuilder,
-		tools:            toolsRegistry,
-		summarizing:      sync.Map{},
-		statusDelay:      15 * time.Second,
-		memoryStore:      memoryDB,
+		bus:               msgBus,
+		provider:          provider,
+		workspace:         workspace,
+		model:             cfg.Agents.Defaults.Model,
+		contextWindow:     cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
+		chatOptions:       providers.ChatOptions{MaxTokens: 8192, Temperature: chatTemperature},
+		compactOptions:    providers.ChatOptions{MaxTokens: 1024, Temperature: 0.3},
+		messageBudget:     messageBudget,
+		maxIterations:     cfg.Agents.Defaults.MaxToolIterations,
+		llmTimeout:        time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds) * time.Second,
+		toolTimeout:       time.Duration(cfg.Agents.Defaults.ToolTimeoutSeconds) * time.Second,
+		maxParallelTools:  cfg.Agents.Defaults.MaxParallelToolCalls,
+		sessions:          sessionsManager,
+		contextBuilder:    contextBuilder,
+		tools:             toolsRegistry,
+		summarizing:       sync.Map{},
+		statusDelay:       15 * time.Second,
+		memoryStore:       memoryDB,
+		modelCapabilities: modelCaps,
+		visionAnalyzer:    visionAnalyzer,
 	}
 }
 
@@ -241,13 +279,18 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		return al.processSystemMessage(ctx, msg, traceID)
 	}
 
+	userMessage := msg.Content
+	if len(msg.Media) > 0 {
+		userMessage = al.buildUserMessageWithMediaContext(ctx, msg.Content, msg.Media, traceID)
+	}
+
 	// Process as user message
 	return al.runAgentLoop(ctx, processOptions{
 		SessionKey:      msg.SessionKey,
 		Channel:         msg.Channel,
 		ChatID:          msg.ChatID,
 		TraceID:         traceID,
-		UserMessage:     msg.Content,
+		UserMessage:     userMessage,
 		DefaultResponse: "I've completed processing but have no response to give.",
 		EnableSummary:   true,
 		SendResponse:    false,

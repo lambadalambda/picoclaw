@@ -1,0 +1,29 @@
+package providers
+
+import "strings"
+
+type ModelCapabilities struct {
+	SupportsVision bool
+}
+
+func ModelCapabilitiesFor(model string) ModelCapabilities {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	if normalized == "" {
+		return ModelCapabilities{}
+	}
+
+	switch {
+	case strings.Contains(normalized, "glm-5"):
+		return ModelCapabilities{SupportsVision: false}
+	case strings.Contains(normalized, "glm-4.6v"):
+		return ModelCapabilities{SupportsVision: true}
+	case strings.Contains(normalized, "gpt-4o"):
+		return ModelCapabilities{SupportsVision: true}
+	case strings.Contains(normalized, "claude-3"):
+		return ModelCapabilities{SupportsVision: true}
+	case strings.Contains(normalized, "gemini"):
+		return ModelCapabilities{SupportsVision: true}
+	default:
+		return ModelCapabilities{SupportsVision: false}
+	}
+}

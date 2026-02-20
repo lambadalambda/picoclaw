@@ -144,6 +144,15 @@ type WebToolsConfig struct {
 	Search WebSearchConfig `json:"search"`
 }
 
+type VisionToolsConfig struct {
+	Enabled        bool   `json:"enabled" env:"PICOCLAW_TOOLS_VISION_ENABLED"`
+	Model          string `json:"model" env:"PICOCLAW_TOOLS_VISION_MODEL"`
+	APIKey         string `json:"api_key" env:"PICOCLAW_TOOLS_VISION_API_KEY"`
+	APIBase        string `json:"api_base" env:"PICOCLAW_TOOLS_VISION_API_BASE"`
+	TimeoutSeconds int    `json:"timeout_seconds" env:"PICOCLAW_TOOLS_VISION_TIMEOUT_SECONDS"`
+	MaxImages      int    `json:"max_images" env:"PICOCLAW_TOOLS_VISION_MAX_IMAGES"`
+}
+
 type ToolPolicyConfig struct {
 	Enabled  bool     `json:"enabled" env:"PICOCLAW_TOOLS_POLICY_ENABLED"`
 	SafeMode bool     `json:"safe_mode" env:"PICOCLAW_TOOLS_POLICY_SAFE_MODE"`
@@ -152,8 +161,9 @@ type ToolPolicyConfig struct {
 }
 
 type ToolsConfig struct {
-	Web    WebToolsConfig   `json:"web"`
-	Policy ToolPolicyConfig `json:"policy"`
+	Web    WebToolsConfig    `json:"web"`
+	Policy ToolPolicyConfig  `json:"policy"`
+	Vision VisionToolsConfig `json:"vision"`
 }
 
 func DefaultConfig() *Config {
@@ -256,6 +266,14 @@ func DefaultConfig() *Config {
 				SafeMode: false,
 				Allow:    []string{},
 				Deny:     []string{},
+			},
+			Vision: VisionToolsConfig{
+				Enabled:        true,
+				Model:          "glm-4.6v",
+				APIKey:         "",
+				APIBase:        "",
+				TimeoutSeconds: 45,
+				MaxImages:      3,
 			},
 		},
 	}
