@@ -70,6 +70,7 @@ Behavior:
 - `zai_api_key`
 - `zai_api_base` (default used by tool: `https://api.z.ai/api`)
 - `zai_mcp_url` (default: `https://api.z.ai/api/mcp/web_search_prime/mcp`)
+- `zai_location` (`us` or `cn`, optional; passed to MCP `location` argument)
 - `zai_search_engine` (default: `search-prime`)
 
 Behavior:

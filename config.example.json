@@ -108,6 +108,7 @@
         "zai_api_key": "",
         "zai_api_base": "",
         "zai_mcp_url": "https://api.z.ai/api/mcp/web_search_prime/mcp",
+        "zai_location": "",
         "zai_search_engine": "search-prime"
       }
     },
