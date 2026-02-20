@@ -158,6 +158,7 @@ func TestWebSearchTool_UsesZAIMCPWhenAvailable(t *testing.T) {
 	const sessionID = "session-123"
 	var sawToolCall bool
 	var gotSearchQuery string
+	var gotLocation string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/mcp" {
@@ -194,6 +195,7 @@ func TestWebSearchTool_UsesZAIMCPWhenAvailable(t *testing.T) {
 			params, _ := payload["params"].(map[string]interface{})
 			args, _ := params["arguments"].(map[string]interface{})
 			gotSearchQuery, _ = args["search_query"].(string)
+			gotLocation, _ = args["location"].(string)
 			_, _ = w.Write([]byte("id:3\nevent:message\ndata:{\"jsonrpc\":\"2.0\",\"id\":\"call-1\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"[{\\\"title\\\":\\\"MCP Result\\\",\\\"link\\\":\\\"https://example.com/mcp\\\",\\\"content\\\":\\\"snippet\\\",\\\"media\\\":\\\"Example\\\"}]\"}]}}\n\n"))
 		default:
 			t.Fatalf("unexpected method: %s", method)
@@ -202,11 +204,12 @@ func TestWebSearchTool_UsesZAIMCPWhenAvailable(t *testing.T) {
 	defer server.Close()
 
 	tool := NewWebSearchTool(WebSearchToolConfig{
-		Provider:   "zai",
-		ZAIAPIKey:  "zai-key",
-		ZAIMCPURL:  server.URL + "/mcp",
-		ZAIAPIBase: "https://invalid.local",
-		MaxResults: 5,
+		Provider:    "zai",
+		ZAIAPIKey:   "zai-key",
+		ZAIMCPURL:   server.URL + "/mcp",
+		ZAIAPIBase:  "https://invalid.local",
+		ZAILocation: "us",
+		MaxResults:  5,
 	})
 	tool.httpClient = server.Client()
 
@@ -221,8 +224,32 @@ func TestWebSearchTool_UsesZAIMCPWhenAvailable(t *testing.T) {
 	if gotSearchQuery != "latest golang release" {
 		t.Fatalf("search_query = %q, want latest golang release", gotSearchQuery)
 	}
+	if gotLocation != "us" {
+		t.Fatalf("location = %q, want us", gotLocation)
+	}
 	if !strings.Contains(result, "MCP Result") {
 		t.Fatalf("unexpected formatted output: %q", result)
+	}
+}
+
+func TestNormalizeZAILocation(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "us", want: "us"},
+		{in: "US", want: "us"},
+		{in: "cn", want: "cn"},
+		{in: "  cn  ", want: "cn"},
+		{in: "eu", want: ""},
+		{in: "", want: ""},
+	}
+
+	for _, tc := range tests {
+		got := normalizeZAILocation(tc.in)
+		if got != tc.want {
+			t.Fatalf("normalizeZAILocation(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

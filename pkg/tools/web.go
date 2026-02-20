@@ -26,6 +26,7 @@ type WebSearchToolConfig struct {
 	ZAIAPIKey       string
 	ZAIAPIBase      string
 	ZAIMCPURL       string
+	ZAILocation     string
 	ZAISearchEngine string
 }
 
@@ -36,6 +37,7 @@ type WebSearchTool struct {
 	zaiAPIKey       string
 	zaiAPIBase      string
 	zaiMCPURL       string
+	zaiLocation     string
 	zaiSearchEngine string
 	braveAPIBase    string
 	httpClient      *http.Client
@@ -59,6 +61,7 @@ func NewWebSearchTool(cfg WebSearchToolConfig) *WebSearchTool {
 		zaiAPIKey:       strings.TrimSpace(cfg.ZAIAPIKey),
 		zaiAPIBase:      strings.TrimSpace(cfg.ZAIAPIBase),
 		zaiMCPURL:       strings.TrimSpace(cfg.ZAIMCPURL),
+		zaiLocation:     normalizeZAILocation(cfg.ZAILocation),
 		zaiSearchEngine: zaiSearchEngine,
 		braveAPIBase:    "https://api.search.brave.com",
 	}
@@ -294,6 +297,11 @@ func (t *WebSearchTool) executeZAISearchAPI(ctx context.Context, query string, c
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+t.zaiAPIKey)
 	req.Header.Set("Accept", "application/json")
+	if t.zaiLocation == "us" {
+		req.Header.Set("Accept-Language", "en-US,en")
+	} else if t.zaiLocation == "cn" {
+		req.Header.Set("Accept-Language", "zh-CN,zh")
+	}
 
 	client := t.httpClient
 	if client == nil {
@@ -374,11 +382,8 @@ func (t *WebSearchTool) executeZAISearchMCP(ctx context.Context, query string, c
 		"id":      "call-1",
 		"method":  "tools/call",
 		"params": map[string]interface{}{
-			"name": "webSearchPrime",
-			"arguments": map[string]interface{}{
-				"search_query": query,
-				"count":        count,
-			},
+			"name":      "webSearchPrime",
+			"arguments": t.buildZAIMCPArguments(query, count),
 		},
 	})
 	if err != nil {
@@ -492,6 +497,27 @@ func (t *WebSearchTool) postZAIMCP(ctx context.Context, client *http.Client, mcp
 	}
 
 	return resp.StatusCode, resp.Header, body, nil
+}
+
+func (t *WebSearchTool) buildZAIMCPArguments(query string, count int) map[string]interface{} {
+	args := map[string]interface{}{
+		"search_query": query,
+		"count":        count,
+	}
+	if t.zaiLocation != "" {
+		args["location"] = t.zaiLocation
+	}
+	return args
+}
+
+func normalizeZAILocation(raw string) string {
+	location := strings.ToLower(strings.TrimSpace(raw))
+	switch location {
+	case "us", "cn":
+		return location
+	default:
+		return ""
+	}
 }
 
 func normalizeZAISearchAPIBase(rawBase string) string {

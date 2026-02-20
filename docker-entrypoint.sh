@@ -233,6 +233,7 @@ patch_config '.tools.web.search.provider'    "${PICOCLAW_TOOLS_WEB_SEARCH_PROVID
 patch_config '.tools.web.search.zai_api_key' "${PICOCLAW_TOOLS_WEB_SEARCH_ZAI_API_KEY:-}"
 patch_config '.tools.web.search.zai_api_base' "${PICOCLAW_TOOLS_WEB_SEARCH_ZAI_API_BASE:-}"
 patch_config '.tools.web.search.zai_mcp_url' "${PICOCLAW_TOOLS_WEB_SEARCH_ZAI_MCP_URL:-}"
+patch_config '.tools.web.search.zai_location' "${PICOCLAW_TOOLS_WEB_SEARCH_ZAI_LOCATION:-}"
 patch_config '.tools.web.search.zai_search_engine' "${PICOCLAW_TOOLS_WEB_SEARCH_ZAI_SEARCH_ENGINE:-}"
 
 echo "[entrypoint] Starting picoclaw $*"

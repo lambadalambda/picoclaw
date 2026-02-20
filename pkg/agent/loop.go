@@ -80,6 +80,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		ZAIAPIKey:       zaiSearchKey,
 		ZAIAPIBase:      zaiSearchBase,
 		ZAIMCPURL:       webSearchCfg.ZAIMCPURL,
+		ZAILocation:     webSearchCfg.ZAILocation,
 		ZAISearchEngine: webSearchCfg.ZAISearchEngine,
 	})
 
