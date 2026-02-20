@@ -70,15 +70,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	os.MkdirAll(workspace, 0755)
 	messageBudget := messageBudgetFromDefaults(cfg.Agents.Defaults)
 	webSearchCfg := cfg.Tools.Web.Search
-	zaiSearchKey := strings.TrimSpace(webSearchCfg.ZAIAPIKey)
-	zaiSearchProvider := strings.ToLower(strings.TrimSpace(webSearchCfg.Provider))
-	if zaiSearchProvider == "zai" && zaiSearchKey == "" {
-		zaiSearchKey = strings.TrimSpace(cfg.Providers.Zhipu.APIKey)
-	}
-	zaiSearchBase := strings.TrimSpace(webSearchCfg.ZAIAPIBase)
-	if zaiSearchProvider == "zai" && zaiSearchBase == "" {
-		zaiSearchBase = strings.TrimSpace(cfg.Providers.Zhipu.APIBase)
-	}
+	zaiSearchKey, zaiSearchBase := resolveZAISearchCredentials(webSearchCfg, cfg.Providers)
 
 	toolsRegistry := tools.NewToolRegistry()
 	tools.RegisterCoreTools(toolsRegistry, workspace, tools.WebSearchToolConfig{
@@ -208,6 +200,23 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		modelCapabilities: modelCaps,
 		visionAnalyzer:    visionAnalyzer,
 	}
+}
+
+func resolveZAISearchCredentials(webCfg config.WebSearchConfig, providersCfg config.ProvidersConfig) (string, string) {
+	zaiSearchKey := strings.TrimSpace(webCfg.ZAIAPIKey)
+	if zaiSearchKey == "" {
+		zaiSearchKey = strings.TrimSpace(providersCfg.Zhipu.APIKey)
+	}
+	if zaiSearchKey == "" {
+		zaiSearchKey = strings.TrimSpace(providersCfg.Modal.APIKey)
+	}
+
+	zaiSearchBase := strings.TrimSpace(webCfg.ZAIAPIBase)
+	if zaiSearchBase == "" {
+		zaiSearchBase = strings.TrimSpace(providersCfg.Zhipu.APIBase)
+	}
+
+	return zaiSearchKey, zaiSearchBase
 }
 
 func (al *AgentLoop) Run(ctx context.Context) error {

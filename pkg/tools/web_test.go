@@ -117,3 +117,85 @@ func TestWebSearchTool_AutoWithoutKeysReturnsConfigError(t *testing.T) {
 		t.Fatalf("result = %q, want configuration error", result)
 	}
 }
+
+func TestWebSearchTool_AutoFallsBackToBraveWhenZAIRequestFails(t *testing.T) {
+	zaiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid key"}`))
+	}))
+	defer zaiServer.Close()
+
+	braveServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/res/v1/web/search" {
+			t.Fatalf("path = %s, want /res/v1/web/search", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"web":{"results":[{"title":"Brave fallback","url":"https://example.com/fallback","description":"ok"}]}}`))
+	}))
+	defer braveServer.Close()
+
+	tool := NewWebSearchTool(WebSearchToolConfig{
+		Provider:    "auto",
+		BraveAPIKey: "brave-key",
+		ZAIAPIKey:   "zai-key",
+		ZAIAPIBase:  zaiServer.URL,
+		MaxResults:  5,
+	})
+	tool.braveAPIBase = braveServer.URL
+	tool.httpClient = &http.Client{}
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{"query": "picoclaw"})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(result, "Brave fallback") {
+		t.Fatalf("expected Brave fallback result, got: %q", result)
+	}
+}
+
+func TestWebSearchTool_NormalizesZAIAPIBaseFromCodingPath(t *testing.T) {
+	var gotPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"search_result":[{"title":"ZAI result","link":"https://example.com","content":"ok"}]}`))
+	}))
+	defer server.Close()
+
+	tool := NewWebSearchTool(WebSearchToolConfig{
+		Provider:   "zai",
+		ZAIAPIKey:  "zai-key",
+		ZAIAPIBase: server.URL + "/coding/paas/v4",
+	})
+	tool.httpClient = server.Client()
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{"query": "picoclaw"})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	if gotPath != "/paas/v4/web_search" {
+		t.Fatalf("request path = %q, want /paas/v4/web_search", gotPath)
+	}
+}
+
+func TestNormalizeZAISearchAPIBase(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: defaultZAISearchAPIBase},
+		{name: "already root", in: "https://api.z.ai/api", want: "https://api.z.ai/api"},
+		{name: "zhipu base", in: "https://open.bigmodel.cn/api/paas/v4", want: "https://open.bigmodel.cn/api"},
+		{name: "coding base", in: "https://api.z.ai/api/coding/paas/v4", want: "https://api.z.ai/api"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeZAISearchAPIBase(tc.in)
+			if got != tc.want {
+				t.Fatalf("normalizeZAISearchAPIBase(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

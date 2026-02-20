@@ -106,7 +106,20 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]interface{}
 		if t.zaiAPIKey == "" {
 			return "Error: ZAI web search API key not configured", nil
 		}
-		return t.executeZAISearch(ctx, query, count)
+		result, err := t.executeZAISearch(ctx, query, count)
+		if err == nil {
+			return result, nil
+		}
+
+		if t.isAutoProvider() && t.braveAPIKey != "" {
+			fallbackResult, fallbackErr := t.executeBraveSearch(ctx, query, count)
+			if fallbackErr == nil {
+				return fallbackResult, nil
+			}
+			return "", fmt.Errorf("z.ai web search failed: %w; brave fallback failed: %v", err, fallbackErr)
+		}
+
+		return "", err
 	case "brave":
 		if t.braveAPIKey == "" {
 			if t.zaiAPIKey == "" {
@@ -118,6 +131,11 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]interface{}
 	default:
 		return "", fmt.Errorf("unsupported web search provider: %s", backend)
 	}
+}
+
+func (t *WebSearchTool) isAutoProvider() bool {
+	provider := strings.ToLower(strings.TrimSpace(t.provider))
+	return provider == "" || provider == "auto"
 }
 
 func (t *WebSearchTool) resolveSearchBackend() string {
@@ -200,10 +218,7 @@ func (t *WebSearchTool) executeBraveSearch(ctx context.Context, query string, co
 }
 
 func (t *WebSearchTool) executeZAISearch(ctx context.Context, query string, count int) (string, error) {
-	apiBase := strings.TrimRight(strings.TrimSpace(t.zaiAPIBase), "/")
-	if apiBase == "" {
-		apiBase = defaultZAISearchAPIBase
-	}
+	apiBase := normalizeZAISearchAPIBase(t.zaiAPIBase)
 
 	reqBody := map[string]interface{}{
 		"search_engine": t.zaiSearchEngine,
@@ -277,6 +292,33 @@ func (t *WebSearchTool) executeZAISearch(ctx context.Context, query string, coun
 	}
 
 	return strings.Join(lines, "\n"), nil
+}
+
+func normalizeZAISearchAPIBase(rawBase string) string {
+	apiBase := strings.TrimRight(strings.TrimSpace(rawBase), "/")
+	if apiBase == "" {
+		return defaultZAISearchAPIBase
+	}
+
+	lower := strings.ToLower(apiBase)
+	for {
+		switch {
+		case strings.HasSuffix(lower, "/coding/paas/v4"):
+			apiBase = apiBase[:len(apiBase)-len("/coding/paas/v4")]
+		case strings.HasSuffix(lower, "/paas/v4"):
+			apiBase = apiBase[:len(apiBase)-len("/paas/v4")]
+		default:
+			goto done
+		}
+		apiBase = strings.TrimRight(apiBase, "/")
+		lower = strings.ToLower(apiBase)
+	}
+
+done:
+	if apiBase == "" {
+		return defaultZAISearchAPIBase
+	}
+	return apiBase
 }
 
 type WebFetchTool struct {
