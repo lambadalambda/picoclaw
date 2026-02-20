@@ -111,6 +111,14 @@
       "safe_mode": false,
       "allow": [],
       "deny": []
+    },
+    "vision": {
+      "enabled": true,
+      "model": "glm-4.6v",
+      "api_key": "",
+      "api_base": "",
+      "timeout_seconds": 45,
+      "max_images": 3
     }
   },
   "gateway": {

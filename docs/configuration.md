@@ -99,6 +99,19 @@ If `providers.modal.api_base` is omitted, this default is used:
 
 - `https://api.us-west-2.modal.direct/v1`
 
+## Vision Fallback for Non-Vision Models
+
+Some models (for example `glm-5`) are treated as text-only. When a user sends image attachments and the active model is marked non-vision, PicoClaw can auto-run a vision fallback request and inject the result into the user message context.
+
+Config keys:
+
+- `tools.vision.enabled`
+- `tools.vision.model` (default: `glm-4.6v`)
+- `tools.vision.api_key` (optional; falls back to `providers.zhipu.api_key`)
+- `tools.vision.api_base` (optional; falls back to `providers.zhipu.api_base` or Zhipu default)
+- `tools.vision.timeout_seconds`
+- `tools.vision.max_images`
+
 ## Channels
 
 Enable channels under `channels.*` (Telegram, DeltaChat, Discord, DingTalk, etc.).
