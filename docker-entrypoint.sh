@@ -8,6 +8,24 @@ BASE_APT_PACKAGES_FILE="${PICOCLAW_BASE_APT_PACKAGES_FILE:-/opt/picoclaw/base-ap
 BASE_APT_MANUAL_PACKAGES_FILE="${PICOCLAW_BASE_APT_MANUAL_PACKAGES_FILE:-/opt/picoclaw/base-apt-manual-packages.txt}"
 RESTORE_APT_PACKAGES="${PICOCLAW_RESTORE_APT_PACKAGES:-true}"
 APT_RESTORE_MARKER_FILE="${PICOCLAW_APT_RESTORE_MARKER_FILE:-/opt/picoclaw/.apt-restore.done}"
+APT_RESTORE_MIN_FREE_KB="${PICOCLAW_APT_RESTORE_MIN_FREE_KB:-20480}"
+
+cleanup_apt_cache() {
+    apt-get clean >/dev/null 2>&1 || true
+    rm -rf /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/* 2>/dev/null || true
+}
+
+available_kb() {
+    target="$1"
+    output=$(df -Pk "$target" 2>/dev/null | tail -n 1 || true)
+    if [ -z "$output" ]; then
+        echo 0
+        return
+    fi
+
+    set -- $output
+    echo "${4:-0}"
+}
 
 restore_runtime_apt_packages() {
     case "$RESTORE_APT_PACKAGES" in
@@ -23,6 +41,23 @@ restore_runtime_apt_packages() {
     fi
 
     if [ -f "$APT_RESTORE_MARKER_FILE" ]; then
+        return
+    fi
+
+    cleanup_apt_cache
+
+    min_free_kb="$APT_RESTORE_MIN_FREE_KB"
+    case "$min_free_kb" in
+        ''|*[!0-9]*) min_free_kb=20480 ;;
+    esac
+
+    free_kb=$(available_kb /var/cache/apt)
+    case "$free_kb" in
+        ''|*[!0-9]*) free_kb=0 ;;
+    esac
+
+    if [ "$free_kb" -lt "$min_free_kb" ]; then
+        echo "[entrypoint] WARNING: Skipping runtime APT package restore (free ${free_kb}KB < required ${min_free_kb}KB). Free Docker disk space and restart to retry."
         return
     fi
 
@@ -58,10 +93,12 @@ restore_runtime_apt_packages() {
 
     echo "[entrypoint] Restoring $extra_count runtime APT package(s)"
     if apt-get update >/dev/null 2>&1 && xargs -r apt-get install -y --no-install-recommends --reinstall < "$extra_packages_file"; then
+        cleanup_apt_cache
         marker_dir=$(dirname "$APT_RESTORE_MARKER_FILE")
         mkdir -p "$marker_dir" && touch "$APT_RESTORE_MARKER_FILE"
         echo "[entrypoint] Runtime APT package restore complete"
     else
+        cleanup_apt_cache
         echo "[entrypoint] WARNING: Runtime APT package restore failed; continuing startup"
     fi
 
