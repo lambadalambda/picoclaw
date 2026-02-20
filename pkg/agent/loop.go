@@ -150,7 +150,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		contextBuilder:   contextBuilder,
 		tools:            toolsRegistry,
 		summarizing:      sync.Map{},
-		statusDelay:      30 * time.Second,
+		statusDelay:      15 * time.Second,
 		memoryStore:      memoryDB,
 	}
 }

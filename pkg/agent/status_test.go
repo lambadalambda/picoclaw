@@ -166,6 +166,26 @@ func TestStatusNotifier_ConcurrentSafety(t *testing.T) {
 	// Test passes if no race/panic
 }
 
+func TestStatusNotifier_IncludesBatchProgressHint(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	n := newStatusNotifier(msgBus, "telegram", "chat123", 40*time.Millisecond)
+	n.start("6 tools")
+
+	time.Sleep(90 * time.Millisecond)
+	n.stop()
+
+	msgs := collectOutbound(msgBus, 50*time.Millisecond)
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one status message, got none")
+	}
+
+	if !contains(msgs[0].Content, "6") {
+		t.Fatalf("status content %q should include batch progress hint", msgs[0].Content)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchSubstring(s, substr)
 }

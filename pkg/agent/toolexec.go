@@ -27,6 +27,7 @@ func (al *AgentLoop) executeToolsConcurrently(
 	if al.statusDelay > 0 && opts.Channel != "system" {
 		notifier = newStatusNotifier(al.bus, opts.Channel, opts.ChatID, al.statusDelay)
 		notifier.start(fmt.Sprintf("%d tools", len(toolCalls)))
+		notifier.setProgress(0, len(toolCalls))
 	}
 
 	results := al.tools.ExecuteToolCalls(ctx, toolCalls, tools.ExecuteToolCallsOptions{
@@ -38,6 +39,9 @@ func (al *AgentLoop) executeToolsConcurrently(
 		LogComponent: "agent",
 		Iteration:    iteration,
 		OnToolComplete: func(completed, total, index int, call providers.ToolCall, _ providers.Message) {
+			if notifier != nil {
+				notifier.setProgress(completed, total)
+			}
 			logger.DebugCF("agent", fmt.Sprintf("Tool completed: %s (%d/%d)", call.Name, completed, total),
 				map[string]interface{}{
 					"tool":      call.Name,
