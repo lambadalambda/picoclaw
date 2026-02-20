@@ -44,8 +44,8 @@ func TestConvertKeysToSnake(t *testing.T) {
 		"apiKey":  "test-key",
 		"apiBase": "https://example.com",
 		"nested": map[string]interface{}{
-			"maxTokens":   float64(8192),
-			"allowFrom":   []interface{}{"user1", "user2"},
+			"maxTokens": float64(8192),
+			"allowFrom": []interface{}{"user1", "user2"},
 			"deeperLevel": map[string]interface{}{
 				"clientId": "abc",
 			},
@@ -210,6 +210,11 @@ func TestConvertConfig(t *testing.T) {
 					"enabled": true,
 					"token":   "disc-token-456",
 				},
+				"deltachat": map[string]interface{}{
+					"enabled":    true,
+					"bridge_url": "ws://localhost:3100",
+					"allow_from": []interface{}{"dc-user"},
+				},
 			},
 		}
 
@@ -228,6 +233,15 @@ func TestConvertConfig(t *testing.T) {
 		}
 		if !cfg.Channels.Discord.Enabled {
 			t.Error("Discord should be enabled")
+		}
+		if !cfg.Channels.DeltaChat.Enabled {
+			t.Error("DeltaChat should be enabled")
+		}
+		if cfg.Channels.DeltaChat.BridgeURL != "ws://localhost:3100" {
+			t.Errorf("DeltaChat.BridgeURL = %q, want %q", cfg.Channels.DeltaChat.BridgeURL, "ws://localhost:3100")
+		}
+		if len(cfg.Channels.DeltaChat.AllowFrom) != 1 || cfg.Channels.DeltaChat.AllowFrom[0] != "dc-user" {
+			t.Errorf("DeltaChat.AllowFrom = %v, want [dc-user]", cfg.Channels.DeltaChat.AllowFrom)
 		}
 	})
 
@@ -256,11 +270,11 @@ func TestConvertConfig(t *testing.T) {
 		data := map[string]interface{}{
 			"agents": map[string]interface{}{
 				"defaults": map[string]interface{}{
-					"model":                "claude-3-opus",
-					"max_tokens":           float64(4096),
-					"temperature":          0.5,
-					"max_tool_iterations":  float64(10),
-					"workspace":            "~/.openclaw/workspace",
+					"model":               "claude-3-opus",
+					"max_tokens":          float64(4096),
+					"temperature":         0.5,
+					"max_tool_iterations": float64(10),
+					"workspace":           "~/.openclaw/workspace",
 				},
 			},
 		}
@@ -337,6 +351,8 @@ func TestMergeConfig(t *testing.T) {
 		incoming := config.DefaultConfig()
 		incoming.Channels.Telegram.Enabled = true
 		incoming.Channels.Telegram.Token = "tg-token"
+		incoming.Channels.DeltaChat.Enabled = true
+		incoming.Channels.DeltaChat.BridgeURL = "ws://localhost:3100"
 
 		result := MergeConfig(existing, incoming)
 		if !result.Channels.Telegram.Enabled {
@@ -344,6 +360,12 @@ func TestMergeConfig(t *testing.T) {
 		}
 		if result.Channels.Telegram.Token != "tg-token" {
 			t.Errorf("Telegram.Token = %q, want %q", result.Channels.Telegram.Token, "tg-token")
+		}
+		if !result.Channels.DeltaChat.Enabled {
+			t.Error("DeltaChat should be enabled after merge")
+		}
+		if result.Channels.DeltaChat.BridgeURL != "ws://localhost:3100" {
+			t.Errorf("DeltaChat.BridgeURL = %q, want %q", result.Channels.DeltaChat.BridgeURL, "ws://localhost:3100")
 		}
 	})
 

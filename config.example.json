@@ -39,6 +39,11 @@
       "bridge_url": "ws://localhost:3001",
       "allow_from": []
     },
+    "deltachat": {
+      "enabled": false,
+      "bridge_url": "ws://localhost:3100",
+      "allow_from": []
+    },
     "feishu": {
       "enabled": false,
       "app_id": "",

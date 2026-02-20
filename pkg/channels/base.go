@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -47,8 +48,17 @@ func (c *BaseChannel) IsAllowed(senderID string) bool {
 		return true
 	}
 
+	baseID := senderID
+	username := ""
+	if sep := strings.Index(senderID, "|"); sep > 0 {
+		baseID = senderID[:sep]
+		if sep+1 < len(senderID) {
+			username = senderID[sep+1:]
+		}
+	}
+
 	for _, allowed := range c.allowList {
-		if senderID == allowed {
+		if senderID == allowed || baseID == allowed || (username != "" && username == allowed) {
 			return true
 		}
 	}

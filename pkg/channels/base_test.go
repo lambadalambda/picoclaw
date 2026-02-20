@@ -22,6 +22,14 @@ func TestBaseChannel_NameAndPermissions(t *testing.T) {
 		t.Error("expected allowed-user to be permitted")
 	}
 
+	if !bc.IsAllowed("allowed-user|alice") {
+		t.Error("expected sender with suffix username to be permitted by base ID")
+	}
+
+	if !NewBaseChannel("telegram", nil, mb, []string{"alice"}).IsAllowed("123|alice") {
+		t.Error("expected sender with suffix username to be permitted by username")
+	}
+
 	if bc.IsAllowed("blocked-user") {
 		t.Error("expected blocked-user to be denied")
 	}

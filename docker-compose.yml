@@ -3,10 +3,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: picoclaw
+    container_name: ${PICOCLAW_CONTAINER_NAME:-picoclaw-alice}
     restart: unless-stopped
     ports:
-      - "18790:18790"
+      - "${PICOCLAW_HOST_PORT:-18790}:18790"
     volumes:
       # Picoclaw config, workspace, skills, and session data.
       # Lives in ./picoclaw-home so you can edit config.json directly.

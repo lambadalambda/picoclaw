@@ -71,6 +71,19 @@ func (m *Manager) initChannels() error {
 		}
 	}
 
+	if m.config.Channels.DeltaChat.Enabled && m.config.Channels.DeltaChat.BridgeURL != "" {
+		logger.DebugC("channels", "Attempting to initialize DeltaChat channel")
+		deltaChat, err := NewDeltaChatChannel(m.config.Channels.DeltaChat, m.bus)
+		if err != nil {
+			logger.ErrorCF("channels", "Failed to initialize DeltaChat channel", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			m.channels["deltachat"] = deltaChat
+			logger.InfoC("channels", "DeltaChat channel enabled successfully")
+		}
+	}
+
 	if m.config.Channels.Feishu.Enabled {
 		logger.DebugC("channels", "Attempting to initialize Feishu channel")
 		feishu, err := NewFeishuChannel(m.config.Channels.Feishu, m.bus)

@@ -101,7 +101,7 @@ If `providers.modal.api_base` is omitted, this default is used:
 
 ## Channels
 
-Enable channels under `channels.*` (Telegram, Discord, DingTalk, etc.).
+Enable channels under `channels.*` (Telegram, DeltaChat, Discord, DingTalk, etc.).
 
 Telegram example:
 
@@ -112,6 +112,20 @@ Telegram example:
       "enabled": true,
       "token": "YOUR_BOT_TOKEN",
       "allow_from": ["YOUR_USER_ID"]
+    }
+  }
+}
+```
+
+DeltaChat bridge example:
+
+```json
+{
+  "channels": {
+    "deltachat": {
+      "enabled": true,
+      "bridge_url": "ws://localhost:3100",
+      "allow_from": ["alice@example.org"]
     }
   }
 }

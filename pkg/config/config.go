@@ -40,20 +40,27 @@ type AgentDefaults struct {
 }
 
 type ChannelsConfig struct {
-	WhatsApp WhatsAppConfig `json:"whatsapp"`
-	Telegram TelegramConfig `json:"telegram"`
-	Feishu   FeishuConfig   `json:"feishu"`
-	Discord  DiscordConfig  `json:"discord"`
-	MaixCam  MaixCamConfig  `json:"maixcam"`
-	QQ       QQConfig       `json:"qq"`
-	DingTalk DingTalkConfig `json:"dingtalk"`
-	Slack    SlackConfig    `json:"slack"`
+	WhatsApp  WhatsAppConfig  `json:"whatsapp"`
+	DeltaChat DeltaChatConfig `json:"deltachat"`
+	Telegram  TelegramConfig  `json:"telegram"`
+	Feishu    FeishuConfig    `json:"feishu"`
+	Discord   DiscordConfig   `json:"discord"`
+	MaixCam   MaixCamConfig   `json:"maixcam"`
+	QQ        QQConfig        `json:"qq"`
+	DingTalk  DingTalkConfig  `json:"dingtalk"`
+	Slack     SlackConfig     `json:"slack"`
 }
 
 type WhatsAppConfig struct {
 	Enabled   bool     `json:"enabled" env:"PICOCLAW_CHANNELS_WHATSAPP_ENABLED"`
 	BridgeURL string   `json:"bridge_url" env:"PICOCLAW_CHANNELS_WHATSAPP_BRIDGE_URL"`
 	AllowFrom []string `json:"allow_from" env:"PICOCLAW_CHANNELS_WHATSAPP_ALLOW_FROM"`
+}
+
+type DeltaChatConfig struct {
+	Enabled   bool     `json:"enabled" env:"PICOCLAW_CHANNELS_DELTACHAT_ENABLED"`
+	BridgeURL string   `json:"bridge_url" env:"PICOCLAW_CHANNELS_DELTACHAT_BRIDGE_URL"`
+	AllowFrom []string `json:"allow_from" env:"PICOCLAW_CHANNELS_DELTACHAT_ALLOW_FROM"`
 }
 
 type TelegramConfig struct {
@@ -173,6 +180,11 @@ func DefaultConfig() *Config {
 			WhatsApp: WhatsAppConfig{
 				Enabled:   false,
 				BridgeURL: "ws://localhost:3001",
+				AllowFrom: []string{},
+			},
+			DeltaChat: DeltaChatConfig{
+				Enabled:   false,
+				BridgeURL: "ws://localhost:3100",
 				AllowFrom: []string{},
 			},
 			Telegram: TelegramConfig{

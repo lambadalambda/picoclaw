@@ -22,13 +22,14 @@ var supportedProviders = map[string]bool{
 }
 
 var supportedChannels = map[string]bool{
-	"telegram": true,
-	"discord":  true,
-	"whatsapp": true,
-	"feishu":   true,
-	"qq":       true,
+	"telegram":  true,
+	"discord":   true,
+	"whatsapp":  true,
+	"deltachat": true,
+	"feishu":    true,
+	"qq":        true,
 	"dingtalk":  true,
-	"maixcam":  true,
+	"maixcam":   true,
 }
 
 func findOpenClawConfig(openclawHome string) (string, error) {
@@ -155,6 +156,12 @@ func ConvertConfig(data map[string]interface{}) (*config.Config, []string, error
 				if v, ok := getString(cMap, "bridge_url"); ok {
 					cfg.Channels.WhatsApp.BridgeURL = v
 				}
+			case "deltachat":
+				cfg.Channels.DeltaChat.Enabled = enabled
+				cfg.Channels.DeltaChat.AllowFrom = allowFrom
+				if v, ok := getString(cMap, "bridge_url"); ok {
+					cfg.Channels.DeltaChat.BridgeURL = v
+				}
 			case "feishu":
 				cfg.Channels.Feishu.Enabled = enabled
 				cfg.Channels.Feishu.AllowFrom = allowFrom
@@ -257,6 +264,9 @@ func MergeConfig(existing, incoming *config.Config) *config.Config {
 	}
 	if !existing.Channels.WhatsApp.Enabled && incoming.Channels.WhatsApp.Enabled {
 		existing.Channels.WhatsApp = incoming.Channels.WhatsApp
+	}
+	if !existing.Channels.DeltaChat.Enabled && incoming.Channels.DeltaChat.Enabled {
+		existing.Channels.DeltaChat = incoming.Channels.DeltaChat
 	}
 	if !existing.Channels.Feishu.Enabled && incoming.Channels.Feishu.Enabled {
 		existing.Channels.Feishu = incoming.Channels.Feishu
