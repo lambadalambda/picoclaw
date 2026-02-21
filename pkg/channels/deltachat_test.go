@@ -516,7 +516,7 @@ func TestDeltaChatChannelTypingIndicatorLifecycle(t *testing.T) {
 	}
 }
 
-func TestDeltaChatChannelSendsThinkingFallbackForSlowResponses(t *testing.T) {
+func TestDeltaChatChannelSendsThinkingMarkerImmediately(t *testing.T) {
 	mb := bus.NewMessageBus()
 	defer mb.Close()
 
@@ -555,16 +555,16 @@ func TestDeltaChatChannelSendsThinkingFallbackForSlowResponses(t *testing.T) {
 		t.Fatalf("typing start payload has typing=%v, want true", typingStart["typing"])
 	}
 
-	thinkingPayload := waitDeltaPayloadType(t, conn, "message", 5*time.Second)
+	thinkingPayload := waitDeltaPayloadType(t, conn, "thinking_start", 2*time.Second)
 	if thinkingPayload["content"] != "thinking..." {
-		t.Fatalf("thinking message content = %v, want thinking...", thinkingPayload["content"])
+		t.Fatalf("thinking start content = %v, want thinking...", thinkingPayload["content"])
 	}
 	if thinkingPayload["to"] != "chat-thinking" {
-		t.Fatalf("thinking message to = %v, want chat-thinking", thinkingPayload["to"])
+		t.Fatalf("thinking start to = %v, want chat-thinking", thinkingPayload["to"])
 	}
 }
 
-func TestDeltaChatChannelSkipsThinkingFallbackWhenReplyIsImmediate(t *testing.T) {
+func TestDeltaChatChannelClearsThinkingMarkerBeforeReply(t *testing.T) {
 	mb := bus.NewMessageBus()
 	defer mb.Close()
 
@@ -575,8 +575,6 @@ func TestDeltaChatChannelSkipsThinkingFallbackWhenReplyIsImmediate(t *testing.T)
 	if err != nil {
 		t.Fatalf("NewDeltaChatChannel failed: %v", err)
 	}
-	ch.thinkingDelay = 100 * time.Millisecond
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -603,12 +601,20 @@ func TestDeltaChatChannelSkipsThinkingFallbackWhenReplyIsImmediate(t *testing.T)
 	if typingStart["typing"] != true {
 		t.Fatalf("typing start payload has typing=%v, want true", typingStart["typing"])
 	}
+
+	thinkingStart := waitDeltaPayloadType(t, conn, "thinking_start", 2*time.Second)
+	if thinkingStart["to"] != "chat-fast" {
+		t.Fatalf("thinking start to = %v, want chat-fast", thinkingStart["to"])
+	}
+
 	typingStopCh := make(chan map[string]interface{}, 1)
+	thinkingClearCh := make(chan map[string]interface{}, 1)
 	messageCh := make(chan map[string]interface{}, 1)
 	bridgeErrCh := make(chan error, 1)
 	go func() {
 		deadline := time.Now().Add(3 * time.Second)
 		var typingStop map[string]interface{}
+		var thinkingClear map[string]interface{}
 		var messagePayload map[string]interface{}
 
 		for time.Now().Before(deadline) {
@@ -626,6 +632,10 @@ func TestDeltaChatChannelSkipsThinkingFallbackWhenReplyIsImmediate(t *testing.T)
 				if !typingValue && typingStop == nil {
 					typingStop = payload
 				}
+			case "thinking_clear":
+				if thinkingClear == nil {
+					thinkingClear = payload
+				}
 			case "message":
 				if messagePayload == nil {
 					if ackErr := writeDeltaAckForPayload(conn, payload, true, ""); ackErr != nil {
@@ -636,15 +646,16 @@ func TestDeltaChatChannelSkipsThinkingFallbackWhenReplyIsImmediate(t *testing.T)
 				}
 			}
 
-			if typingStop != nil && messagePayload != nil {
+			if typingStop != nil && thinkingClear != nil && messagePayload != nil {
 				typingStopCh <- typingStop
+				thinkingClearCh <- thinkingClear
 				messageCh <- messagePayload
 				bridgeErrCh <- nil
 				return
 			}
 		}
 
-		bridgeErrCh <- fmt.Errorf("timed out waiting for typing stop + outbound message")
+		bridgeErrCh <- fmt.Errorf("timed out waiting for typing stop + thinking clear + outbound message")
 	}()
 
 	if err := ch.Send(ctx, bus.OutboundMessage{Channel: "deltachat", ChatID: "chat-fast", Content: "response"}); err != nil {
@@ -659,27 +670,14 @@ func TestDeltaChatChannelSkipsThinkingFallbackWhenReplyIsImmediate(t *testing.T)
 		t.Fatalf("typing stop payload has typing=%v, want false", typingStop["typing"])
 	}
 
+	thinkingClear := <-thinkingClearCh
+	if thinkingClear["to"] != "chat-fast" {
+		t.Fatalf("thinking clear to = %v, want chat-fast", thinkingClear["to"])
+	}
+
 	messagePayload := <-messageCh
 	if messagePayload["content"] != "response" {
 		t.Fatalf("message content = %v, want response", messagePayload["content"])
-	}
-
-	_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
-	_, raw, err := conn.ReadMessage()
-	if err != nil {
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			return
-		}
-		t.Fatalf("bridge read failed: %v", err)
-	}
-
-	var payload map[string]interface{}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("failed to unmarshal extra bridge payload: %v", err)
-	}
-
-	if payload["type"] == "message" && payload["content"] == "thinking..." {
-		t.Fatal("unexpected thinking fallback message for immediate response")
 	}
 }
 

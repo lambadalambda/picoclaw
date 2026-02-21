@@ -475,6 +475,25 @@ class DeltaChatBridge:
 
         chat.remove_draft()
 
+    def _set_thinking(self, payload: dict[str, Any]) -> None:
+        target_raw = payload.get("to")
+        target = str(target_raw).strip() if target_raw is not None else ""
+        if target == "":
+            raise ValueError("Missing 'to' in thinking payload")
+
+        chat = self._resolve_chat(target)
+        payload_type = str(payload.get("type") or "").strip()
+
+        if payload_type == "thinking_start":
+            content_raw = payload.get("content")
+            content = str(content_raw).strip() if content_raw is not None else ""
+            if content == "":
+                content = "thinking..."
+            chat.set_draft(text=content)
+            return
+
+        chat.remove_draft()
+
     def _send_reaction(self, payload: dict[str, Any]) -> None:
         assert self.account is not None
 
@@ -600,6 +619,18 @@ class DeltaChatBridge:
                 return
             if require_ack:
                 await self._send_ws_ack(websocket, request_id, "typing", True)
+            return
+
+        if payload_type in {"thinking_start", "thinking_clear"}:
+            try:
+                await asyncio.to_thread(self._set_thinking, payload)
+            except Exception as exc:
+                logging.error("Failed to update Delta Chat thinking marker: %s", exc)
+                if require_ack:
+                    await self._send_ws_ack(websocket, request_id, str(payload_type), False, str(exc))
+                return
+            if require_ack:
+                await self._send_ws_ack(websocket, request_id, str(payload_type), True)
             return
 
         if payload_type == "reaction":

@@ -49,7 +49,6 @@ type DeltaChatChannel struct {
 	ackSeq         atomic.Uint64
 	typingInterval time.Duration
 	ackTimeout     time.Duration
-	thinkingDelay  time.Duration
 	thinkingText   string
 	connected      bool
 }
@@ -109,7 +108,6 @@ func NewDeltaChatChannel(cfg config.DeltaChatConfig, bus *bus.MessageBus) (*Delt
 		url:            cfg.BridgeURL,
 		typingInterval: 4 * time.Second,
 		ackTimeout:     15 * time.Second,
-		thinkingDelay:  3 * time.Second,
 		thinkingText:   "thinking...",
 		connected:      false,
 	}, nil
@@ -395,6 +393,18 @@ func (c *DeltaChatChannel) sendTyping(chatID string, isTyping bool) error {
 	return c.sendPayload(payload)
 }
 
+func (c *DeltaChatChannel) sendThinking(chatID, payloadType, content string) error {
+	payload := map[string]interface{}{
+		"type": payloadType,
+		"to":   chatID,
+	}
+	content = strings.TrimSpace(content)
+	if content != "" {
+		payload["content"] = content
+	}
+	return c.sendPayload(payload)
+}
+
 func (c *DeltaChatChannel) stopTypingIndicator(chatID string) {
 	stopped := false
 	if stop, ok := c.stopTyping.Load(chatID); ok {
@@ -411,6 +421,10 @@ func (c *DeltaChatChannel) stopTypingIndicator(chatID string) {
 
 	if err := c.sendTyping(chatID, false); err != nil {
 		logger.DebugCF("deltachat", "Failed to send stop typing signal", map[string]interface{}{"chat_id": chatID, "error": err.Error()})
+	}
+
+	if err := c.sendThinking(chatID, "thinking_clear", ""); err != nil {
+		logger.DebugCF("deltachat", "Failed to clear thinking marker", map[string]interface{}{"chat_id": chatID, "error": err.Error()})
 	}
 }
 
@@ -430,32 +444,10 @@ func (c *DeltaChatChannel) startTypingIndicator(chatID string) {
 	}
 
 	thinkingText := strings.TrimSpace(c.thinkingText)
-	if c.thinkingDelay > 0 && thinkingText != "" {
-		go func(typingCtx context.Context, targetChatID string, delay time.Duration, content string) {
-			timer := time.NewTimer(delay)
-			defer timer.Stop()
-
-			select {
-			case <-typingCtx.Done():
-				return
-			case <-timer.C:
-			}
-
-			select {
-			case <-typingCtx.Done():
-				return
-			default:
-			}
-
-			payload := map[string]interface{}{
-				"type":    "message",
-				"to":      targetChatID,
-				"content": content,
-			}
-			if err := c.sendPayload(payload); err != nil {
-				logger.DebugCF("deltachat", "Failed to send thinking fallback message", map[string]interface{}{"chat_id": targetChatID, "error": err.Error()})
-			}
-		}(typingCtx, chatID, c.thinkingDelay, thinkingText)
+	if thinkingText != "" {
+		if err := c.sendThinking(chatID, "thinking_start", thinkingText); err != nil {
+			logger.DebugCF("deltachat", "Failed to send thinking marker", map[string]interface{}{"chat_id": chatID, "error": err.Error()})
+		}
 	}
 
 	go func() {
