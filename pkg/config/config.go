@@ -64,6 +64,9 @@ type DeltaChatConfig struct {
 	AckReaction   string   `json:"ack_reaction" env:"PICOCLAW_CHANNELS_DELTACHAT_ACK_REACTION"`
 	DoneReaction  string   `json:"done_reaction" env:"PICOCLAW_CHANNELS_DELTACHAT_DONE_REACTION"`
 	ErrorReaction string   `json:"error_reaction" env:"PICOCLAW_CHANNELS_DELTACHAT_ERROR_REACTION"`
+	// Forward incoming DeltaChat reactions as synthetic inbound messages.
+	// Disabled by default to avoid response loops when auto-reactions are enabled.
+	ForwardReactions bool `json:"forward_reactions" env:"PICOCLAW_CHANNELS_DELTACHAT_FORWARD_REACTIONS"`
 }
 
 type TelegramConfig struct {
@@ -202,12 +205,13 @@ func DefaultConfig() *Config {
 				AllowFrom: []string{},
 			},
 			DeltaChat: DeltaChatConfig{
-				Enabled:       false,
-				BridgeURL:     "ws://localhost:3100",
-				AllowFrom:     []string{},
-				AckReaction:   "\U0001F440",
-				DoneReaction:  "",
-				ErrorReaction: "",
+				Enabled:          false,
+				BridgeURL:        "ws://localhost:3100",
+				AllowFrom:        []string{},
+				AckReaction:      "\U0001F440",
+				DoneReaction:     "",
+				ErrorReaction:    "",
+				ForwardReactions: false,
 			},
 			Telegram: TelegramConfig{
 				Enabled:   false,

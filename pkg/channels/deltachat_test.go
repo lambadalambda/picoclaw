@@ -251,6 +251,50 @@ func TestDeltaChatChannelIncomingMessage(t *testing.T) {
 	}
 }
 
+func TestDeltaChatChannelIgnoresIncomingReactionsByDefault(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	incoming := map[string]interface{}{
+		"type":       "reaction",
+		"id":         "123",
+		"message_id": "123",
+		"from":       "dc-user-42",
+		"from_name":  "Alice",
+		"chat":       "chat-42",
+		"reaction":   "🤗",
+	}
+	if err := conn.WriteJSON(incoming); err != nil {
+		t.Fatalf("bridge write failed: %v", err)
+	}
+
+	consumeCtx, consumeCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer consumeCancel()
+
+	if _, ok := mb.ConsumeInbound(consumeCtx); ok {
+		t.Fatal("expected reaction event to be ignored")
+	}
+}
+
 func TestDeltaChatChannelIncomingMediaOnlyMessage(t *testing.T) {
 	mb := bus.NewMessageBus()
 	defer mb.Close()
@@ -1230,7 +1274,7 @@ func TestDeltaChatChannelIncomingReaction(t *testing.T) {
 	wsURL, connCh, cleanup := startDeltaBridge(t)
 	defer cleanup()
 
-	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL, ForwardReactions: true}, mb)
 	if err != nil {
 		t.Fatalf("NewDeltaChatChannel failed: %v", err)
 	}
@@ -1274,6 +1318,9 @@ func TestDeltaChatChannelIncomingReaction(t *testing.T) {
 	}
 	if msg.ChatID != "chat-r" {
 		t.Fatalf("chat = %q, want chat-r", msg.ChatID)
+	}
+	if msg.Content != "[reaction to 77] 🔥" {
+		t.Fatalf("content = %q, want [reaction to 77] 🔥", msg.Content)
 	}
 	if msg.Metadata["event"] != "reaction" {
 		t.Fatalf("metadata.event = %q, want reaction", msg.Metadata["event"])

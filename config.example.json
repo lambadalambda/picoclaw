@@ -45,7 +45,8 @@
       "allow_from": [],
       "ack_reaction": "\ud83d\udc40",
       "done_reaction": "",
-      "error_reaction": ""
+      "error_reaction": "",
+      "forward_reactions": false
     },
     "feishu": {
       "enabled": false,

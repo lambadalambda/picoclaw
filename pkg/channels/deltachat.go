@@ -747,6 +747,11 @@ func (c *DeltaChatChannel) handleIncomingReaction(msg map[string]interface{}) {
 		metadata["user_name"] = userName
 	}
 
+	if !c.config.ForwardReactions {
+		logger.DebugCF("deltachat", "Ignoring reaction", map[string]interface{}{"sender": senderID, "reaction": reaction, "message_id": reactedMessageID})
+		return
+	}
+
 	logger.DebugCF("deltachat", "Received reaction", map[string]interface{}{"sender": senderID, "reaction": reaction, "message_id": reactedMessageID})
 
 	c.HandleMessage(senderID, chatID, content, nil, metadata)
