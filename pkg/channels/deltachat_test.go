@@ -681,6 +681,215 @@ func TestDeltaChatChannelClearsThinkingMarkerBeforeReply(t *testing.T) {
 	}
 }
 
+func TestDeltaChatChannelSendsAckReactionOnIncomingMessage(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL, AckReaction: "\U0001F440"}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	incoming := map[string]interface{}{
+		"type":    "message",
+		"id":      "42",
+		"from":    "dc-user-ack",
+		"chat":    "chat-ack",
+		"content": "hello",
+	}
+	if err := conn.WriteJSON(incoming); err != nil {
+		t.Fatalf("bridge write failed: %v", err)
+	}
+
+	reactionPayload := waitDeltaPayloadType(t, conn, "reaction", 2*time.Second)
+	if reactionPayload["to"] != "chat-ack" {
+		t.Fatalf("reaction to = %v, want chat-ack", reactionPayload["to"])
+	}
+	if reactionPayload["message_id"] != "42" {
+		t.Fatalf("reaction message_id = %v, want 42", reactionPayload["message_id"])
+	}
+	if reactionPayload["reaction"] != "\U0001F440" {
+		t.Fatalf("reaction = %v, want 👀", reactionPayload["reaction"])
+	}
+}
+
+func TestDeltaChatChannelSendsDoneReactionAfterReply(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL, DoneReaction: "\u2705"}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	incoming := map[string]interface{}{
+		"type":    "message",
+		"id":      "77",
+		"from":    "dc-user-done",
+		"chat":    "chat-done",
+		"content": "hello",
+	}
+	if err := conn.WriteJSON(incoming); err != nil {
+		t.Fatalf("bridge write failed: %v", err)
+	}
+
+	doneReactionCh := make(chan map[string]interface{}, 1)
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			remaining := time.Until(deadline)
+			payload, readErr := readDeltaPayloadResult(conn, remaining)
+			if readErr != nil {
+				bridgeErrCh <- readErr
+				return
+			}
+
+			typeName, _ := payload["type"].(string)
+			switch typeName {
+			case "message":
+				if ackErr := writeDeltaAckForPayload(conn, payload, true, ""); ackErr != nil {
+					bridgeErrCh <- ackErr
+					return
+				}
+			case "reaction":
+				if payload["reaction"] == "\u2705" {
+					doneReactionCh <- payload
+					bridgeErrCh <- nil
+					return
+				}
+			}
+		}
+
+		bridgeErrCh <- fmt.Errorf("timed out waiting for done reaction")
+	}()
+
+	if err := ch.Send(ctx, bus.OutboundMessage{Channel: "deltachat", ChatID: "chat-done", Content: "response"}); err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge handling failed: %v", bridgeErr)
+	}
+
+	donePayload := <-doneReactionCh
+	if donePayload["to"] != "chat-done" {
+		t.Fatalf("done reaction to = %v, want chat-done", donePayload["to"])
+	}
+	if donePayload["message_id"] != "77" {
+		t.Fatalf("done reaction message_id = %v, want 77", donePayload["message_id"])
+	}
+}
+
+func TestDeltaChatChannelSendsErrorReactionWhenReplyFails(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL, ErrorReaction: "\u26a0\ufe0f"}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	incoming := map[string]interface{}{
+		"type":    "message",
+		"id":      "88",
+		"from":    "dc-user-error",
+		"chat":    "chat-error",
+		"content": "hello",
+	}
+	if err := conn.WriteJSON(incoming); err != nil {
+		t.Fatalf("bridge write failed: %v", err)
+	}
+
+	errorReactionCh := make(chan map[string]interface{}, 1)
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			remaining := time.Until(deadline)
+			payload, readErr := readDeltaPayloadResult(conn, remaining)
+			if readErr != nil {
+				bridgeErrCh <- readErr
+				return
+			}
+
+			typeName, _ := payload["type"].(string)
+			switch typeName {
+			case "message":
+				if ackErr := writeDeltaAckForPayload(conn, payload, false, "nope"); ackErr != nil {
+					bridgeErrCh <- ackErr
+					return
+				}
+			case "reaction":
+				if payload["reaction"] == "\u26a0\ufe0f" {
+					errorReactionCh <- payload
+					bridgeErrCh <- nil
+					return
+				}
+			}
+		}
+
+		bridgeErrCh <- fmt.Errorf("timed out waiting for error reaction")
+	}()
+
+	err = ch.Send(ctx, bus.OutboundMessage{Channel: "deltachat", ChatID: "chat-error", Content: "response"})
+	if err == nil {
+		t.Fatal("expected Send to fail when bridge rejects the reply")
+	}
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge handling failed: %v", bridgeErr)
+	}
+
+	errorPayload := <-errorReactionCh
+	if errorPayload["to"] != "chat-error" {
+		t.Fatalf("error reaction to = %v, want chat-error", errorPayload["to"])
+	}
+	if errorPayload["message_id"] != "88" {
+		t.Fatalf("error reaction message_id = %v, want 88", errorPayload["message_id"])
+	}
+}
+
 func TestDeltaChatChannelSendProfilePictureCommandWithPath(t *testing.T) {
 	mb := bus.NewMessageBus()
 	defer mb.Close()

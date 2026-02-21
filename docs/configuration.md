@@ -160,10 +160,19 @@ DeltaChat bridge example:
     "deltachat": {
       "enabled": true,
       "bridge_url": "ws://deltachat-bridge:3100",
-      "allow_from": ["alice@example.org"]
+      "allow_from": ["alice@example.org"],
+      "ack_reaction": "",
+      "done_reaction": "",
+      "error_reaction": ""
     }
   }
 }
 ```
+
+Optional DeltaChat reaction config:
+
+- `channels.deltachat.ack_reaction`: emoji reaction used as quick "seen/working" ack (empty disables)
+- `channels.deltachat.done_reaction`: emoji reaction sent after a reply is delivered (empty disables)
+- `channels.deltachat.error_reaction`: emoji reaction sent when a reply fails (empty disables)
 
 If you run PicoClaw without Docker sidecar/profile, use your local bridge address (for example `ws://localhost:3100`).

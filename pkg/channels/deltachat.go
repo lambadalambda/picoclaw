@@ -45,11 +45,15 @@ type DeltaChatChannel struct {
 	url            string
 	mu             sync.Mutex
 	stopTyping     sync.Map // chatID -> typingCancel
+	lastInboundMsg sync.Map // chatID -> messageID
 	pendingAcks    sync.Map // requestID -> chan deltaBridgeAck
 	ackSeq         atomic.Uint64
 	typingInterval time.Duration
 	ackTimeout     time.Duration
 	thinkingText   string
+	ackReaction    string
+	doneReaction   string
+	errorReaction  string
 	connected      bool
 }
 
@@ -101,6 +105,9 @@ func (c *DeltaChatChannel) markDisconnected(conn *websocket.Conn) {
 
 func NewDeltaChatChannel(cfg config.DeltaChatConfig, bus *bus.MessageBus) (*DeltaChatChannel, error) {
 	base := NewBaseChannel("deltachat", cfg, bus, cfg.AllowFrom)
+	ackReaction := strings.TrimSpace(cfg.AckReaction)
+	doneReaction := strings.TrimSpace(cfg.DoneReaction)
+	errorReaction := strings.TrimSpace(cfg.ErrorReaction)
 
 	return &DeltaChatChannel{
 		BaseChannel:    base,
@@ -109,8 +116,62 @@ func NewDeltaChatChannel(cfg config.DeltaChatConfig, bus *bus.MessageBus) (*Delt
 		typingInterval: 4 * time.Second,
 		ackTimeout:     15 * time.Second,
 		thinkingText:   "thinking...",
+		ackReaction:    ackReaction,
+		doneReaction:   doneReaction,
+		errorReaction:  errorReaction,
 		connected:      false,
 	}, nil
+}
+
+func isDeltaNumericMessageID(messageID string) bool {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return false
+	}
+	for _, r := range messageID {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return messageID != "0"
+}
+
+func (c *DeltaChatChannel) maybeSendReaction(chatID, messageID, reaction string) {
+	chatID = strings.TrimSpace(chatID)
+	messageID = strings.TrimSpace(messageID)
+	reaction = strings.TrimSpace(reaction)
+	if chatID == "" || messageID == "" || reaction == "" {
+		return
+	}
+	if !isDeltaNumericMessageID(messageID) {
+		return
+	}
+
+	payload := map[string]interface{}{
+		"type":       "reaction",
+		"to":         chatID,
+		"message_id": messageID,
+		"reaction":   reaction,
+	}
+	if err := c.sendPayload(payload); err != nil {
+		logger.DebugCF("deltachat", "Failed to send reaction", map[string]interface{}{"chat_id": chatID, "message_id": messageID, "error": err.Error()})
+	}
+}
+
+func (c *DeltaChatChannel) takeLastInboundMessageID(chatID string) string {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return ""
+	}
+	value, ok := c.lastInboundMsg.LoadAndDelete(chatID)
+	if !ok {
+		return ""
+	}
+	messageID, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(messageID)
 }
 
 func (c *DeltaChatChannel) Start(ctx context.Context) error {
@@ -500,7 +561,20 @@ func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) er
 		payload["media"] = msg.Media
 	}
 
-	return c.sendPayloadWithAck(ctx, payload)
+	if err := c.sendPayloadWithAck(ctx, payload); err != nil {
+		messageID := c.takeLastInboundMessageID(msg.ChatID)
+		if c.errorReaction != "" && messageID != "" {
+			c.maybeSendReaction(msg.ChatID, messageID, c.errorReaction)
+		}
+		return err
+	}
+
+	messageID := c.takeLastInboundMessageID(msg.ChatID)
+	if c.doneReaction != "" && messageID != "" {
+		c.maybeSendReaction(msg.ChatID, messageID, c.doneReaction)
+	}
+
+	return nil
 }
 
 func (c *DeltaChatChannel) listen(ctx context.Context) {
@@ -587,11 +661,26 @@ func (c *DeltaChatChannel) handleIncomingMessage(msg map[string]interface{}) {
 	}
 
 	metadata := make(map[string]string)
-	if messageID, ok := msg["id"].(string); ok {
-		metadata["message_id"] = messageID
+	messageID := ""
+	if rawMessageID, ok := msg["id"].(string); ok {
+		messageID = strings.TrimSpace(rawMessageID)
+		if messageID != "" {
+			metadata["message_id"] = messageID
+		}
 	}
 	if userName, ok := msg["from_name"].(string); ok {
 		metadata["user_name"] = userName
+	}
+
+	if messageID != "" {
+		if c.doneReaction != "" || c.errorReaction != "" {
+			if isDeltaNumericMessageID(messageID) {
+				c.lastInboundMsg.Store(chatID, messageID)
+			}
+		}
+		if c.ackReaction != "" {
+			c.maybeSendReaction(chatID, messageID, c.ackReaction)
+		}
 	}
 
 	logger.DebugCF("deltachat", "Received message", map[string]interface{}{"sender": senderID, "preview": utils.Truncate(content, 50)})

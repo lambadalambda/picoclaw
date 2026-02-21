@@ -42,7 +42,10 @@
     "deltachat": {
       "enabled": false,
       "bridge_url": "ws://localhost:3100",
-      "allow_from": []
+      "allow_from": [],
+      "ack_reaction": "\ud83d\udc40",
+      "done_reaction": "",
+      "error_reaction": ""
     },
     "feishu": {
       "enabled": false,

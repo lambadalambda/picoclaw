@@ -67,6 +67,10 @@ docker compose restart picoclaw
 - PicoClaw now sends `thinking...` feedback immediately, then clears it before posting the final reply.
 - Delta Chat core does not currently expose remote typing events to bots, so user -> PicoClaw typing indicators are not available.
 - Incoming DeltaChat reactions are forwarded to PicoClaw as synthetic inbound messages with metadata `event=reaction`.
+- Optional: PicoClaw can auto-react to inbound messages as a quick "seen/working" acknowledgement:
+  - `channels.deltachat.ack_reaction` (default: eyes)
+  - `channels.deltachat.done_reaction` (default: empty)
+  - `channels.deltachat.error_reaction` (default: empty)
 - Outbound reactions are supported with a command-style message content:
 
 ```text

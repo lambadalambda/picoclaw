@@ -58,9 +58,12 @@ type WhatsAppConfig struct {
 }
 
 type DeltaChatConfig struct {
-	Enabled   bool     `json:"enabled" env:"PICOCLAW_CHANNELS_DELTACHAT_ENABLED"`
-	BridgeURL string   `json:"bridge_url" env:"PICOCLAW_CHANNELS_DELTACHAT_BRIDGE_URL"`
-	AllowFrom []string `json:"allow_from" env:"PICOCLAW_CHANNELS_DELTACHAT_ALLOW_FROM"`
+	Enabled       bool     `json:"enabled" env:"PICOCLAW_CHANNELS_DELTACHAT_ENABLED"`
+	BridgeURL     string   `json:"bridge_url" env:"PICOCLAW_CHANNELS_DELTACHAT_BRIDGE_URL"`
+	AllowFrom     []string `json:"allow_from" env:"PICOCLAW_CHANNELS_DELTACHAT_ALLOW_FROM"`
+	AckReaction   string   `json:"ack_reaction" env:"PICOCLAW_CHANNELS_DELTACHAT_ACK_REACTION"`
+	DoneReaction  string   `json:"done_reaction" env:"PICOCLAW_CHANNELS_DELTACHAT_DONE_REACTION"`
+	ErrorReaction string   `json:"error_reaction" env:"PICOCLAW_CHANNELS_DELTACHAT_ERROR_REACTION"`
 }
 
 type TelegramConfig struct {
@@ -199,9 +202,12 @@ func DefaultConfig() *Config {
 				AllowFrom: []string{},
 			},
 			DeltaChat: DeltaChatConfig{
-				Enabled:   false,
-				BridgeURL: "ws://localhost:3100",
-				AllowFrom: []string{},
+				Enabled:       false,
+				BridgeURL:     "ws://localhost:3100",
+				AllowFrom:     []string{},
+				AckReaction:   "\U0001F440",
+				DoneReaction:  "",
+				ErrorReaction: "",
 			},
 			Telegram: TelegramConfig{
 				Enabled:   false,
