@@ -79,7 +79,7 @@ func (al *AgentLoop) extractAndStoreMemories(ctx context.Context, messages []pro
 		return
 	}
 
-	extractCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	extractCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	prompt := fmt.Sprintf(memoryExtractionPrompt, conversation)
