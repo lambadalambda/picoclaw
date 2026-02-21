@@ -54,6 +54,11 @@ docker compose down
 docker compose build
 ```
 
+## Timezone
+
+- `docker-compose.yml` binds host `/etc/localtime` into both services so container time matches the host timezone.
+- Optional override: set `TZ=Region/City` in `.env`.
+
 ## Data Persistence
 
 `docker-compose.yml` bind-mounts `./picoclaw-home` to `/root/.picoclaw`.

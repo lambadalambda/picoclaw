@@ -57,6 +57,11 @@ docker compose exec picoclaw picoclaw agent -m "install redis-tools and check th
 docker compose logs -f
 ```
 
+## Timezone
+
+Containers bind host `/etc/localtime`, so logs and cron run in the host timezone by default.
+You can override this explicitly by setting `TZ=Region/City` in `.env`.
+
 ## Configuration
 
 There are two ways to configure picoclaw in Docker:

@@ -16,6 +16,9 @@ services:
       # Lives in ./picoclaw-home so you can edit config.json directly.
       - ./picoclaw-home:/root/.picoclaw
 
+      # Keep container timezone aligned with the host timezone.
+      - /etc/localtime:/etc/localtime:ro
+
       # Persist software the assistant installs.
       # - /usr/local and /root/.local keep user-installed binaries/packages.
       # - APT metadata volumes let entrypoint rehydrate extra apt packages
@@ -49,6 +52,7 @@ services:
       - ./picoclaw-home:/root/.picoclaw
       - picoclaw-pip:/root/.local
       - picoclaw-deltachat-accounts:/accounts
+      - /etc/localtime:/etc/localtime:ro
     env_file:
       - path: .env
         required: false
