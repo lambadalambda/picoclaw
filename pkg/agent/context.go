@@ -71,6 +71,7 @@ Your workspace is at: %s
 - Memory: %s/memory/MEMORY.md
 - Daily Notes: %s/memory/YYYYMM/YYYYMMDD.md
 - Skills: %s/skills/{skill-name}/SKILL.md
+- Local Notes: %s/TOOLS.md
 
 %s
 
@@ -85,7 +86,7 @@ Your workspace is at: %s
 4. **Parallel tool calls** - You can call multiple tools simultaneously in a single response when the calls are independent of each other. This is more efficient than calling them sequentially.
 
 5. **Delegate with spawn** - When a task involves a skill (like image generation, complex builds, or multi-step research), use the spawn tool to delegate it to a background subagent. You can keep talking to the user while the subagent works. The subagent will report back when done.`,
-		now, runtime, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
+		now, runtime, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
 }
 
 func (cb *ContextBuilder) buildToolsSection() string {
@@ -146,6 +147,7 @@ func (cb *ContextBuilder) LoadBootstrapFiles() string {
 	bootstrapFiles := []string{
 		"AGENTS.md",
 		"SOUL.md",
+		"TOOLS.md",
 		"USER.md",
 		"IDENTITY.md",
 	}
