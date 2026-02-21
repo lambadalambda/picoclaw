@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -100,6 +101,17 @@ func (cs *CronService) Start() error {
 	cs.running = true
 	go cs.runLoop(cs.stopChan)
 
+	var nextWake interface{}
+	if next := cs.getNextWakeMS(); next != nil {
+		nextWake = *next
+	}
+
+	logger.InfoCF("cron", "Cron service started", map[string]interface{}{
+		"store_path":   cs.storePath,
+		"jobs":         len(cs.store.Jobs),
+		"next_wake_ms": nextWake,
+	})
+
 	return nil
 }
 
@@ -115,6 +127,8 @@ func (cs *CronService) Stop() {
 	if cs.stopChan != nil {
 		close(cs.stopChan)
 	}
+
+	logger.InfoCF("cron", "Cron service stopped", map[string]interface{}{"store_path": cs.storePath})
 }
 
 func (cs *CronService) runLoop(stopChan <-chan struct{}) {
@@ -169,6 +183,10 @@ func (cs *CronService) checkJobs() {
 		logger.ErrorCF("cron", "Failed to save store", map[string]interface{}{"error": err.Error()})
 	}
 
+	if len(dueJobs) > 0 {
+		logger.InfoCF("cron", "Executing due cron jobs", map[string]interface{}{"count": len(dueJobs)})
+	}
+
 	cs.mu.Unlock()
 
 	// Execute jobs outside the lock
@@ -179,10 +197,43 @@ func (cs *CronService) checkJobs() {
 
 func (cs *CronService) executeJob(job *CronJob) {
 	startTime := time.Now().UnixMilli()
+	logger.InfoCF("cron", "Running cron job", map[string]interface{}{
+		"job_id":   job.ID,
+		"name":     job.Name,
+		"schedule": job.Schedule.Kind,
+		"deliver":  job.Payload.Deliver,
+		"channel":  job.Payload.Channel,
+		"to":       job.Payload.To,
+	})
 
+	var result string
 	var err error
 	if cs.onJob != nil {
-		_, err = cs.onJob(job)
+		result, err = cs.onJob(job)
+		if err == nil {
+			trimmed := strings.TrimSpace(strings.ToLower(result))
+			if strings.HasPrefix(trimmed, "error:") {
+				err = fmt.Errorf("%s", strings.TrimSpace(result))
+			}
+		}
+	}
+
+	durationMS := time.Now().UnixMilli() - startTime
+	if err != nil {
+		logger.WarnCF("cron", "Cron job failed", map[string]interface{}{
+			"job_id":      job.ID,
+			"name":        job.Name,
+			"duration_ms": durationMS,
+			"error":       err.Error(),
+			"result":      truncateForLog(result, 200),
+		})
+	} else {
+		logger.InfoCF("cron", "Cron job completed", map[string]interface{}{
+			"job_id":      job.ID,
+			"name":        job.Name,
+			"duration_ms": durationMS,
+			"result":      truncateForLog(result, 200),
+		})
 	}
 
 	// Now acquire lock to update state
@@ -359,6 +410,15 @@ func (cs *CronService) AddJob(name string, schedule CronSchedule, message string
 		return nil, err
 	}
 
+	logger.InfoCF("cron", "Cron job added", map[string]interface{}{
+		"job_id":   job.ID,
+		"name":     job.Name,
+		"schedule": job.Schedule.Kind,
+		"deliver":  job.Payload.Deliver,
+		"channel":  job.Payload.Channel,
+		"to":       job.Payload.To,
+	})
+
 	return &job, nil
 }
 
@@ -384,6 +444,7 @@ func (cs *CronService) removeJobUnsafe(jobID string) bool {
 		if err := cs.saveStoreUnsafe(); err != nil {
 			logger.ErrorCF("cron", "Failed to save store after remove", map[string]interface{}{"error": err.Error()})
 		}
+		logger.InfoCF("cron", "Cron job removed", map[string]interface{}{"job_id": jobID})
 	}
 
 	return removed
@@ -408,6 +469,7 @@ func (cs *CronService) EnableJob(jobID string, enabled bool) *CronJob {
 			if err := cs.saveStoreUnsafe(); err != nil {
 				logger.ErrorCF("cron", "Failed to save store after enable", map[string]interface{}{"error": err.Error()})
 			}
+			logger.InfoCF("cron", "Cron job updated", map[string]interface{}{"job_id": jobID, "enabled": enabled})
 			return job
 		}
 	}
@@ -486,4 +548,11 @@ func generateID() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
+}
+
+func truncateForLog(text string, max int) string {
+	if max <= 0 || len(text) <= max {
+		return text
+	}
+	return text[:max] + "..."
 }

@@ -2,6 +2,7 @@ package cron
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -331,4 +332,31 @@ func TestStartStop(t *testing.T) {
 
 	// Double stop should be safe
 	cs.Stop()
+}
+
+func TestExecuteJob_ResultErrorStringMarksError(t *testing.T) {
+	cs := newTestService(t)
+	every := int64(60000)
+	job, err := cs.AddJob("error-result", CronSchedule{Kind: "every", EveryMS: &every}, "msg", false, "", "")
+	if err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	cs.SetOnJob(func(_ *CronJob) (string, error) {
+		return "Error: downstream call failed", nil
+	})
+
+	cs.executeJob(job)
+
+	jobs := cs.ListJobs(true)
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+
+	if jobs[0].State.LastStatus != "error" {
+		t.Fatalf("LastStatus = %q, want error", jobs[0].State.LastStatus)
+	}
+	if !strings.Contains(jobs[0].State.LastError, "downstream call failed") {
+		t.Fatalf("LastError = %q, want downstream failure text", jobs[0].State.LastError)
+	}
 }
