@@ -15,8 +15,8 @@ description = "Rebuild from scratch without cache"
 run = "docker compose build --no-cache && docker compose up -d"
 
 [tasks.restart]
-description = "Restart all services"
-run = "docker compose restart"
+description = "Restart picoclaw and optional DeltaChat bridge"
+run = 'docker compose restart picoclaw && if [ -n "$(docker compose --profile deltachat ps -q deltachat-bridge)" ]; then docker compose --profile deltachat restart deltachat-bridge; else echo "[mise] deltachat-bridge not running; skipped"; fi'
 
 [tasks.restart_picoclaw]
 description = "Restart picoclaw service"
@@ -24,7 +24,7 @@ run = "docker compose restart picoclaw"
 
 [tasks.restart_deltachat]
 description = "Restart DeltaChat bridge service"
-run = "docker compose restart deltachat-bridge"
+run = "docker compose --profile deltachat restart deltachat-bridge"
 
 [tasks.stop]
 description = "Stop services"
@@ -69,6 +69,14 @@ run = "docker compose exec -T picoclaw /bin/sh -lc 'if [ -f /root/.picoclaw/work
 [tasks.cron_logs]
 description = "Show recent cron-related logs"
 run = "docker compose logs --tail=300 picoclaw | grep -i cron || true"
+
+[tasks.cron_tail]
+description = "Tail focused cron log lines"
+run = "docker compose logs --no-color --tail=300 picoclaw | grep -E ' cron:' || true"
+
+[tasks.cron_follow]
+description = "Follow only cron log lines"
+run = "docker compose logs --no-color -f picoclaw | grep --line-buffered -E ' cron:'"
 
 [tasks.health]
 description = "Run quick runtime health checks"
