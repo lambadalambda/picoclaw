@@ -291,6 +291,9 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	}
 	ctx = tools.WithTraceID(ctx, traceID)
 
+	// Record the most recent active chat target for cron defaults.
+	al.recordLastActiveTarget(msg)
+
 	// Add message preview to log
 	preview := utils.Truncate(msg.Content, 80)
 	logger.InfoCF("agent", fmt.Sprintf("Processing message from %s:%s: %s", msg.Channel, msg.SenderID, preview),

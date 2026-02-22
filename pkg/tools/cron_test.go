@@ -34,15 +34,16 @@ func (m *mockExecutor) ProcessDirectWithChannel(ctx context.Context, content, se
 func newCronToolWithService(t *testing.T) (*CronTool, *cron.CronService, *mockExecutor, *bus.MessageBus) {
 	t.Helper()
 
-	service := cron.NewCronService(filepath.Join(t.TempDir(), "cron.json"), nil)
+	workspace := t.TempDir()
+	service := cron.NewCronService(filepath.Join(workspace, "cron", "jobs.json"), nil)
 	executor := &mockExecutor{response: "ok"}
 	msgBus := bus.NewMessageBus()
-	tool := NewCronTool(service, executor, msgBus)
+	tool := NewCronTool(service, executor, msgBus, filepath.Join(workspace, "cron", "last_target.json"))
 
 	return tool, service, executor, msgBus
 }
 
-func TestCronTool_AddJobRequiresSessionContext(t *testing.T) {
+func TestCronTool_AddJobDefaultsToLastActiveTarget(t *testing.T) {
 	tool, _, _, _ := newCronToolWithService(t)
 
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
@@ -53,8 +54,8 @@ func TestCronTool_AddJobRequiresSessionContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "no session context") {
-		t.Fatalf("expected session context error, got %q", result)
+	if !strings.Contains(result, "Created job") {
+		t.Fatalf("expected created message, got %q", result)
 	}
 }
 
@@ -79,8 +80,8 @@ func TestCronTool_AddJobWithRegistryContextInjection(t *testing.T) {
 	if len(jobs) != 1 {
 		t.Fatalf("expected 1 job, got %d", len(jobs))
 	}
-	if jobs[0].Payload.Channel != "telegram" || jobs[0].Payload.To != "ctx-chat" {
-		t.Fatalf("job payload channel/chat = %s/%s, want telegram/ctx-chat", jobs[0].Payload.Channel, jobs[0].Payload.To)
+	if jobs[0].Payload.Channel != "" || jobs[0].Payload.To != "" {
+		t.Fatalf("job payload channel/chat = %s/%s, want empty (last-active default)", jobs[0].Payload.Channel, jobs[0].Payload.To)
 	}
 }
 
@@ -231,6 +232,55 @@ func TestCronTool_ExecuteJobDeliverDirect(t *testing.T) {
 	}
 }
 
+func TestCronTool_ExecuteJobDeliverDirectDefaultsToLastActiveTarget(t *testing.T) {
+	tool, _, _, msgBus := newCronToolWithService(t)
+
+	if err := cron.SaveLastTarget(tool.lastTargetPath, cron.LastTarget{Channel: "deltachat", ChatID: "12"}); err != nil {
+		t.Fatalf("SaveLastTarget failed: %v", err)
+	}
+
+	job := &cron.CronJob{
+		ID: "direct-last",
+		Payload: cron.CronPayload{
+			Message: "ping",
+			Deliver: true,
+			// Channel/To intentionally unset (use last active)
+		},
+	}
+
+	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
+		t.Fatalf("expected ok, got %q", got)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	out, ok := msgBus.SubscribeOutbound(ctx)
+	if !ok {
+		t.Fatal("expected outbound message")
+	}
+	if out.Channel != "deltachat" || out.ChatID != "12" || out.Content != "ping" {
+		t.Fatalf("unexpected outbound message %#v", out)
+	}
+}
+
+func TestCronTool_ExecuteJobDeliverDirectErrorsWhenNoLastActiveTarget(t *testing.T) {
+	tool, _, _, _ := newCronToolWithService(t)
+
+	job := &cron.CronJob{
+		ID: "direct-last-missing",
+		Payload: cron.CronPayload{
+			Message: "ping",
+			Deliver: true,
+		},
+	}
+
+	got := tool.ExecuteJob(context.Background(), job)
+	if !strings.Contains(got, "no last active chat") {
+		t.Fatalf("expected missing last active chat error, got %q", got)
+	}
+}
+
 func TestCronTool_ExecuteJobProcessThroughAgent(t *testing.T) {
 	tool, _, executor, _ := newCronToolWithService(t)
 
@@ -261,6 +311,36 @@ func TestCronTool_ExecuteJobProcessThroughAgent(t *testing.T) {
 		t.Fatalf("unexpected channel: %q", executor.lastChannel)
 	}
 	if executor.lastChatID != "user-1" {
+		t.Fatalf("unexpected chat id: %q", executor.lastChatID)
+	}
+}
+
+func TestCronTool_ExecuteJobProcessThroughAgentDefaultsToLastActiveTarget(t *testing.T) {
+	tool, _, executor, _ := newCronToolWithService(t)
+
+	if err := cron.SaveLastTarget(tool.lastTargetPath, cron.LastTarget{Channel: "deltachat", ChatID: "12"}); err != nil {
+		t.Fatalf("SaveLastTarget failed: %v", err)
+	}
+
+	job := &cron.CronJob{
+		ID: "agent-last",
+		Payload: cron.CronPayload{
+			Message: "build report",
+			Deliver: false,
+			// Channel/To intentionally unset (use last active)
+		},
+	}
+
+	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
+		t.Fatalf("expected ok, got %q", got)
+	}
+	if executor.callCount != 1 {
+		t.Fatalf("expected executor to be called once, got %d", executor.callCount)
+	}
+	if executor.lastChannel != "deltachat" {
+		t.Fatalf("unexpected channel: %q", executor.lastChannel)
+	}
+	if executor.lastChatID != "12" {
 		t.Fatalf("unexpected chat id: %q", executor.lastChatID)
 	}
 }
@@ -325,8 +405,9 @@ func TestCronTool_AddJobMissingMessage(t *testing.T) {
 }
 
 func TestCronTool_ExecuteJobDeliverFalseWithoutExecutor_DoesNotPanic(t *testing.T) {
-	service := cron.NewCronService(filepath.Join(t.TempDir(), "cron.json"), nil)
-	tool := NewCronTool(service, nil, bus.NewMessageBus())
+	workspace := t.TempDir()
+	service := cron.NewCronService(filepath.Join(workspace, "cron", "jobs.json"), nil)
+	tool := NewCronTool(service, nil, bus.NewMessageBus(), filepath.Join(workspace, "cron", "last_target.json"))
 
 	job := &cron.CronJob{
 		ID: "nil-executor",

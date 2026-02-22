@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -20,14 +21,19 @@ type CronTool struct {
 	cronService *cron.CronService
 	executor    JobExecutor
 	msgBus      *bus.MessageBus
+	// lastTargetPath points to a json file written by the agent runtime.
+	// When a cron job has no explicit channel/to, this is used to resolve
+	// the most recently active chat for delivery.
+	lastTargetPath string
 }
 
 // NewCronTool creates a new CronTool
-func NewCronTool(cronService *cron.CronService, executor JobExecutor, msgBus *bus.MessageBus) *CronTool {
+func NewCronTool(cronService *cron.CronService, executor JobExecutor, msgBus *bus.MessageBus, lastTargetPath string) *CronTool {
 	return &CronTool{
-		cronService: cronService,
-		executor:    executor,
-		msgBus:      msgBus,
+		cronService:    cronService,
+		executor:       executor,
+		msgBus:         msgBus,
+		lastTargetPath: strings.TrimSpace(lastTargetPath),
 	}
 }
 
@@ -38,7 +44,7 @@ func (t *CronTool) Name() string {
 
 // Description returns the tool description
 func (t *CronTool) Description() string {
-	return "Schedule reminders and tasks. IMPORTANT: When user asks to be reminded or scheduled, you MUST call this tool. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). Use 'every_seconds' ONLY for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). Use 'cron_expr' for complex recurring schedules (e.g., '0 9 * * *' for daily at 9am)."
+	return "Schedule reminders and tasks. IMPORTANT: When user asks to be reminded or scheduled, you MUST call this tool. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). Use 'every_seconds' ONLY for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). Use 'cron_expr' for complex recurring schedules (e.g., '0 9 * * *' for daily at 9am). By default, cron jobs deliver to the most recently active chat (last channel/chat used). To pin delivery to a specific channel/chat, set both 'channel' and 'chat_id'."
 }
 
 // Parameters returns the tool parameters schema
@@ -112,20 +118,21 @@ func (t *CronTool) Execute(ctx context.Context, args map[string]interface{}) (st
 }
 
 func (t *CronTool) addJob(args map[string]interface{}) (string, error) {
+	// If channel/chat_id are provided, the job is pinned.
+	_, channelSet := args["channel"]
+	_, chatIDSet := args["chat_id"]
 	channel, _ := args["channel"].(string)
 	chatID, _ := args["chat_id"].(string)
-	if channel == "" || chatID == "" {
-		ctxChannel, ctxChatID := getExecutionContext(args)
-		if channel == "" {
-			channel = ctxChannel
+	channel = strings.TrimSpace(channel)
+	chatID = strings.TrimSpace(chatID)
+	if channelSet || chatIDSet {
+		if channel == "" || chatID == "" {
+			return "Error: channel and chat_id must both be set when pinning cron delivery", nil
 		}
-		if chatID == "" {
-			chatID = ctxChatID
-		}
-	}
-
-	if channel == "" || chatID == "" {
-		return "Error: no session context (channel/chat_id not set). Use this tool in an active conversation.", nil
+	} else {
+		// Default behavior: deliver to most recently active chat at execution time.
+		channel = ""
+		chatID = ""
 	}
 
 	message, ok := args["message"].(string)
@@ -186,6 +193,17 @@ func (t *CronTool) addJob(args map[string]interface{}) (string, error) {
 	return fmt.Sprintf("Created job '%s' (id: %s)", job.Name, job.ID), nil
 }
 
+func (t *CronTool) resolveLastTarget() (string, string) {
+	if t.lastTargetPath == "" {
+		return "", ""
+	}
+	lt, ok, err := cron.LoadLastTarget(t.lastTargetPath)
+	if err != nil || !ok {
+		return "", ""
+	}
+	return lt.Channel, lt.ChatID
+}
+
 func (t *CronTool) listJobs() (string, error) {
 	jobs := t.cronService.ListJobs(false)
 
@@ -244,10 +262,17 @@ func (t *CronTool) enableJob(args map[string]interface{}, enable bool) (string, 
 // ExecuteJob executes a cron job through the agent
 func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 	// Get channel/chatID from job payload
-	channel := job.Payload.Channel
-	chatID := job.Payload.To
+	channel := strings.TrimSpace(job.Payload.Channel)
+	chatID := strings.TrimSpace(job.Payload.To)
+	if channel == "" || chatID == "" {
+		lastChannel, lastChatID := t.resolveLastTarget()
+		if lastChannel != "" && lastChatID != "" {
+			channel = lastChannel
+			chatID = lastChatID
+		}
+	}
 
-	// Default values if not set
+	// Default values if still not set
 	if channel == "" {
 		channel = "cli"
 	}
@@ -259,6 +284,12 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 	if job.Payload.Deliver {
 		if t.msgBus == nil {
 			return "Error: message bus not configured"
+		}
+		if strings.TrimSpace(job.Payload.Channel) == "" || strings.TrimSpace(job.Payload.To) == "" {
+			// Job uses dynamic targeting; fail loudly if we don't have a last active chat.
+			if channel == "cli" && chatID == "direct" {
+				return "Error: no last active chat available for cron delivery (send a message to the agent once, or pin channel/chat_id)"
+			}
 		}
 		t.msgBus.PublishOutbound(bus.OutboundMessage{
 			Channel: channel,
