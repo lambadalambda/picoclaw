@@ -200,7 +200,19 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 		Content: systemPrompt,
 	})
 
-	messages = append(messages, history...)
+	sanitizedHistory, dropped := providers.SanitizeToolTranscript(history)
+	if dropped > 0 {
+		logger.WarnCF("agent", "Dropped invalid tool transcript messages from session history",
+			map[string]interface{}{
+				"dropped":        dropped,
+				"history_before": len(history),
+				"history_after":  len(sanitizedHistory),
+				"channel":        channel,
+				"chat_id":        chatID,
+			})
+	}
+
+	messages = append(messages, sanitizedHistory...)
 
 	messages = append(messages, providers.Message{
 		Role:    "user",

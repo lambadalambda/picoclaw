@@ -144,7 +144,9 @@ func (sm *SessionManager) TruncateHistory(key string, keepLast int) {
 		return
 	}
 
-	session.Messages = session.Messages[len(session.Messages)-keepLast:]
+	truncated := session.Messages[len(session.Messages)-keepLast:]
+	sanitized, _ := providers.SanitizeToolTranscript(truncated)
+	session.Messages = sanitized
 	session.Updated = time.Now()
 }
 

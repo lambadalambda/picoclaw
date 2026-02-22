@@ -179,6 +179,42 @@ func TestTruncateHistory_NonexistentKey(t *testing.T) {
 	sm.TruncateHistory("nonexistent", 5)
 }
 
+func TestTruncateHistory_SanitizesToolTranscript(t *testing.T) {
+	sm := NewSessionManager("")
+
+	// Simulate a complete tool-call exchange.
+	sm.AddMessage("key", "user", "do it")
+	sm.AddFullMessage("key", providers.Message{
+		Role:    "assistant",
+		Content: "",
+		ToolCalls: []providers.ToolCall{
+			{ID: "call-1", Name: "exec", Arguments: map[string]interface{}{"command": "ls"}},
+			{ID: "call-2", Name: "exec", Arguments: map[string]interface{}{"command": "pwd"}},
+		},
+	})
+	sm.AddFullMessage("key", providers.Message{Role: "tool", Content: "out1", ToolCallID: "call-1"})
+	sm.AddFullMessage("key", providers.Message{Role: "tool", Content: "out2", ToolCallID: "call-2"})
+	sm.AddMessage("key", "assistant", "done")
+	sm.AddMessage("key", "user", "next")
+
+	// Truncating to the last 4 raw messages would start with tool results.
+	// Ensure we don't persist an invalid tool transcript tail.
+	sm.TruncateHistory("key", 4)
+	history := sm.GetHistory("key")
+	if len(history) != 2 {
+		t.Fatalf("len(history) = %d, want 2", len(history))
+	}
+	if history[0].Role == "tool" || history[1].Role == "tool" {
+		t.Fatalf("unexpected tool role in truncated history: %+v", history)
+	}
+	if history[0].Role != "assistant" || history[0].Content != "done" {
+		t.Fatalf("history[0] = %+v, want assistant(done)", history[0])
+	}
+	if history[1].Role != "user" || history[1].Content != "next" {
+		t.Fatalf("history[1] = %+v, want user(next)", history[1])
+	}
+}
+
 func TestSaveAndLoad(t *testing.T) {
 	dir := t.TempDir()
 
