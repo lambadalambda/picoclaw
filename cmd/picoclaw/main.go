@@ -650,7 +650,46 @@ func gatewayCmd() {
 
 	heartbeatService := heartbeat.NewHeartbeatService(
 		cfg.WorkspacePath(),
-		nil,
+		func(prompt string) (string, error) {
+			lastTargetPath := filepath.Join(cfg.WorkspacePath(), "cron", "last_target.json")
+			lastTarget, ok, err := cron.LoadLastTarget(lastTargetPath)
+			if err != nil {
+				return "", err
+			}
+
+			channel := "cli"
+			chatID := "direct"
+			if ok {
+				channel = lastTarget.Channel
+				chatID = lastTarget.ChatID
+			}
+
+			sessionKey := "heartbeat"
+			if ok {
+				sessionKey = fmt.Sprintf("heartbeat:%s:%s", channel, chatID)
+			}
+
+			result, err := agentLoop.ProcessDirectWithChannel(context.Background(), prompt, sessionKey, channel, chatID)
+			if err != nil {
+				return "", err
+			}
+
+			result = strings.TrimSpace(result)
+			if result == "" || result == "HEARTBEAT_OK" {
+				return "ok", nil
+			}
+			if !ok {
+				logger.InfoC("heartbeat", "Heartbeat produced output but no last active chat is available")
+				return "ok", nil
+			}
+
+			msgBus.PublishOutbound(bus.OutboundMessage{
+				Channel: channel,
+				ChatID:  chatID,
+				Content: result,
+			})
+			return "ok", nil
+		},
 		30*60,
 		true,
 	)

@@ -116,9 +116,12 @@ func (hs *HeartbeatService) buildPrompt() string {
 
 Current time: %s
 
-Check if there are any tasks I should be aware of or actions I should take.
-Review the memory file for any important updates or changes.
-Be proactive in identifying potential issues or improvements.
+This is a background heartbeat run.
+
+- If there is nothing actionable to tell the user, respond with exactly: HEARTBEAT_OK
+- If there is something important, write the message you want to send to the user.
+- Keep it short and concrete.
+- Do NOT call the message tool; your assistant response will be delivered automatically.
 
 %s
 `, now, notes)
