@@ -74,7 +74,18 @@ func (r *ToolRegistry) ExecuteWithContext(ctx context.Context, name string, args
 		return "", err
 	}
 
-	execArgs := withExecutionContext(args, channel, chatID, traceID)
+	normalizedArgs, err := normalizeAndValidateToolArgs(tool, args)
+	if err != nil {
+		logger.WarnCF("tool", "Tool argument validation failed",
+			map[string]interface{}{
+				"tool":     name,
+				"error":    err.Error(),
+				"trace_id": traceID,
+			})
+		return "", err
+	}
+
+	execArgs := withExecutionContext(normalizedArgs, channel, chatID, traceID)
 
 	start := time.Now()
 	result, err := tool.Execute(ctx, execArgs)
