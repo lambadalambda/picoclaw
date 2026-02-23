@@ -36,6 +36,84 @@ func TestReadFileTool_ExecuteMissingPath(t *testing.T) {
 	}
 }
 
+func TestReadFileTool_ExecuteWithLineRange(t *testing.T) {
+	tool := &ReadFileTool{}
+	content := "line 1\nline 2\nline 3\nline 4\n"
+
+	path := filepath.Join(t.TempDir(), "book.txt")
+	if err := ensureWriteFile(path, content); err != nil {
+		t.Fatalf("failed to setup test file: %v", err)
+	}
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"path":       path,
+		"start_line": 2,
+		"max_lines":  2,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "line 2\nline 3\n" {
+		t.Fatalf("expected line slice, got %q", result)
+	}
+}
+
+func TestReadFileTool_ExecuteWithLineRangeUntilEnd(t *testing.T) {
+	tool := &ReadFileTool{}
+	content := "line 1\nline 2\nline 3\nline 4\n"
+
+	path := filepath.Join(t.TempDir(), "book.txt")
+	if err := ensureWriteFile(path, content); err != nil {
+		t.Fatalf("failed to setup test file: %v", err)
+	}
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"path":       path,
+		"start_line": 3,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "line 3\nline 4\n" {
+		t.Fatalf("expected tail slice, got %q", result)
+	}
+}
+
+func TestReadFileTool_ExecuteLineRangeValidation(t *testing.T) {
+	tool := &ReadFileTool{}
+	content := "line 1\nline 2\n"
+
+	path := filepath.Join(t.TempDir(), "book.txt")
+	if err := ensureWriteFile(path, content); err != nil {
+		t.Fatalf("failed to setup test file: %v", err)
+	}
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"path":       path,
+		"start_line": 0,
+	})
+	if err == nil || !strings.Contains(err.Error(), "start_line") {
+		t.Fatalf("expected start_line validation error, got %v", err)
+	}
+
+	_, err = tool.Execute(context.Background(), map[string]interface{}{
+		"path":       path,
+		"start_line": 1,
+		"max_lines":  -1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "max_lines") {
+		t.Fatalf("expected max_lines validation error, got %v", err)
+	}
+
+	_, err = tool.Execute(context.Background(), map[string]interface{}{
+		"path":       path,
+		"start_line": 99,
+	})
+	if err == nil || !strings.Contains(err.Error(), "exceeds total lines") {
+		t.Fatalf("expected out-of-range error, got %v", err)
+	}
+}
+
 func TestWriteFileTool_ExecuteCreatesDirectories(t *testing.T) {
 	tool := &WriteFileTool{}
 
