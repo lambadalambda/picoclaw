@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,9 @@ type SessionManager struct {
 	sessions map[string]*Session
 	mu       sync.RWMutex
 	storage  string
+	// transcripts is the directory where append-only JSONL transcripts are stored.
+	// It may be empty to disable transcript persistence.
+	transcripts string
 }
 
 func NewSessionManager(storage string) *SessionManager {
@@ -32,6 +36,10 @@ func NewSessionManager(storage string) *SessionManager {
 
 	if storage != "" {
 		os.MkdirAll(storage, 0755)
+		sm.transcripts = transcriptsDirFromSessionStorage(storage)
+		if sm.transcripts != "" {
+			os.MkdirAll(sm.transcripts, 0755)
+		}
 		sm.loadSessions()
 	}
 
@@ -93,6 +101,54 @@ func (sm *SessionManager) AddFullMessage(sessionKey string, msg providers.Messag
 
 	session.Messages = append(session.Messages, msg)
 	session.Updated = time.Now()
+
+	// Best-effort: append to the transcript log. Never fail the main flow.
+	sm.appendTranscriptLocked(sessionKey, msg)
+}
+
+func transcriptsDirFromSessionStorage(storage string) string {
+	storage = strings.TrimSpace(storage)
+	if storage == "" {
+		return ""
+	}
+
+	base := filepath.Base(storage)
+	// In normal operation storage is <workspace>/sessions.
+	if base == "sessions" {
+		return filepath.Join(filepath.Dir(storage), "transcripts")
+	}
+
+	// In tests, storage may be a temp dir; keep transcripts under that directory.
+	return filepath.Join(storage, "transcripts")
+}
+
+func sanitizeSessionKeyForFilename(sessionKey string) string {
+	return SanitizeSessionKeyForFilename(sessionKey)
+}
+
+func (sm *SessionManager) appendTranscriptLocked(sessionKey string, msg providers.Message) {
+	if sm.transcripts == "" {
+		return
+	}
+	key := sanitizeSessionKeyForFilename(sessionKey)
+	if key == "" {
+		return
+	}
+
+	path := filepath.Join(sm.transcripts, key+".jsonl")
+	entry := BuildTranscriptEntry(msg)
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(data)
+	_, _ = f.Write([]byte("\n"))
 }
 
 func (sm *SessionManager) GetHistory(key string) []providers.Message {
