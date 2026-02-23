@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -12,6 +13,7 @@ import (
 
 type ClaudeProvider struct {
 	client      *anthropic.Client
+	token       string
 	tokenSource func() (string, error)
 }
 
@@ -20,7 +22,7 @@ func NewClaudeProvider(token string) *ClaudeProvider {
 		option.WithAuthToken(token),
 		option.WithBaseURL("https://api.anthropic.com"),
 	)
-	return &ClaudeProvider{client: &client}
+	return &ClaudeProvider{client: &client, token: token}
 }
 
 func NewClaudeProviderWithTokenSource(token string, tokenSource func() (string, error)) *ClaudeProvider {
@@ -29,14 +31,38 @@ func NewClaudeProviderWithTokenSource(token string, tokenSource func() (string, 
 	return p
 }
 
+func isAnthropicOAuthToken(token string) bool {
+	// Anthropic OAuth access tokens use the sk-ant-oat* prefix.
+	// These require the oauth beta header to be accepted by the API.
+	return strings.Contains(token, "sk-ant-oat")
+}
+
+func oauthAnthropicBetaHeader(token string) string {
+	if !isAnthropicOAuthToken(token) {
+		return ""
+	}
+	// Required for Anthropic to accept OAuth Bearer auth.
+	// Without oauth-2025-04-20, Anthropic returns 401: "OAuth authentication is currently not supported."
+	// Keep claude-code-20250219 alongside oauth-2025-04-20 (matches upstream behavior).
+	return "claude-code-20250219,oauth-2025-04-20"
+}
+
 func (p *ClaudeProvider) Chat(ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]interface{}) (*LLMResponse, error) {
 	var opts []option.RequestOption
+
+	tok := strings.TrimSpace(p.token)
 	if p.tokenSource != nil {
-		tok, err := p.tokenSource()
+		refreshed, err := p.tokenSource()
 		if err != nil {
 			return nil, fmt.Errorf("refreshing token: %w", err)
 		}
+		tok = strings.TrimSpace(refreshed)
+	}
+	if tok != "" {
 		opts = append(opts, option.WithAuthToken(tok))
+		if beta := oauthAnthropicBetaHeader(tok); beta != "" {
+			opts = append(opts, option.WithHeader("anthropic-beta", beta))
+		}
 	}
 
 	params, err := buildClaudeParams(messages, tools, model, options)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -191,6 +192,59 @@ func TestClaudeProvider_ChatRoundTrip(t *testing.T) {
 	}
 	if resp.Usage.PromptTokens != 15 {
 		t.Errorf("PromptTokens = %d, want 15", resp.Usage.PromptTokens)
+	}
+}
+
+func TestClaudeProvider_AddsOAuthBetaHeaderForOAuthToken(t *testing.T) {
+	oauthToken := "sk-ant-oat01-test-oauth-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+oauthToken {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		beta := r.Header.Get("Anthropic-Beta")
+		if !strings.Contains(beta, "oauth-2025-04-20") {
+			http.Error(w, "missing oauth beta", http.StatusBadRequest)
+			return
+		}
+
+		var reqBody map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&reqBody)
+
+		resp := map[string]interface{}{
+			"id":          "msg_test",
+			"type":        "message",
+			"role":        "assistant",
+			"model":       reqBody["model"],
+			"stop_reason": "end_turn",
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "ok"},
+			},
+			"usage": map[string]interface{}{
+				"input_tokens":  1,
+				"output_tokens": 1,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	provider := NewClaudeProviderWithTokenSource("ignored", func() (string, error) {
+		return oauthToken, nil
+	})
+	provider.client = createAnthropicTestClient(server.URL, "ignored")
+
+	resp, err := provider.Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "claude-opus-4-6", map[string]interface{}{"max_tokens": 8})
+	if err != nil {
+		t.Fatalf("Chat() error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("Content = %q, want ok", resp.Content)
 	}
 }
 
