@@ -85,7 +85,9 @@ Your workspace is at: %s
 
 4. **Parallel tool calls** - You can call multiple tools simultaneously in a single response when the calls are independent of each other. This is more efficient than calling them sequentially.
 
-5. **Delegate with spawn** - When a task involves a skill (like image generation, complex builds, or multi-step research), use the spawn tool to delegate it to a background subagent. You can keep talking to the user while the subagent works. The subagent will report back when done.`,
+5. **Delegate with spawn** - When a task involves a skill (like image generation, complex builds, or multi-step research), use the spawn tool to delegate it to a background subagent. You can keep talking to the user while the subagent works. The subagent will report back when done.
+
+6. **Compaction recovery** - If conversation history has been compacted and you need exact prior tool calls/results, use the session_history tool to retrieve the missing context from the on-disk transcript.`,
 		now, runtime, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
 }
 
