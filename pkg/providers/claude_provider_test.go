@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -100,6 +101,66 @@ func TestBuildClaudeParams_WithTools(t *testing.T) {
 	}
 	if len(params.Tools) != 1 {
 		t.Fatalf("len(Tools) = %d, want 1", len(params.Tools))
+	}
+}
+
+func TestTranslateToolsForClaude_RequiredStringSlice(t *testing.T) {
+	tools := []ToolDefinition{
+		{
+			Type: "function",
+			Function: ToolFunctionDefinition{
+				Name:        "write_file",
+				Description: "Write content",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"path":    map[string]interface{}{"type": "string"},
+						"content": map[string]interface{}{"type": "string"},
+					},
+					"required": []string{"path", "content"},
+				},
+			},
+		},
+	}
+
+	out := translateToolsForClaude(tools)
+	if len(out) != 1 {
+		t.Fatalf("len(out) = %d, want 1", len(out))
+	}
+	if out[0].OfTool == nil {
+		t.Fatal("tool definition missing")
+	}
+	if !reflect.DeepEqual(out[0].OfTool.InputSchema.Required, []string{"path", "content"}) {
+		t.Fatalf("required = %#v, want [path content]", out[0].OfTool.InputSchema.Required)
+	}
+}
+
+func TestTranslateToolsForClaude_RequiredInterfaceSlice(t *testing.T) {
+	tools := []ToolDefinition{
+		{
+			Type: "function",
+			Function: ToolFunctionDefinition{
+				Name: "edit_file",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"path": map[string]interface{}{"type": "string"},
+					},
+					"required": []interface{}{"path", "", 42},
+				},
+			},
+		},
+	}
+
+	out := translateToolsForClaude(tools)
+	if len(out) != 1 {
+		t.Fatalf("len(out) = %d, want 1", len(out))
+	}
+	if out[0].OfTool == nil {
+		t.Fatal("tool definition missing")
+	}
+	if !reflect.DeepEqual(out[0].OfTool.InputSchema.Required, []string{"path"}) {
+		t.Fatalf("required = %#v, want [path]", out[0].OfTool.InputSchema.Required)
 	}
 }
 

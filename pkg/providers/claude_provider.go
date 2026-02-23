@@ -160,18 +160,41 @@ func translateToolsForClaude(tools []ToolDefinition) []anthropic.ToolUnionParam 
 		if desc := t.Function.Description; desc != "" {
 			tool.Description = anthropic.String(desc)
 		}
-		if req, ok := t.Function.Parameters["required"].([]interface{}); ok {
-			required := make([]string, 0, len(req))
-			for _, r := range req {
-				if s, ok := r.(string); ok {
-					required = append(required, s)
-				}
-			}
+		if required := parseToolRequiredFields(t.Function.Parameters["required"]); len(required) > 0 {
 			tool.InputSchema.Required = required
 		}
 		result = append(result, anthropic.ToolUnionParam{OfTool: &tool})
 	}
 	return result
+}
+
+func parseToolRequiredFields(raw interface{}) []string {
+	switch req := raw.(type) {
+	case []string:
+		out := make([]string, 0, len(req))
+		for _, v := range req {
+			name := strings.TrimSpace(v)
+			if name != "" {
+				out = append(out, name)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(req))
+		for _, v := range req {
+			name, ok := v.(string)
+			if !ok {
+				continue
+			}
+			name = strings.TrimSpace(name)
+			if name != "" {
+				out = append(out, name)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func parseClaudeResponse(resp *anthropic.Message) *LLMResponse {
