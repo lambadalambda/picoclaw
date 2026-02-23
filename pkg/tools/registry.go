@@ -177,6 +177,7 @@ func RegisterCoreTools(r *ToolRegistry, workspace string, webSearchCfg WebSearch
 	r.Register(&ReadFileTool{})
 	r.Register(&WriteFileTool{})
 	r.Register(&ListDirTool{})
+	r.Register(NewSessionHistoryTool(workspace))
 	r.Register(NewExecTool(workspace))
 	r.Register(NewEditFileTool(workspace))
 	r.Register(NewWebFetchTool(50000))
