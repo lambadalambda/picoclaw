@@ -85,6 +85,14 @@ func (p *ClaudeProvider) GetDefaultModel() string {
 func buildClaudeParams(messages []Message, tools []ToolDefinition, model string, options map[string]interface{}) (anthropic.MessageNewParams, error) {
 	var system []anthropic.TextBlockParam
 	var anthropicMessages []anthropic.MessageParam
+	toolResultIsError := func(content string) bool {
+		content = strings.TrimSpace(content)
+		if content == "" {
+			return false
+		}
+		lower := strings.ToLower(content)
+		return strings.HasPrefix(lower, "error:")
+	}
 
 	for _, msg := range messages {
 		switch msg.Role {
@@ -93,7 +101,7 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 		case "user":
 			if msg.ToolCallID != "" {
 				anthropicMessages = append(anthropicMessages,
-					anthropic.NewUserMessage(anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false)),
+					anthropic.NewUserMessage(anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, toolResultIsError(msg.Content))),
 				)
 			} else {
 				anthropicMessages = append(anthropicMessages,
@@ -117,7 +125,7 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 			}
 		case "tool":
 			anthropicMessages = append(anthropicMessages,
-				anthropic.NewUserMessage(anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false)),
+				anthropic.NewUserMessage(anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, toolResultIsError(msg.Content))),
 			)
 		}
 	}

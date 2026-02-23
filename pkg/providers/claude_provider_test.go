@@ -78,6 +78,36 @@ func TestBuildClaudeParams_ToolCallMessage(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeParams_ToolResultMarksIsError(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "What's the weather?"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{
+					ID:        "call_1",
+					Name:      "get_weather",
+					Arguments: map[string]interface{}{"city": "SF"},
+				},
+			},
+		},
+		{Role: "tool", Content: "Error: boom", ToolCallID: "call_1"},
+	}
+	params, err := buildClaudeParams(messages, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("buildClaudeParams() error: %v", err)
+	}
+
+	b, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("json.Marshal(params) error: %v", err)
+	}
+	if !strings.Contains(string(b), `"is_error":true`) {
+		t.Fatalf("expected is_error=true in tool_result JSON, got: %s", string(b))
+	}
+}
+
 func TestBuildClaudeParams_WithTools(t *testing.T) {
 	tools := []ToolDefinition{
 		{
