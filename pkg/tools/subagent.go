@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -54,6 +55,36 @@ type SubagentManager struct {
 	bus              *bus.MessageBus
 	workspace        string
 	nextID           int
+}
+
+func toolCallSignature(toolCalls []providers.ToolCall) string {
+	if len(toolCalls) == 0 {
+		return ""
+	}
+	type sig struct {
+		Name      string                 `json:"name"`
+		Arguments map[string]interface{} `json:"arguments,omitempty"`
+	}
+	payload := make([]sig, 0, len(toolCalls))
+	for _, tc := range toolCalls {
+		payload = append(payload, sig{Name: tc.Name, Arguments: tc.Arguments})
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func isMissingRequiredToolError(msg providers.Message) bool {
+	if msg.Role != "tool" {
+		return false
+	}
+	content := strings.ToLower(strings.TrimSpace(msg.Content))
+	if !strings.HasPrefix(content, "error:") {
+		return false
+	}
+	return strings.Contains(content, "missing required parameter") || strings.Contains(content, "missing required parameters")
 }
 
 func NewSubagentManager(provider providers.LLMProvider, model string, workspace string, bus *bus.MessageBus) *SubagentManager {
@@ -207,6 +238,9 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 		{Role: "user", Content: initial.Task},
 	}
 
+	lastRepeatedSignature := ""
+	consecutiveMissingArgLoops := 0
+
 	loopRes, finalErr := llmloop.Run(ctx, llmloop.RunOptions{
 		Provider:      sm.provider,
 		Model:         model,
@@ -219,7 +253,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 			return registry.GetProviderDefinitions()
 		},
 		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
-			return registry.ExecuteToolCalls(ctx, toolCalls, ExecuteToolCallsOptions{
+			results := registry.ExecuteToolCalls(ctx, toolCalls, ExecuteToolCallsOptions{
 				TraceID:      initial.ParentTraceID,
 				Timeout:      toolTimeout,
 				MaxParallel:  maxParallelTools,
@@ -237,6 +271,35 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 						})
 				},
 			})
+
+			signature := toolCallSignature(toolCalls)
+			if len(toolCalls) == 1 && len(results) == 1 && isMissingRequiredToolError(results[0]) {
+				if signature != "" && signature == lastRepeatedSignature {
+					consecutiveMissingArgLoops++
+				} else {
+					lastRepeatedSignature = signature
+					consecutiveMissingArgLoops = 1
+				}
+
+				if consecutiveMissingArgLoops >= 3 {
+					toolName := toolCalls[0].Name
+					escalated := fmt.Sprintf("Error: Repeated invalid tool call detected (%d attempts) for `%s`. The previous call is missing required parameters. Do NOT retry the same call. Fix the arguments before retrying. For `edit_file`, include `path`, `old_text`, and `new_text`.", consecutiveMissingArgLoops, toolName)
+					results[0] = providers.ToolResultMessage(results[0].ToolCallID, escalated)
+					logger.WarnCF("subagent", "Detected repeated invalid tool call loop",
+						map[string]interface{}{
+							"task_id":      initial.ID,
+							"trace_id":     initial.ParentTraceID,
+							"iteration":    iteration,
+							"tool":         toolName,
+							"repeat_count": consecutiveMissingArgLoops,
+						})
+				}
+			} else {
+				lastRepeatedSignature = ""
+				consecutiveMissingArgLoops = 0
+			}
+
+			return results
 		},
 		Hooks: llmloop.Hooks{
 			MessagesBudgeted: func(iteration int, stats providers.MessageBudgetStats) {
@@ -254,6 +317,15 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 					})
 			},
 			BeforeLLMCall: func(iteration int, currentMessages []providers.Message, toolDefs []providers.ToolDefinition) {
+				logger.DebugCF("subagent", "Full LLM request",
+					map[string]interface{}{
+						"task_id":       initial.ID,
+						"trace_id":      initial.ParentTraceID,
+						"iteration":     iteration,
+						"messages_json": formatMessagesForLog(currentMessages),
+						"tools_json":    formatToolsForLog(toolDefs),
+					})
+
 				logger.InfoCF("subagent", "Calling LLM",
 					map[string]interface{}{
 						"task_id":        initial.ID,
@@ -263,6 +335,36 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 						"messages_count": len(currentMessages),
 						"tools_count":    len(toolDefs),
 					})
+			},
+			ToolCallsRequested: func(iteration int, toolCalls []providers.ToolCall) {
+				toolNames := make([]string, 0, len(toolCalls))
+				for _, tc := range toolCalls {
+					toolNames = append(toolNames, tc.Name)
+				}
+				logger.InfoCF("subagent", "LLM requested tool calls",
+					map[string]interface{}{
+						"task_id":   initial.ID,
+						"trace_id":  initial.ParentTraceID,
+						"iteration": iteration,
+						"tools":     toolNames,
+						"count":     len(toolNames),
+					})
+			},
+			ToolResultMessage: func(iteration int, msg providers.Message) {
+				preview := utils.Truncate(msg.Content, 220)
+				fields := map[string]interface{}{
+					"task_id":      initial.ID,
+					"trace_id":     initial.ParentTraceID,
+					"iteration":    iteration,
+					"tool_call_id": msg.ToolCallID,
+					"result_chars": len(msg.Content),
+					"preview":      preview,
+				}
+				if strings.HasPrefix(strings.TrimSpace(msg.Content), "Error:") {
+					logger.WarnCF("subagent", "Tool result error", fields)
+					return
+				}
+				logger.DebugCF("subagent", "Tool result", fields)
 			},
 		},
 	})
@@ -495,4 +597,53 @@ func (sm *SubagentManager) ListTasks() []*SubagentTask {
 
 func cloneSubagentTask(task SubagentTask) SubagentTask {
 	return task
+}
+
+func formatMessagesForLog(messages []providers.Message) string {
+	if len(messages) == 0 {
+		return "[]"
+	}
+
+	var b strings.Builder
+	b.WriteString("[\n")
+	for i, msg := range messages {
+		b.WriteString(fmt.Sprintf("  [%d] role=%s\n", i, msg.Role))
+		if msg.Content != "" {
+			b.WriteString(fmt.Sprintf("      content=%s\n", utils.Truncate(msg.Content, 200)))
+		}
+		if len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				args := ""
+				if tc.Function != nil {
+					args = tc.Function.Arguments
+				}
+				b.WriteString(fmt.Sprintf("      tool_call id=%s name=%s args=%s\n", tc.ID, tc.Name, utils.Truncate(args, 200)))
+			}
+		}
+		if msg.ToolCallID != "" {
+			b.WriteString(fmt.Sprintf("      tool_call_id=%s\n", msg.ToolCallID))
+		}
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
+func formatToolsForLog(tools []providers.ToolDefinition) string {
+	if len(tools) == 0 {
+		return "[]"
+	}
+
+	var b strings.Builder
+	b.WriteString("[\n")
+	for i, tool := range tools {
+		b.WriteString(fmt.Sprintf("  [%d] name=%s type=%s\n", i, tool.Function.Name, tool.Type))
+		if tool.Function.Description != "" {
+			b.WriteString(fmt.Sprintf("      description=%s\n", utils.Truncate(tool.Function.Description, 140)))
+		}
+		if len(tool.Function.Parameters) > 0 {
+			b.WriteString(fmt.Sprintf("      parameters=%s\n", utils.Truncate(fmt.Sprintf("%v", tool.Function.Parameters), 220)))
+		}
+	}
+	b.WriteString("]")
+	return b.String()
 }

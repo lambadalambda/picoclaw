@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -243,5 +244,54 @@ func TestSubagentManager_RetentionTTL(t *testing.T) {
 	}
 	if _, ok := sm.GetTask("new"); !ok {
 		t.Fatal("expected recent completed task to remain after TTL cleanup")
+	}
+}
+
+func TestToolCallSignature_StableForSamePayload(t *testing.T) {
+	callA := []providers.ToolCall{{
+		ID:   "tc-1",
+		Name: "edit_file",
+		Arguments: map[string]interface{}{
+			"path":     "/tmp/demo.md",
+			"old_text": "[CONTINUE FROM HERE]",
+		},
+	}}
+	callB := []providers.ToolCall{{
+		ID:   "tc-2",
+		Name: "edit_file",
+		Arguments: map[string]interface{}{
+			"old_text": "[CONTINUE FROM HERE]",
+			"path":     "/tmp/demo.md",
+		},
+	}}
+
+	sigA := toolCallSignature(callA)
+	sigB := toolCallSignature(callB)
+	if sigA == "" || sigB == "" {
+		t.Fatal("expected non-empty signatures")
+	}
+	if sigA != sigB {
+		t.Fatalf("expected stable signature, got %q vs %q", sigA, sigB)
+	}
+}
+
+func TestIsMissingRequiredToolError(t *testing.T) {
+	msg := providers.ToolResultMessage("tc-1", "Error: Missing required parameter: new_text. Supply correct parameters before retrying.")
+	if !isMissingRequiredToolError(msg) {
+		t.Fatal("expected missing required tool error to be detected")
+	}
+
+	nonErr := providers.ToolResultMessage("tc-2", "ok")
+	if isMissingRequiredToolError(nonErr) {
+		t.Fatal("did not expect non-error tool result to match")
+	}
+
+	otherErr := providers.ToolResultMessage("tc-3", "Error: file not found")
+	if isMissingRequiredToolError(otherErr) {
+		t.Fatal("did not expect unrelated error to match")
+	}
+
+	if strings.TrimSpace(msg.Content) == "" {
+		t.Fatal("expected test message content")
 	}
 }
