@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-pip \
         python3-venv \
         build-essential \
+        runit \
         sudo \
     && mkdir -p /opt/picoclaw \
     && dpkg-query -W -f='${binary:Package}\n' | sort -u > /opt/picoclaw/base-apt-packages.txt \

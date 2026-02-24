@@ -273,5 +273,57 @@ patch_config '.tools.web.search.zai_mcp_url' "${PICOCLAW_TOOLS_WEB_SEARCH_ZAI_MC
 patch_config '.tools.web.search.zai_location' "${PICOCLAW_TOOLS_WEB_SEARCH_ZAI_LOCATION:-}"
 patch_config '.tools.web.search.zai_search_engine' "${PICOCLAW_TOOLS_WEB_SEARCH_ZAI_SEARCH_ENGINE:-}"
 
+# ---------------------------------------------------------------------------
+# Optional: runit service supervisor for workspace-managed services.
+#
+# This enables long-running daemons to start automatically with the container
+# and be managed by writing files under the workspace.
+#
+# Service directory layout:
+#   $PICOCLAW_HOME/workspace/services/<name>/run
+#   $PICOCLAW_HOME/workspace/services/<name>/log/run   (optional)
+#   $PICOCLAW_HOME/workspace/services/<name>/down      (optional; disables autostart)
+#
+# NOTE: run scripts must be executable. The agent can create them via write_file
+# and then run: chmod +x ... using the exec tool.
+# ---------------------------------------------------------------------------
+start_services_supervisor() {
+    enabled="${PICOCLAW_SERVICES_ENABLED:-true}"
+    case "$enabled" in
+        0|false|FALSE|no|NO)
+            echo "[entrypoint] Services supervisor disabled"
+            return
+            ;;
+    esac
+
+    if ! command -v runsvdir >/dev/null 2>&1; then
+        echo "[entrypoint] runsvdir not found; skipping services supervisor"
+        return
+    fi
+
+    services_dir="${PICOCLAW_SERVICES_DIR:-$PICOCLAW_HOME/workspace/services}"
+    if [ -z "$services_dir" ]; then
+        services_dir="$PICOCLAW_HOME/workspace/services"
+    fi
+    mkdir -p "$services_dir"
+
+    # sv(8) uses /etc/service by default; set $SVDIR so `sv status <name>` works
+    # for workspace-managed services.
+    export SVDIR="$services_dir"
+
+    supervisor_log_dir="$PICOCLAW_HOME/workspace/memory"
+    mkdir -p "$supervisor_log_dir"
+    supervisor_log="${PICOCLAW_SERVICES_LOG:-$supervisor_log_dir/services-supervisor.log}"
+    if [ -z "$supervisor_log" ]; then
+        supervisor_log="$supervisor_log_dir/services-supervisor.log"
+    fi
+
+    echo "[entrypoint] Starting services supervisor (runit): $services_dir"
+    # Best-effort; if it fails for any reason, don't prevent picoclaw from starting.
+    (runsvdir -P "$services_dir" >>"$supervisor_log" 2>&1 &) || true
+}
+
+start_services_supervisor
+
 echo "[entrypoint] Starting picoclaw $*"
 exec picoclaw "$@"
