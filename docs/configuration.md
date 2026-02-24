@@ -81,6 +81,12 @@ Behavior:
 - Z.AI backend tries MCP first (`zai_mcp_url`) and then direct API (`/paas/v4/web_search`)
 - `provider=auto` with both keys configured: if Z.AI search still fails, fallback to Brave for that request
 
+Runtime tool args:
+
+- `search_type=web` (default) for normal web search
+- `search_type=image` for image search (Brave image endpoint; Z.AI image mode is best-effort and falls back to Brave when `provider=auto` + Brave key exists)
+- `safe_search=off|moderate|strict` to control content filtering level (provider support is best-effort)
+
 If `zai_api_base` is not set, PicoClaw reuses `providers.zhipu.api_base` when available (including normalizing `/paas/v4` or `/coding/paas/v4` style bases for search).
 
 ## Providers

@@ -107,6 +107,55 @@ func TestWebSearchTool_AutoFallsBackToBrave(t *testing.T) {
 	}
 }
 
+func TestWebSearchTool_UsesBraveImageSearch(t *testing.T) {
+	var gotToken string
+	var gotPath string
+	var gotSafeSearch string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotToken = r.Header.Get("X-Subscription-Token")
+		gotSafeSearch = r.URL.Query().Get("safesearch")
+
+		_, _ = w.Write([]byte(`{"results":[{"title":"Golden retriever","url":"https://example.com/page","source":"Example","properties":{"url":"https://images.example.com/dog.jpg"},"thumbnail":{"src":"https://images.example.com/dog-thumb.jpg"}}]}`))
+	}))
+	defer server.Close()
+
+	tool := NewWebSearchTool(WebSearchToolConfig{
+		Provider:    "brave",
+		BraveAPIKey: "brave-key",
+		MaxResults:  5,
+	})
+	tool.httpClient = server.Client()
+	tool.braveAPIBase = server.URL
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"query":       "dog photos",
+		"search_type": "image",
+		"safe_search": "strict",
+		"count":       float64(3),
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	if gotPath != "/res/v1/images/search" {
+		t.Fatalf("path = %s, want /res/v1/images/search", gotPath)
+	}
+	if gotToken != "brave-key" {
+		t.Fatalf("X-Subscription-Token = %q, want brave-key", gotToken)
+	}
+	if gotSafeSearch != "strict" {
+		t.Fatalf("safesearch = %q, want strict", gotSafeSearch)
+	}
+	if !strings.Contains(result, "Image results for: dog photos") {
+		t.Fatalf("expected image results heading, got: %q", result)
+	}
+	if !strings.Contains(result, "Golden retriever") || !strings.Contains(result, "https://images.example.com/dog.jpg") {
+		t.Fatalf("unexpected formatted output: %q", result)
+	}
+}
+
 func TestWebSearchTool_AutoWithoutKeysReturnsConfigError(t *testing.T) {
 	tool := NewWebSearchTool(WebSearchToolConfig{Provider: "auto"})
 
@@ -116,6 +165,36 @@ func TestWebSearchTool_AutoWithoutKeysReturnsConfigError(t *testing.T) {
 	}
 	if !strings.Contains(result, "not configured") {
 		t.Fatalf("result = %q, want configuration error", result)
+	}
+}
+
+func TestWebSearchTool_InvalidSearchType(t *testing.T) {
+	tool := NewWebSearchTool(WebSearchToolConfig{Provider: "auto"})
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"query":       "picoclaw",
+		"search_type": "video",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "search_type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWebSearchTool_InvalidSafeSearch(t *testing.T) {
+	tool := NewWebSearchTool(WebSearchToolConfig{Provider: "auto"})
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"query":       "picoclaw",
+		"safe_search": "high",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "safe_search") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -154,11 +233,101 @@ func TestWebSearchTool_AutoFallsBackToBraveWhenZAIRequestFails(t *testing.T) {
 	}
 }
 
+func TestWebSearchTool_AutoImageFallsBackToBraveWhenZAIRequestFails(t *testing.T) {
+	zaiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid key"}`))
+	}))
+	defer zaiServer.Close()
+
+	braveServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/res/v1/images/search" {
+			t.Fatalf("path = %s, want /res/v1/images/search", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"results":[{"title":"Brave image fallback","url":"https://example.com/page","properties":{"url":"https://example.com/img.jpg"}}]}`))
+	}))
+	defer braveServer.Close()
+
+	tool := NewWebSearchTool(WebSearchToolConfig{
+		Provider:    "auto",
+		BraveAPIKey: "brave-key",
+		ZAIAPIKey:   "zai-key",
+		ZAIAPIBase:  zaiServer.URL,
+		ZAIMCPURL:   "-",
+		MaxResults:  5,
+	})
+	tool.braveAPIBase = braveServer.URL
+	tool.httpClient = &http.Client{}
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"query":       "cats",
+		"search_type": "image",
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(result, "Brave image fallback") {
+		t.Fatalf("expected Brave image fallback result, got: %q", result)
+	}
+}
+
+func TestWebSearchTool_ZAIImageSearchIncludesSearchType(t *testing.T) {
+	var gotBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/paas/v4/web_search" {
+			t.Fatalf("path = %s, want /paas/v4/web_search", r.URL.Path)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+		if err := json.Unmarshal(body, &gotBody); err != nil {
+			t.Fatalf("failed to parse request body: %v", err)
+		}
+
+		_, _ = w.Write([]byte(`{"search_result":[{"title":"Cat photo","image_url":"https://example.com/cat.jpg","link":"https://example.com/article"}]}`))
+	}))
+	defer server.Close()
+
+	tool := NewWebSearchTool(WebSearchToolConfig{
+		Provider:   "zai",
+		ZAIAPIKey:  "zai-key",
+		ZAIAPIBase: server.URL,
+		ZAIMCPURL:  "-",
+	})
+	tool.httpClient = server.Client()
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"query":       "cat photos",
+		"search_type": "image",
+		"safe_search": "strict",
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	if gotBody["search_type"] != "search_image" {
+		t.Fatalf("search_type = %v, want search_image", gotBody["search_type"])
+	}
+	if gotBody["safe_search"] != "strict" {
+		t.Fatalf("safe_search = %v, want strict", gotBody["safe_search"])
+	}
+	if !strings.Contains(result, "Image results for: cat photos") || !strings.Contains(result, "https://example.com/cat.jpg") {
+		t.Fatalf("unexpected formatted output: %q", result)
+	}
+}
+
 func TestWebSearchTool_UsesZAIMCPWhenAvailable(t *testing.T) {
 	const sessionID = "session-123"
 	var sawToolCall bool
 	var gotSearchQuery string
 	var gotLocation string
+	var gotSafeSearch string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/mcp" {
@@ -196,6 +365,7 @@ func TestWebSearchTool_UsesZAIMCPWhenAvailable(t *testing.T) {
 			args, _ := params["arguments"].(map[string]interface{})
 			gotSearchQuery, _ = args["search_query"].(string)
 			gotLocation, _ = args["location"].(string)
+			gotSafeSearch, _ = args["safe_search"].(string)
 			_, _ = w.Write([]byte("id:3\nevent:message\ndata:{\"jsonrpc\":\"2.0\",\"id\":\"call-1\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"[{\\\"title\\\":\\\"MCP Result\\\",\\\"link\\\":\\\"https://example.com/mcp\\\",\\\"content\\\":\\\"snippet\\\",\\\"media\\\":\\\"Example\\\"}]\"}]}}\n\n"))
 		default:
 			t.Fatalf("unexpected method: %s", method)
@@ -213,7 +383,10 @@ func TestWebSearchTool_UsesZAIMCPWhenAvailable(t *testing.T) {
 	})
 	tool.httpClient = server.Client()
 
-	result, err := tool.Execute(context.Background(), map[string]interface{}{"query": "latest golang release"})
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"query":       "latest golang release",
+		"safe_search": "moderate",
+	})
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
@@ -227,8 +400,46 @@ func TestWebSearchTool_UsesZAIMCPWhenAvailable(t *testing.T) {
 	if gotLocation != "us" {
 		t.Fatalf("location = %q, want us", gotLocation)
 	}
+	if gotSafeSearch != "moderate" {
+		t.Fatalf("safe_search = %q, want moderate", gotSafeSearch)
+	}
 	if !strings.Contains(result, "MCP Result") {
 		t.Fatalf("unexpected formatted output: %q", result)
+	}
+}
+
+func TestWebSearchTool_UsesBraveWebSafeSearch(t *testing.T) {
+	var gotPath string
+	var gotSafeSearch string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotSafeSearch = r.URL.Query().Get("safesearch")
+		_, _ = w.Write([]byte(`{"web":{"results":[{"title":"Brave result","url":"https://example.com/b","description":"desc"}]}}`))
+	}))
+	defer server.Close()
+
+	tool := NewWebSearchTool(WebSearchToolConfig{
+		Provider:    "brave",
+		BraveAPIKey: "brave-key",
+		MaxResults:  5,
+	})
+	tool.httpClient = server.Client()
+	tool.braveAPIBase = server.URL
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"query":       "picoclaw",
+		"safe_search": "off",
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	if gotPath != "/res/v1/web/search" {
+		t.Fatalf("path = %s, want /res/v1/web/search", gotPath)
+	}
+	if gotSafeSearch != "off" {
+		t.Fatalf("safesearch = %q, want off", gotSafeSearch)
 	}
 }
 

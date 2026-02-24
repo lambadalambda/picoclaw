@@ -17,6 +17,12 @@ const (
 	userAgent               = "Mozilla/5.0 (compatible; picoclaw/1.0)"
 	defaultZAISearchAPIBase = "https://api.z.ai/api"
 	defaultZAISearchMCPURL  = "https://api.z.ai/api/mcp/web_search_prime/mcp"
+	searchTypeWeb           = "web"
+	searchTypeImage         = "image"
+	safeSearchOff           = "off"
+	safeSearchModerate      = "moderate"
+	safeSearchStrict        = "strict"
+	zaiImageSearchType      = "search_image"
 )
 
 type WebSearchToolConfig struct {
@@ -72,7 +78,7 @@ func (t *WebSearchTool) Name() string {
 }
 
 func (t *WebSearchTool) Description() string {
-	return "Search the web for current information. Returns titles, URLs, and snippets from search results."
+	return "Search the web for current information. Supports web and image results, with optional safe search mode. Returns titles, URLs, and snippets from search results."
 }
 
 func (t *WebSearchTool) Parameters() map[string]interface{} {
@@ -82,6 +88,16 @@ func (t *WebSearchTool) Parameters() map[string]interface{} {
 			"query": map[string]interface{}{
 				"type":        "string",
 				"description": "Search query",
+			},
+			"search_type": map[string]interface{}{
+				"type":        "string",
+				"description": "Search type: 'web' (default) or 'image'",
+				"enum":        []string{searchTypeWeb, searchTypeImage},
+			},
+			"safe_search": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional safe search level: 'off', 'moderate', or 'strict'",
+				"enum":        []string{safeSearchOff, safeSearchModerate, safeSearchStrict},
 			},
 			"count": map[string]interface{}{
 				"type":        "integer",
@@ -100,6 +116,16 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]interface{}
 		return "", fmt.Errorf("query is required")
 	}
 
+	searchType, err := parseWebSearchType(args)
+	if err != nil {
+		return "", err
+	}
+
+	safeSearch, err := parseSafeSearch(args)
+	if err != nil {
+		return "", err
+	}
+
 	count := t.maxResults
 	if c, ok := args["count"].(float64); ok {
 		if int(c) > 0 && int(c) <= 10 {
@@ -113,13 +139,13 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]interface{}
 		if t.zaiAPIKey == "" {
 			return "Error: ZAI web search API key not configured", nil
 		}
-		result, err := t.executeZAISearch(ctx, query, count)
+		result, err := t.executeZAISearch(ctx, query, count, searchType, safeSearch)
 		if err == nil {
 			return result, nil
 		}
 
 		if t.isAutoProvider() && t.braveAPIKey != "" {
-			fallbackResult, fallbackErr := t.executeBraveSearch(ctx, query, count)
+			fallbackResult, fallbackErr := t.executeBraveSearchByType(ctx, query, count, searchType, safeSearch)
 			if fallbackErr == nil {
 				return fallbackResult, nil
 			}
@@ -134,9 +160,41 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]interface{}
 			}
 			return "Error: BRAVE_API_KEY not configured", nil
 		}
-		return t.executeBraveSearch(ctx, query, count)
+		return t.executeBraveSearchByType(ctx, query, count, searchType, safeSearch)
 	default:
 		return "", fmt.Errorf("unsupported web search provider: %s", backend)
+	}
+}
+
+func parseWebSearchType(args map[string]interface{}) (string, error) {
+	searchType, _ := args["search_type"].(string)
+	searchType = strings.ToLower(strings.TrimSpace(searchType))
+	if searchType == "" {
+		return searchTypeWeb, nil
+	}
+
+	switch searchType {
+	case searchTypeWeb:
+		return searchTypeWeb, nil
+	case searchTypeImage, "images":
+		return searchTypeImage, nil
+	default:
+		return "", fmt.Errorf("search_type must be 'web' or 'image'")
+	}
+}
+
+func parseSafeSearch(args map[string]interface{}) (string, error) {
+	safeSearch, _ := args["safe_search"].(string)
+	safeSearch = strings.ToLower(strings.TrimSpace(safeSearch))
+	if safeSearch == "" {
+		return "", nil
+	}
+
+	switch safeSearch {
+	case safeSearchOff, safeSearchModerate, safeSearchStrict:
+		return safeSearch, nil
+	default:
+		return "", fmt.Errorf("safe_search must be 'off', 'moderate', or 'strict'")
 	}
 }
 
@@ -158,14 +216,27 @@ func (t *WebSearchTool) resolveSearchBackend() string {
 	}
 }
 
-func (t *WebSearchTool) executeBraveSearch(ctx context.Context, query string, count int) (string, error) {
+func (t *WebSearchTool) executeBraveSearchByType(ctx context.Context, query string, count int, searchType, safeSearch string) (string, error) {
+	if searchType == searchTypeImage {
+		return t.executeBraveImageSearch(ctx, query, count, safeSearch)
+	}
+	return t.executeBraveSearch(ctx, query, count, safeSearch)
+}
+
+func (t *WebSearchTool) executeBraveSearch(ctx context.Context, query string, count int, safeSearch string) (string, error) {
 	braveAPIBase := strings.TrimRight(strings.TrimSpace(t.braveAPIBase), "/")
 	if braveAPIBase == "" {
 		braveAPIBase = "https://api.search.brave.com"
 	}
 
-	searchURL := fmt.Sprintf("%s/res/v1/web/search?q=%s&count=%d",
-		braveAPIBase, url.QueryEscape(query), count)
+	params := url.Values{}
+	params.Set("q", query)
+	params.Set("count", fmt.Sprintf("%d", count))
+	if safeSearch != "" {
+		params.Set("safesearch", safeSearch)
+	}
+
+	searchURL := fmt.Sprintf("%s/res/v1/web/search?%s", braveAPIBase, params.Encode())
 
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
@@ -224,18 +295,127 @@ func (t *WebSearchTool) executeBraveSearch(ctx context.Context, query string, co
 	return strings.Join(lines, "\n"), nil
 }
 
-func (t *WebSearchTool) executeZAISearch(ctx context.Context, query string, count int) (string, error) {
+func (t *WebSearchTool) executeBraveImageSearch(ctx context.Context, query string, count int, safeSearch string) (string, error) {
+	braveAPIBase := strings.TrimRight(strings.TrimSpace(t.braveAPIBase), "/")
+	if braveAPIBase == "" {
+		braveAPIBase = "https://api.search.brave.com"
+	}
+
+	params := url.Values{}
+	params.Set("q", query)
+	params.Set("count", fmt.Sprintf("%d", count))
+	if safeSearch != "" {
+		params.Set("safesearch", safeSearch)
+	}
+
+	searchURL := fmt.Sprintf("%s/res/v1/images/search?%s", braveAPIBase, params.Encode())
+
+	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Subscription-Token", t.braveAPIKey)
+
+	client := t.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var searchResp struct {
+		Results []map[string]interface{} `json:"results"`
+	}
+
+	if err := json.Unmarshal(body, &searchResp); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(searchResp.Results) == 0 {
+		return fmt.Sprintf("No image results for: %s", query), nil
+	}
+
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Image results for: %s", query))
+	for i, item := range searchResp.Results {
+		if i >= count {
+			break
+		}
+
+		title := firstNonEmpty(
+			stringFromMap(item, "title"),
+			stringFromMap(item, "description"),
+			stringFromMap(item, "alt"),
+		)
+		if title == "" {
+			title = "Untitled"
+		}
+
+		imageURL := firstNonEmpty(
+			stringFromMapPath(item, "properties", "url"),
+			stringFromMapPath(item, "properties", "img_url"),
+			stringFromMap(item, "image_url"),
+			stringFromMap(item, "src"),
+			stringFromMapPath(item, "content", "url"),
+		)
+
+		pageURL := firstNonEmpty(
+			stringFromMap(item, "url"),
+			stringFromMap(item, "page_url"),
+			stringFromMap(item, "source_url"),
+		)
+
+		thumbnailURL := firstNonEmpty(
+			stringFromMapPath(item, "thumbnail", "src"),
+			stringFromMap(item, "thumbnail"),
+			stringFromMap(item, "thumbnail_url"),
+		)
+
+		source := firstNonEmpty(
+			stringFromMap(item, "source"),
+			stringFromMap(item, "provider"),
+		)
+
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, title))
+		if imageURL != "" {
+			lines = append(lines, fmt.Sprintf("   Image: %s", imageURL))
+		}
+		if pageURL != "" && pageURL != imageURL {
+			lines = append(lines, fmt.Sprintf("   Page: %s", pageURL))
+		}
+		if thumbnailURL != "" && thumbnailURL != imageURL {
+			lines = append(lines, fmt.Sprintf("   Thumbnail: %s", thumbnailURL))
+		}
+		if source != "" {
+			lines = append(lines, fmt.Sprintf("   Source: %s", source))
+		}
+	}
+
+	return strings.Join(lines, "\n"), nil
+}
+
+func (t *WebSearchTool) executeZAISearch(ctx context.Context, query string, count int, searchType, safeSearch string) (string, error) {
 	mcpEnabled := strings.TrimSpace(t.zaiMCPURL) != "-"
 	mcpErr := fmt.Errorf("disabled")
 	if mcpEnabled {
-		mcpResult, err := t.executeZAISearchMCP(ctx, query, count)
+		mcpResult, err := t.executeZAISearchMCP(ctx, query, count, searchType, safeSearch)
 		if err == nil {
 			return mcpResult, nil
 		}
 		mcpErr = err
 	}
 
-	directResult, directErr := t.executeZAISearchAPI(ctx, query, count)
+	directResult, directErr := t.executeZAISearchAPI(ctx, query, count, searchType, safeSearch)
 	if directErr == nil {
 		return directResult, nil
 	}
@@ -247,24 +427,66 @@ func (t *WebSearchTool) executeZAISearch(ctx context.Context, query string, coun
 }
 
 type zaiSearchResultItem struct {
-	Title   string `json:"title"`
-	Link    string `json:"link"`
-	Content string `json:"content"`
-	Media   string `json:"media"`
+	Title        string `json:"title"`
+	Link         string `json:"link"`
+	URL          string `json:"url"`
+	PageURL      string `json:"page_url"`
+	SourceURL    string `json:"source_url"`
+	Content      string `json:"content"`
+	Media        string `json:"media"`
+	ImageURL     string `json:"image_url"`
+	Image        string `json:"image"`
+	Thumbnail    string `json:"thumbnail"`
+	ThumbnailURL string `json:"thumbnail_url"`
 }
 
-func formatZAISearchResults(query string, count int, items []zaiSearchResultItem) string {
+func formatZAISearchResults(query string, count int, items []zaiSearchResultItem, searchType string) string {
 	if len(items) == 0 {
+		if searchType == searchTypeImage {
+			return fmt.Sprintf("No image results for: %s", query)
+		}
 		return fmt.Sprintf("No results for: %s", query)
 	}
 
 	var lines []string
-	lines = append(lines, fmt.Sprintf("Results for: %s", query))
+	if searchType == searchTypeImage {
+		lines = append(lines, fmt.Sprintf("Image results for: %s", query))
+	} else {
+		lines = append(lines, fmt.Sprintf("Results for: %s", query))
+	}
 	for i, item := range items {
 		if i >= count {
 			break
 		}
-		lines = append(lines, fmt.Sprintf("%d. %s\n   %s", i+1, item.Title, item.Link))
+
+		title := firstNonEmpty(item.Title, item.Content)
+		if title == "" {
+			title = "Untitled"
+		}
+
+		if searchType == searchTypeImage {
+			imageURL := firstNonEmpty(item.ImageURL, item.Image, item.URL, item.Link)
+			pageURL := firstNonEmpty(item.PageURL, item.Link, item.SourceURL, item.URL)
+			thumbnailURL := firstNonEmpty(item.ThumbnailURL, item.Thumbnail)
+
+			lines = append(lines, fmt.Sprintf("%d. %s", i+1, title))
+			if imageURL != "" {
+				lines = append(lines, fmt.Sprintf("   Image: %s", imageURL))
+			}
+			if pageURL != "" && pageURL != imageURL {
+				lines = append(lines, fmt.Sprintf("   Page: %s", pageURL))
+			}
+			if thumbnailURL != "" && thumbnailURL != imageURL {
+				lines = append(lines, fmt.Sprintf("   Thumbnail: %s", thumbnailURL))
+			}
+			if item.Media != "" {
+				lines = append(lines, fmt.Sprintf("   Source: %s", item.Media))
+			}
+			continue
+		}
+
+		link := firstNonEmpty(item.Link, item.URL, item.PageURL)
+		lines = append(lines, fmt.Sprintf("%d. %s\n   %s", i+1, title, link))
 		if item.Content != "" {
 			lines = append(lines, fmt.Sprintf("   %s", item.Content))
 		}
@@ -276,13 +498,19 @@ func formatZAISearchResults(query string, count int, items []zaiSearchResultItem
 	return strings.Join(lines, "\n")
 }
 
-func (t *WebSearchTool) executeZAISearchAPI(ctx context.Context, query string, count int) (string, error) {
+func (t *WebSearchTool) executeZAISearchAPI(ctx context.Context, query string, count int, searchType, safeSearch string) (string, error) {
 	apiBase := normalizeZAISearchAPIBase(t.zaiAPIBase)
 
 	reqBody := map[string]interface{}{
 		"search_engine": t.zaiSearchEngine,
 		"search_query":  query,
 		"count":         count,
+	}
+	if searchType == searchTypeImage {
+		reqBody["search_type"] = zaiImageSearchType
+	}
+	if safeSearch != "" {
+		reqBody["safe_search"] = safeSearch
 	}
 
 	payload, err := json.Marshal(reqBody)
@@ -331,10 +559,10 @@ func (t *WebSearchTool) executeZAISearchAPI(ctx context.Context, query string, c
 		return "", fmt.Errorf("failed to parse z.ai search response: %w", err)
 	}
 
-	return formatZAISearchResults(query, count, searchResp.SearchResult), nil
+	return formatZAISearchResults(query, count, searchResp.SearchResult, searchType), nil
 }
 
-func (t *WebSearchTool) executeZAISearchMCP(ctx context.Context, query string, count int) (string, error) {
+func (t *WebSearchTool) executeZAISearchMCP(ctx context.Context, query string, count int, searchType, safeSearch string) (string, error) {
 	mcpURL := strings.TrimSpace(t.zaiMCPURL)
 	if mcpURL == "" {
 		mcpURL = defaultZAISearchMCPURL
@@ -383,7 +611,7 @@ func (t *WebSearchTool) executeZAISearchMCP(ctx context.Context, query string, c
 		"method":  "tools/call",
 		"params": map[string]interface{}{
 			"name":      "webSearchPrime",
-			"arguments": t.buildZAIMCPArguments(query, count),
+			"arguments": t.buildZAIMCPArguments(query, count, searchType, safeSearch),
 		},
 	})
 	if err != nil {
@@ -414,13 +642,16 @@ func (t *WebSearchTool) executeZAISearchMCP(ctx context.Context, query string, c
 
 	var items []zaiSearchResultItem
 	if err := json.Unmarshal([]byte(text), &items); err == nil {
-		return formatZAISearchResults(query, count, items), nil
+		return formatZAISearchResults(query, count, items, searchType), nil
 	}
 
 	if strings.Contains(strings.ToLower(text), "error") {
 		return "", fmt.Errorf("mcp tool returned error text: %s", text)
 	}
 
+	if searchType == searchTypeImage {
+		return fmt.Sprintf("Image results for: %s\n%s", query, text), nil
+	}
 	return fmt.Sprintf("Results for: %s\n%s", query, text), nil
 }
 
@@ -499,15 +730,68 @@ func (t *WebSearchTool) postZAIMCP(ctx context.Context, client *http.Client, mcp
 	return resp.StatusCode, resp.Header, body, nil
 }
 
-func (t *WebSearchTool) buildZAIMCPArguments(query string, count int) map[string]interface{} {
+func (t *WebSearchTool) buildZAIMCPArguments(query string, count int, searchType, safeSearch string) map[string]interface{} {
 	args := map[string]interface{}{
 		"search_query": query,
 		"count":        count,
+	}
+	if searchType == searchTypeImage {
+		args["search_type"] = zaiImageSearchType
+	}
+	if safeSearch != "" {
+		args["safe_search"] = safeSearch
 	}
 	if t.zaiLocation != "" {
 		args["location"] = t.zaiLocation
 	}
 	return args
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func stringFromMap(m map[string]interface{}, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func stringFromMapPath(m map[string]interface{}, keys ...string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	current := m
+	for i, key := range keys {
+		if i == len(keys)-1 {
+			return stringFromMap(current, key)
+		}
+		raw, ok := current[key]
+		if !ok || raw == nil {
+			return ""
+		}
+		next, ok := raw.(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		current = next
+	}
+	return ""
 }
 
 func normalizeZAILocation(raw string) string {
