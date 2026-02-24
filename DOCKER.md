@@ -149,6 +149,33 @@ The binary updates immediately. Volumes (config, workspace, installed
 packages) are preserved. Builtin skills are re-synced from the image on
 every start.
 
+## Workspace Services (runit)
+
+The Docker image includes a lightweight service supervisor (runit). On startup,
+`docker-entrypoint.sh` starts `runsvdir` so long-running daemons can be managed
+by writing service definitions under the workspace.
+
+- Service root: `picoclaw-home/workspace/services/`
+- Supervisor log: `picoclaw-home/workspace/memory/services-supervisor.log`
+
+Disable or override:
+
+```env
+PICOCLAW_SERVICES_ENABLED=false
+PICOCLAW_SERVICES_DIR=/root/.picoclaw/workspace/services
+PICOCLAW_SERVICES_LOG=/root/.picoclaw/workspace/memory/services-supervisor.log
+```
+
+Each service is a directory containing a `run` script:
+
+```text
+picoclaw-home/workspace/services/<name>/run
+picoclaw-home/workspace/services/<name>/log/run   # optional (svlogd)
+picoclaw-home/workspace/services/<name>/down      # optional (disable autostart)
+```
+
+Remember to `chmod +x` run scripts after creating them.
+
 ## What's in the image
 
 The runtime image is based on Debian bookworm and comes with:

@@ -92,6 +92,63 @@ PICOCLAW_RESTORE_APT_PACKAGES=false
 2. sync built-in skills into workspace
 3. patch config values from `PICOCLAW_*` environment variables
 
+## Workspace Services (runit)
+
+The Docker image includes a lightweight service supervisor (runit).
+On startup, `docker-entrypoint.sh` starts `runsvdir` so the agent can manage
+long-running background services by creating/editing files under the workspace.
+
+Defaults:
+
+- Services root: `picoclaw-home/workspace/services/`
+- Supervisor log: `picoclaw-home/workspace/memory/services-supervisor.log`
+
+Environment toggles:
+
+```env
+# Disable the supervisor entirely
+PICOCLAW_SERVICES_ENABLED=false
+
+# Override where service definitions live
+PICOCLAW_SERVICES_DIR=/root/.picoclaw/workspace/services
+
+# Override supervisor log path
+PICOCLAW_SERVICES_LOG=/root/.picoclaw/workspace/memory/services-supervisor.log
+```
+
+Service layout (one directory per service):
+
+```text
+picoclaw-home/workspace/services/<name>/run
+picoclaw-home/workspace/services/<name>/log/run   # optional (svlogd)
+picoclaw-home/workspace/services/<name>/down      # optional (disable autostart)
+```
+
+Important: `run` (and `log/run`) must be executable. After creating a new
+service with `write_file`, do:
+
+```bash
+docker compose exec picoclaw sh -lc 'chmod +x /root/.picoclaw/workspace/services/<name>/run'
+docker compose exec picoclaw sh -lc 'chmod +x /root/.picoclaw/workspace/services/<name>/log/run'
+```
+
+Control services with `sv` (inside the container):
+
+```bash
+# If you're controlling services manually, set SVDIR so `sv status <name>` works
+docker compose exec picoclaw sh -lc 'export SVDIR=/root/.picoclaw/workspace/services && sv status <name>'
+docker compose exec picoclaw sh -lc 'export SVDIR=/root/.picoclaw/workspace/services && sv up <name>'
+docker compose exec picoclaw sh -lc 'export SVDIR=/root/.picoclaw/workspace/services && sv down <name>'
+docker compose exec picoclaw sh -lc 'export SVDIR=/root/.picoclaw/workspace/services && sv restart <name>'
+```
+
+If you use a `log/run` with `svlogd`, service logs are written to:
+`picoclaw-home/workspace/services/<name>/log/current`.
+
+```bash
+docker compose exec picoclaw sh -lc 'tail -n 200 /root/.picoclaw/workspace/services/<name>/log/current'
+```
+
 ## Running Interactive CLI
 
 ```bash
