@@ -12,10 +12,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
-const (
-	anthropicPromptCachingBeta      = "prompt-caching-2024-07-31"
-	anthropicCacheControlBlockLimit = 1
-)
+const anthropicPromptCachingBeta = "prompt-caching-2024-07-31"
 
 type ClaudeProvider struct {
 	client      *anthropic.Client
@@ -100,26 +97,6 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 	if err != nil {
 		return anthropic.MessageNewParams{}, err
 	}
-	remainingCacheControlBlocks := 0
-	if cacheControl != nil {
-		remainingCacheControlBlocks = anthropicCacheControlBlockLimit
-	}
-	applySystemCacheControl := func(tb *anthropic.TextBlockParam) {
-		if cacheControl == nil || remainingCacheControlBlocks <= 0 {
-			return
-		}
-		tb.CacheControl = *cacheControl
-		remainingCacheControlBlocks--
-	}
-	applyContentCacheControl := func(block *anthropic.ContentBlockParamUnion) {
-		if cacheControl == nil || remainingCacheControlBlocks <= 0 {
-			return
-		}
-		if cc := block.GetCacheControl(); cc != nil {
-			*cc = *cacheControl
-			remainingCacheControlBlocks--
-		}
-	}
 	toolResultIsError := func(content string) bool {
 		content = strings.TrimSpace(content)
 		if content == "" {
@@ -133,7 +110,6 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 		switch msg.Role {
 		case "system":
 			tb := anthropic.TextBlockParam{Text: msg.Content}
-			applySystemCacheControl(&tb)
 			system = append(system, tb)
 		case "user":
 			if msg.ToolCallID != "" {
@@ -142,7 +118,6 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 				)
 			} else {
 				textBlock := anthropic.NewTextBlock(msg.Content)
-				applyContentCacheControl(&textBlock)
 				anthropicMessages = append(anthropicMessages,
 					anthropic.NewUserMessage(textBlock),
 				)
@@ -152,7 +127,6 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 				var blocks []anthropic.ContentBlockParamUnion
 				if msg.Content != "" {
 					textBlock := anthropic.NewTextBlock(msg.Content)
-					applyContentCacheControl(&textBlock)
 					blocks = append(blocks, textBlock)
 				}
 				for _, tc := range msg.ToolCalls {
@@ -161,7 +135,6 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 				anthropicMessages = append(anthropicMessages, anthropic.NewAssistantMessage(blocks...))
 			} else {
 				textBlock := anthropic.NewTextBlock(msg.Content)
-				applyContentCacheControl(&textBlock)
 				anthropicMessages = append(anthropicMessages,
 					anthropic.NewAssistantMessage(textBlock),
 				)
@@ -194,6 +167,18 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 
 	if len(tools) > 0 {
 		params.Tools = translateToolsForClaude(tools)
+	}
+
+	if cacheControl != nil {
+		extra := map[string]interface{}{
+			"type": string(cacheControl.Type),
+		}
+		if cacheControl.TTL != "" {
+			extra["ttl"] = string(cacheControl.TTL)
+		}
+		params.SetExtraFields(map[string]interface{}{
+			"cache_control": extra,
+		})
 	}
 
 	return params, nil

@@ -134,7 +134,7 @@ func TestBuildClaudeParams_WithTools(t *testing.T) {
 	}
 }
 
-func TestBuildClaudeParams_AnthropicCacheControlOnSystem(t *testing.T) {
+func TestBuildClaudeParams_AnthropicCacheControlTopLevel(t *testing.T) {
 	messages := []Message{
 		{Role: "system", Content: "You are helpful"},
 		{Role: "user", Content: "Hi"},
@@ -146,14 +146,44 @@ func TestBuildClaudeParams_AnthropicCacheControlOnSystem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildClaudeParams() error: %v", err)
 	}
-	if len(params.System) != 1 {
-		t.Fatalf("len(System) = %d, want 1", len(params.System))
+
+	var payload map[string]interface{}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("json.Marshal(params) error: %v", err)
 	}
-	if got := string(params.System[0].CacheControl.Type); got != "ephemeral" {
-		t.Fatalf("System[0].CacheControl.Type = %q, want %q", got, "ephemeral")
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("json.Unmarshal payload error: %v", err)
 	}
-	if got := string(params.System[0].CacheControl.TTL); got != "1h" {
-		t.Fatalf("System[0].CacheControl.TTL = %q, want %q", got, "1h")
+
+	cacheControl, ok := payload["cache_control"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("cache_control = %#v, want object", payload["cache_control"])
+	}
+	if got, ok := cacheControl["type"].(string); !ok || got != "ephemeral" {
+		t.Fatalf("cache_control.type = %#v, want ephemeral", cacheControl["type"])
+	}
+	if got, ok := cacheControl["ttl"].(string); !ok || got != "1h" {
+		t.Fatalf("cache_control.ttl = %#v, want 1h", cacheControl["ttl"])
+	}
+
+	if systems, ok := payload["system"].([]interface{}); ok && len(systems) > 0 {
+		if first, ok := systems[0].(map[string]interface{}); ok {
+			if _, has := first["cache_control"]; has {
+				t.Fatalf("system[0].cache_control should be omitted in automatic mode")
+			}
+		}
+	}
+	if msgs, ok := payload["messages"].([]interface{}); ok && len(msgs) > 0 {
+		if firstMsg, ok := msgs[0].(map[string]interface{}); ok {
+			if content, ok := firstMsg["content"].([]interface{}); ok && len(content) > 0 {
+				if firstBlock, ok := content[0].(map[string]interface{}); ok {
+					if _, has := firstBlock["cache_control"]; has {
+						t.Fatalf("messages[0].content[0].cache_control should be omitted in automatic mode")
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -169,69 +199,32 @@ func TestBuildClaudeParams_AnthropicCacheControlRejectsInvalidTTL(t *testing.T) 
 	}
 }
 
-func TestBuildClaudeParams_AnthropicCacheControlAppliesOnlyOneBlock(t *testing.T) {
-	messages := []Message{
-		{Role: "system", Content: "System A"},
-		{Role: "system", Content: "System B"},
-		{Role: "user", Content: "User A"},
-		{Role: "assistant", Content: "Assistant A"},
-		{Role: "user", Content: "User B"},
-	}
-
-	params, err := buildClaudeParams(messages, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
-		"anthropic_cache":     true,
-		"anthropic_cache_ttl": "1h",
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeParams() error: %v", err)
-	}
-
-	count := 0
-	for _, sb := range params.System {
-		if string(sb.CacheControl.Type) != "" {
-			count++
-		}
-	}
-	for _, msg := range params.Messages {
-		for _, block := range msg.Content {
-			if cc := block.GetCacheControl(); cc != nil && string(cc.Type) != "" {
-				count++
-			}
-		}
-	}
-
-	if count != anthropicCacheControlBlockLimit {
-		t.Fatalf("cache_control blocks = %d, want %d", count, anthropicCacheControlBlockLimit)
-	}
-	if len(params.System) == 0 || string(params.System[0].CacheControl.Type) != "ephemeral" {
-		t.Fatalf("expected first system block to carry cache_control")
-	}
-}
-
-func TestBuildClaudeParams_AnthropicCacheControlWithoutSystemAppliesOnlyOneBlock(t *testing.T) {
-	messages := []Message{
-		{Role: "user", Content: "User A"},
-		{Role: "assistant", Content: "Assistant A"},
-		{Role: "user", Content: "User B"},
-	}
-
-	params, err := buildClaudeParams(messages, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
+func TestBuildClaudeParams_AnthropicCacheControlTopLevel_DefaultTTL(t *testing.T) {
+	params, err := buildClaudeParams([]Message{{Role: "user", Content: "Hi"}}, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
 		"anthropic_cache": true,
 	})
 	if err != nil {
 		t.Fatalf("buildClaudeParams() error: %v", err)
 	}
 
-	count := 0
-	for _, msg := range params.Messages {
-		for _, block := range msg.Content {
-			if cc := block.GetCacheControl(); cc != nil && string(cc.Type) != "" {
-				count++
-			}
-		}
+	var payload map[string]interface{}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("json.Marshal(params) error: %v", err)
 	}
-	if count != anthropicCacheControlBlockLimit {
-		t.Fatalf("cache_control blocks = %d, want %d", count, anthropicCacheControlBlockLimit)
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("json.Unmarshal payload error: %v", err)
+	}
+
+	cacheControl, ok := payload["cache_control"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("cache_control = %#v, want object", payload["cache_control"])
+	}
+	if got, ok := cacheControl["type"].(string); !ok || got != "ephemeral" {
+		t.Fatalf("cache_control.type = %#v, want ephemeral", cacheControl["type"])
+	}
+	if _, has := cacheControl["ttl"]; has {
+		t.Fatalf("cache_control.ttl should be omitted when using default TTL")
 	}
 }
 
