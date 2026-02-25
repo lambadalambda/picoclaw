@@ -14,7 +14,8 @@
       "request_max_message_chars": 0,
       "request_max_tool_message_chars": 0,
       "subagent_max_tasks": 200,
-      "subagent_completed_ttl_seconds": 86400
+      "subagent_completed_ttl_seconds": 86400,
+      "echo_tool_calls": false
     }
   },
   "channels": {

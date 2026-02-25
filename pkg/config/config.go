@@ -37,6 +37,7 @@ type AgentDefaults struct {
 	RequestMaxToolMessageChars  int     `json:"request_max_tool_message_chars" env:"PICOCLAW_AGENTS_DEFAULTS_REQUEST_MAX_TOOL_MESSAGE_CHARS"`
 	SubagentMaxTasks            int     `json:"subagent_max_tasks" env:"PICOCLAW_AGENTS_DEFAULTS_SUBAGENT_MAX_TASKS"`
 	SubagentCompletedTTLSeconds int     `json:"subagent_completed_ttl_seconds" env:"PICOCLAW_AGENTS_DEFAULTS_SUBAGENT_COMPLETED_TTL_SECONDS"`
+	EchoToolCalls               bool    `json:"echo_tool_calls" env:"PICOCLAW_AGENTS_DEFAULTS_ECHO_TOOL_CALLS"`
 }
 
 type ChannelsConfig struct {
@@ -196,6 +197,7 @@ func DefaultConfig() *Config {
 				RequestMaxToolMessageChars:  0,
 				SubagentMaxTasks:            200,
 				SubagentCompletedTTLSeconds: 86400,
+				EchoToolCalls:               false,
 			},
 		},
 		Channels: ChannelsConfig{

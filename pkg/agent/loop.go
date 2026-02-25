@@ -51,6 +51,7 @@ type AgentLoop struct {
 	memoryStore       *memory.MemoryStore // Searchable memory DB (nil = disabled)
 	modelCapabilities providers.ModelCapabilities
 	visionAnalyzer    imageAnalyzer
+	echoToolCalls     bool // Echo tool calls to chat channel
 }
 
 // processOptions configures how a message is processed
@@ -201,6 +202,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		memoryStore:       memoryDB,
 		modelCapabilities: modelCaps,
 		visionAnalyzer:    visionAnalyzer,
+		echoToolCalls:     cfg.Agents.Defaults.EchoToolCalls,
 	}
 }
 
