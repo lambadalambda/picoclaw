@@ -402,10 +402,20 @@ func logClaudeCacheUsage(resp *anthropic.Message) {
 	}
 	if resp.Usage.InputTokens > 0 {
 		fields["usage.input_tokens"] = resp.Usage.InputTokens
-		fields["usage.cache_hit_ratio"] = roundTo(float64(resp.Usage.CacheReadInputTokens)/float64(resp.Usage.InputTokens), 4)
+	}
+	if ratio, ok := anthropicCacheHitRatio(resp.Usage.InputTokens, resp.Usage.CacheReadInputTokens); ok {
+		fields["usage.cache_hit_ratio"] = ratio
 	}
 
 	logger.InfoCF("provider", "LLM cache usage reported", fields)
+}
+
+func anthropicCacheHitRatio(inputTokens, cacheReadInputTokens int64) (float64, bool) {
+	totalInput := inputTokens + cacheReadInputTokens
+	if totalInput <= 0 {
+		return 0, false
+	}
+	return roundTo(float64(cacheReadInputTokens)/float64(totalInput), 4), true
 }
 
 func createClaudeTokenSource() func() (string, error) {

@@ -235,6 +235,23 @@ func TestBuildClaudeParams_AnthropicCacheControlWithoutSystemAppliesOnlyOneBlock
 	}
 }
 
+func TestAnthropicCacheHitRatio_ComputesAgainstTotalInput(t *testing.T) {
+	ratio, ok := anthropicCacheHitRatio(1153, 39349)
+	if !ok {
+		t.Fatal("anthropicCacheHitRatio() ok = false, want true")
+	}
+	if ratio != 0.9715 {
+		t.Fatalf("anthropicCacheHitRatio() = %v, want 0.9715", ratio)
+	}
+}
+
+func TestAnthropicCacheHitRatio_HandlesZeroTotals(t *testing.T) {
+	_, ok := anthropicCacheHitRatio(0, 0)
+	if ok {
+		t.Fatal("anthropicCacheHitRatio() ok = true, want false")
+	}
+}
+
 func TestTranslateToolsForClaude_RequiredStringSlice(t *testing.T) {
 	tools := []ToolDefinition{
 		{
