@@ -16,7 +16,10 @@ from typing import Any
 
 import websockets
 from deltachat_rpc_client import DeltaChat, EventType, Rpc, SpecialContactId
+from deltachat_rpc_client.const import ViewType
 from websockets.exceptions import ConnectionClosed
+
+_IMAGE_EXTENSIONS = frozenset((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".tiff"))
 
 ACCOUNTS_TOML_TEMPLATE = """accounts = []
 selected_account = 0
@@ -431,13 +434,16 @@ class DeltaChatBridge:
 
         if media_items:
             first_file = self._resolve_outbound_file(media_items[0])
+            first_vt = ViewType.IMAGE if Path(first_file).suffix.lower() in _IMAGE_EXTENSIONS else None
             if content != "":
-                chat.send_message(text=content, file=first_file)
+                chat.send_message(text=content, file=first_file, viewtype=first_vt)
             else:
-                chat.send_file(first_file)
+                chat.send_message(file=first_file, viewtype=first_vt) if first_vt else chat.send_file(first_file)
 
             for extra_file in media_items[1:]:
-                chat.send_file(self._resolve_outbound_file(extra_file))
+                resolved = self._resolve_outbound_file(extra_file)
+                vt = ViewType.IMAGE if Path(resolved).suffix.lower() in _IMAGE_EXTENSIONS else None
+                chat.send_message(file=resolved, viewtype=vt) if vt else chat.send_file(resolved)
             return
 
         if content != "":
