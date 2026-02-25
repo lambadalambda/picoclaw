@@ -82,12 +82,7 @@ func (t *CompactTool) Execute(ctx context.Context, args map[string]interface{}) 
 		keepLast = 0
 	}
 	if keepLast > 50 {
-		keepLast = 50 // Sanity limit
-	}
-
-	// In hard mode, always keep 0
-	if mode == CompactModeHard {
-		keepLast = 0
+		keepLast = 50
 	}
 
 	// Get session key from execution context

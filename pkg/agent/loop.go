@@ -680,7 +680,9 @@ func (al *AgentLoop) maybeSummarize(sessionKey string) {
 // This is called by the compact tool when the agent requests context compaction.
 // keepLast specifies how many recent messages to preserve (0 = summarize all in hard mode).
 func (al *AgentLoop) CompactSession(sessionKey string, mode tools.CompactMode, keepLast int) (string, error) {
-	if keepLast <= 0 && mode == tools.CompactModeSoft {
+	if mode == tools.CompactModeHard {
+		keepLast = 0
+	} else if keepLast <= 0 {
 		keepLast = 4
 	}
 	result := al.doCompaction(sessionKey, keepLast)

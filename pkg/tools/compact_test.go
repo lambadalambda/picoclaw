@@ -90,9 +90,11 @@ func TestCompactTool_SoftMode(t *testing.T) {
 }
 
 func TestCompactTool_HardMode(t *testing.T) {
+	var capturedMode CompactMode
 	var capturedKeepLast int
 
 	callback := func(sessionKey string, mode CompactMode, keepLast int) (string, error) {
+		capturedMode = mode
 		capturedKeepLast = keepLast
 		return "Test summary", nil
 	}
@@ -108,8 +110,11 @@ func TestCompactTool_HardMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capturedKeepLast != 0 {
-		t.Errorf("hard mode should force keepLast to 0, got: %d", capturedKeepLast)
+	if capturedMode != CompactModeHard {
+		t.Errorf("expected hard mode, got: %s", capturedMode)
+	}
+	if capturedKeepLast != 10 {
+		t.Errorf("tool should pass original keepLast to callback (mode logic handled by CompactSession), got: %d", capturedKeepLast)
 	}
 }
 
