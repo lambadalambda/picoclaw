@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -10,6 +11,24 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
+
+var sensitivePatterns = []struct {
+	pattern *regexp.Regexp
+	replace string
+}{
+	{regexp.MustCompile(`(?i)(authorization\s*:\s*)(bearer\s+|basic\s+|token\s+)?[\w\-._~+/]+=*`), "${1}[REDACTED]"},
+	{regexp.MustCompile(`(?i)(api[_-]?key|apikey|access[_-]?key|secret[_-]?key|auth[_-]?token|bearer|token)\s*[=:]\s*["']?[\w\-._~+/]{8,}["']?`), "${1}=[REDACTED]"},
+	{regexp.MustCompile(`(?i)["']?(api[_-]?key|apikey|access[_-]?key|secret[_-]?key|auth[_-]?token|token|secret|password|passwd)["']?\s*=\s*["']?[\w\-._~+/]{8,}["']?`), "${1}=[REDACTED]"},
+	{regexp.MustCompile(`(?i)(signature|sig|x-goog-signature|x-amz-signature|awsaccesskeyid)\s*=\s*[\w\-._~+/]+`), "${1}=[REDACTED]"},
+	{regexp.MustCompile(`(?i)(bearer\s+)[\w\-._~+/]{20,}`), "${1}[REDACTED]"},
+}
+
+func redactSensitive(s string) string {
+	for _, sp := range sensitivePatterns {
+		s = sp.pattern.ReplaceAllString(s, sp.replace)
+	}
+	return s
+}
 
 var toolsToEcho = map[string]bool{
 	"exec":          true,
@@ -27,6 +46,7 @@ var toolsToEcho = map[string]bool{
 
 func formatToolCallSummary(tc providers.ToolCall) string {
 	keyParam := extractKeyParam(tc.Name, tc.Arguments)
+	keyParam = redactSensitive(keyParam)
 	if keyParam != "" {
 		return fmt.Sprintf("%s %s", tc.Name, keyParam)
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -242,5 +243,118 @@ func TestFormatToolCallSummary_Truncation(t *testing.T) {
 	got := formatToolCallSummary(tc)
 	if len(got) > 70 {
 		t.Errorf("formatToolCallSummary() = %q (len %d), should be truncated", got, len(got))
+	}
+}
+
+func TestRedactSensitive_AuthHeader(t *testing.T) {
+	tests := []struct {
+		input    string
+		contains string
+	}{
+		{"curl -H 'Authorization: Bearer abc123token456'", "[REDACTED]"},
+		{"curl -H 'Authorization: Basic dXNlcjpwYXNz'", "[REDACTED]"},
+		{"Authorization: Token xyz789", "[REDACTED]"},
+	}
+	for _, tt := range tests {
+		got := redactSensitive(tt.input)
+		if !strings.Contains(got, tt.contains) {
+			t.Errorf("redactSensitive(%q) = %q, want to contain %q", tt.input, got, tt.contains)
+		}
+		if strings.Contains(got, "abc123token456") || strings.Contains(got, "dXNlcjpwYXNz") || strings.Contains(got, "xyz789") {
+			t.Errorf("redactSensitive(%q) = %q, should not contain secret", tt.input, got)
+		}
+	}
+}
+
+func TestRedactSensitive_APIKeys(t *testing.T) {
+	tests := []struct {
+		input    string
+		contains string
+	}{
+		{"export API_KEY=sk_live_abc123def456ghi789", "[REDACTED]"},
+		{"api_key=supersecretkey123456", "[REDACTED]"},
+		{"TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx", "[REDACTED]"},
+		{"--header 'X-API-Key: myapikey12345678'", "[REDACTED]"},
+	}
+	for _, tt := range tests {
+		got := redactSensitive(tt.input)
+		if !strings.Contains(got, tt.contains) {
+			t.Errorf("redactSensitive(%q) = %q, want to contain %q", tt.input, got, tt.contains)
+		}
+	}
+}
+
+func TestRedactSensitive_EnvVars(t *testing.T) {
+	tests := []struct {
+		input    string
+		contains string
+	}{
+		{"SECRET=mysecretvalue12345678", "[REDACTED]"},
+		{"PASSWORD=supersecretpassword", "[REDACTED]"},
+		{"export AUTH_TOKEN=mytokenvalue12345678", "[REDACTED]"},
+	}
+	for _, tt := range tests {
+		got := redactSensitive(tt.input)
+		if !strings.Contains(got, tt.contains) {
+			t.Errorf("redactSensitive(%q) = %q, want to contain %q", tt.input, got, tt.contains)
+		}
+	}
+}
+
+func TestRedactSensitive_SignedURLs(t *testing.T) {
+	tests := []struct {
+		input    string
+		contains string
+	}{
+		{"https://storage.googleapis.com/bucket/file?X-Goog-Signature=abc123&X-Goog-Date=now", "[REDACTED]"},
+		{"https://s3.amazonaws.com/bucket?X-Amz-Signature=xyz789&X-Amz-Date=now", "[REDACTED]"},
+		{"https://example.com/download?sig=mysignature123&expires=123", "[REDACTED]"},
+		{"https://cdn.example.com/file?Signature=abcdefg123456", "[REDACTED]"},
+	}
+	for _, tt := range tests {
+		got := redactSensitive(tt.input)
+		if !strings.Contains(got, tt.contains) {
+			t.Errorf("redactSensitive(%q) = %q, want to contain %q", tt.input, got, tt.contains)
+		}
+	}
+}
+
+func TestRedactSensitive_BearerToken(t *testing.T) {
+	input := "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+	got := redactSensitive(input)
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("redactSensitive(%q) = %q, want to contain [REDACTED]", input, got)
+	}
+	if strings.Contains(got, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") {
+		t.Errorf("redactSensitive(%q) = %q, should not contain token", input, got)
+	}
+}
+
+func TestRedactSensitive_NoRedactionNeeded(t *testing.T) {
+	inputs := []string{
+		"ls -la",
+		"cat /etc/passwd",
+		"echo hello world",
+		"npm install lodash",
+	}
+	for _, input := range inputs {
+		got := redactSensitive(input)
+		if got != input {
+			t.Errorf("redactSensitive(%q) = %q, want unchanged", input, got)
+		}
+	}
+}
+
+func TestFormatToolCallSummary_RedactsSecrets(t *testing.T) {
+	tc := providers.ToolCall{
+		Name:      "exec",
+		Arguments: map[string]interface{}{"command": "curl -H 'Authorization: Bearer supersecret123' https://api.example.com"},
+	}
+	got := formatToolCallSummary(tc)
+	if strings.Contains(got, "supersecret123") {
+		t.Errorf("formatToolCallSummary() = %q, should not contain secret", got)
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("formatToolCallSummary() = %q, should contain [REDACTED]", got)
 	}
 }
