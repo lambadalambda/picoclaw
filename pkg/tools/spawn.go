@@ -7,7 +7,13 @@ import (
 	"math"
 	"strings"
 
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/utils"
+)
+
+const (
+	MaxIterationsLimit  = 100
+	TimeoutSecondsLimit = 3600
 )
 
 func parseIntArg(args map[string]interface{}, key string) (int, bool) {
@@ -143,12 +149,36 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (s
 			opts.Model = strings.TrimSpace(model)
 		}
 		if maxIter, ok := parseIntArg(args, "max_iterations"); ok && maxIter > 0 {
+			if maxIter > MaxIterationsLimit {
+				logger.WarnCF("spawn", "max_iterations clamped to upper limit",
+					map[string]interface{}{
+						"requested": maxIter,
+						"limit":     MaxIterationsLimit,
+					})
+				maxIter = MaxIterationsLimit
+			}
 			opts.MaxIterations = maxIter
 		}
 		if llmTimeout, ok := parseIntArg(args, "llm_timeout_seconds"); ok && llmTimeout > 0 {
+			if llmTimeout > TimeoutSecondsLimit {
+				logger.WarnCF("spawn", "llm_timeout_seconds clamped to upper limit",
+					map[string]interface{}{
+						"requested": llmTimeout,
+						"limit":     TimeoutSecondsLimit,
+					})
+				llmTimeout = TimeoutSecondsLimit
+			}
 			opts.LLMTimeoutSeconds = llmTimeout
 		}
 		if toolTimeout, ok := parseIntArg(args, "tool_timeout_seconds"); ok && toolTimeout > 0 {
+			if toolTimeout > TimeoutSecondsLimit {
+				logger.WarnCF("spawn", "tool_timeout_seconds clamped to upper limit",
+					map[string]interface{}{
+						"requested": toolTimeout,
+						"limit":     TimeoutSecondsLimit,
+					})
+				toolTimeout = TimeoutSecondsLimit
+			}
 			opts.ToolTimeoutSeconds = toolTimeout
 		}
 
