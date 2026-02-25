@@ -115,3 +115,163 @@ func TestSpawnTool_CancelUnknownTask(t *testing.T) {
 		t.Fatalf("expected not found message, got %q", got)
 	}
 }
+
+func TestSpawnTool_WithOptions_Model(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action": "spawn",
+		"task":   "do work",
+		"label":  "demo",
+		"model":  "claude-sonnet-4",
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Options.Model != "claude-sonnet-4" {
+		t.Errorf("Options.Model = %q, want %q", tasks[0].Options.Model, "claude-sonnet-4")
+	}
+}
+
+func TestSpawnTool_WithOptions_MaxIterations(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action":         "spawn",
+		"task":           "do work",
+		"max_iterations": 50,
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Options.MaxIterations != 50 {
+		t.Errorf("Options.MaxIterations = %d, want 50", tasks[0].Options.MaxIterations)
+	}
+}
+
+func TestSpawnTool_WithOptions_Timeouts(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action":               "spawn",
+		"task":                 "do work",
+		"llm_timeout_seconds":  300,
+		"tool_timeout_seconds": 120,
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Options.LLMTimeoutSeconds != 300 {
+		t.Errorf("Options.LLMTimeoutSeconds = %d, want 300", tasks[0].Options.LLMTimeoutSeconds)
+	}
+	if tasks[0].Options.ToolTimeoutSeconds != 120 {
+		t.Errorf("Options.ToolTimeoutSeconds = %d, want 120", tasks[0].Options.ToolTimeoutSeconds)
+	}
+}
+
+func TestSpawnTool_WithOptions_AllOptions(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action":               "spawn",
+		"task":                 "complex task",
+		"label":                "research",
+		"model":                "claude-opus-4",
+		"max_iterations":       100,
+		"llm_timeout_seconds":  300,
+		"tool_timeout_seconds": 120,
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	task := tasks[0]
+	if task.Options.Model != "claude-opus-4" {
+		t.Errorf("Options.Model = %q, want %q", task.Options.Model, "claude-opus-4")
+	}
+	if task.Options.MaxIterations != 100 {
+		t.Errorf("Options.MaxIterations = %d, want 100", task.Options.MaxIterations)
+	}
+	if task.Options.LLMTimeoutSeconds != 300 {
+		t.Errorf("Options.LLMTimeoutSeconds = %d, want 300", task.Options.LLMTimeoutSeconds)
+	}
+	if task.Options.ToolTimeoutSeconds != 120 {
+		t.Errorf("Options.ToolTimeoutSeconds = %d, want 120", task.Options.ToolTimeoutSeconds)
+	}
+}
+
+func TestSpawnTool_WithOptions_NoOptions(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action": "spawn",
+		"task":   "simple task",
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	task := tasks[0]
+	if task.Options.Model != "" {
+		t.Errorf("Options.Model = %q, want empty", task.Options.Model)
+	}
+	if task.Options.MaxIterations != 0 {
+		t.Errorf("Options.MaxIterations = %d, want 0", task.Options.MaxIterations)
+	}
+	if task.Options.LLMTimeoutSeconds != 0 {
+		t.Errorf("Options.LLMTimeoutSeconds = %d, want 0", task.Options.LLMTimeoutSeconds)
+	}
+	if task.Options.ToolTimeoutSeconds != 0 {
+		t.Errorf("Options.ToolTimeoutSeconds = %d, want 0", task.Options.ToolTimeoutSeconds)
+	}
+}
+
+func TestSpawnTool_WithOptions_FloatToIntConversion(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action":         "spawn",
+		"task":           "float test",
+		"max_iterations": float64(25),
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Options.MaxIterations != 25 {
+		t.Errorf("Options.MaxIterations = %d, want 25", tasks[0].Options.MaxIterations)
+	}
+}

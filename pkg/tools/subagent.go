@@ -25,6 +25,13 @@ var (
 	ErrSubagentNotRunning   = errors.New("subagent task is not running")
 )
 
+type SpawnOptions struct {
+	Model              string
+	MaxIterations      int
+	LLMTimeoutSeconds  int
+	ToolTimeoutSeconds int
+}
+
 type SubagentTask struct {
 	ID            string
 	Task          string
@@ -36,6 +43,7 @@ type SubagentTask struct {
 	Result        string
 	Created       int64
 	Finished      int64
+	Options       SpawnOptions
 }
 
 type SubagentManager struct {
@@ -143,7 +151,7 @@ func (sm *SubagentManager) ConfigureRetention(maxStoredTasks int, completedTTL t
 	}
 }
 
-func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel, originChatID, parentTraceID string) (string, error) {
+func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel, originChatID, parentTraceID string, opts SpawnOptions) (string, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.cleanupLocked(time.Now())
@@ -161,6 +169,7 @@ func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel
 		Status:        "running",
 		Created:       time.Now().UnixMilli(),
 		Finished:      0,
+		Options:       opts,
 	}
 	sm.tasks[taskID] = subagentTask
 	baseCtx := context.Background()
@@ -180,6 +189,8 @@ func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel
 			"origin_chat_id": originChatID,
 			"trace_id":       parentTraceID,
 			"task_preview":   utils.Truncate(task, 120),
+			"model":          opts.Model,
+			"max_iterations": opts.MaxIterations,
 		})
 
 	return taskID, nil
@@ -222,6 +233,19 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 	toolTimeout := sm.toolTimeout
 	maxParallelTools := sm.maxParallelTools
 	sm.mu.RUnlock()
+
+	if initial.Options.Model != "" {
+		model = initial.Options.Model
+	}
+	if initial.Options.MaxIterations > 0 {
+		maxIterations = initial.Options.MaxIterations
+	}
+	if initial.Options.LLMTimeoutSeconds > 0 {
+		llmTimeout = time.Duration(initial.Options.LLMTimeoutSeconds) * time.Second
+	}
+	if initial.Options.ToolTimeoutSeconds > 0 {
+		toolTimeout = time.Duration(initial.Options.ToolTimeoutSeconds) * time.Second
+	}
 
 	if model == "" {
 		model = sm.provider.GetDefaultModel()

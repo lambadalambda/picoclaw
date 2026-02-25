@@ -73,7 +73,7 @@ func TestSubagentManager_SubagentReportPublishesInbound(t *testing.T) {
 	}}
 
 	sm := NewSubagentManager(prov, "test-model", t.TempDir(), msgBus)
-	_, err := sm.Spawn(context.Background(), "do work", "imggen", "telegram", "chat1", "")
+	_, err := sm.Spawn(context.Background(), "do work", "imggen", "telegram", "chat1", "", SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn() error: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestSubagentManager_CancelRunningTask(t *testing.T) {
 	prov := &blockingProvider{started: make(chan struct{})}
 	sm := NewSubagentManager(prov, "test-model", t.TempDir(), nil)
 
-	taskID, err := sm.Spawn(context.Background(), "do long work", "long", "telegram", "chat1", "")
+	taskID, err := sm.Spawn(context.Background(), "do long work", "long", "telegram", "chat1", "", SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn() error: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestSubagentManager_CancelNotRunning(t *testing.T) {
 	prov := &scriptedProvider{responses: []*providers.LLMResponse{{Content: "done"}}}
 	sm := NewSubagentManager(prov, "test-model", t.TempDir(), nil)
 
-	taskID, err := sm.Spawn(context.Background(), "quick work", "quick", "telegram", "chat1", "")
+	taskID, err := sm.Spawn(context.Background(), "quick work", "quick", "telegram", "chat1", "", SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn() error: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestSubagentManager_RetentionMaxTasks(t *testing.T) {
 	sm.ConfigureRetention(2, 24*time.Hour)
 
 	for i := 0; i < 4; i++ {
-		_, err := sm.Spawn(context.Background(), "task", "", "telegram", "chat1", "")
+		_, err := sm.Spawn(context.Background(), "task", "", "telegram", "chat1", "", SpawnOptions{})
 		if err != nil {
 			t.Fatalf("spawn failed: %v", err)
 		}
@@ -234,8 +234,8 @@ func TestSubagentManager_RetentionTTL(t *testing.T) {
 	sm.ConfigureRetention(100, 1*time.Second)
 
 	sm.mu.Lock()
-	sm.tasks["old"] = &SubagentTask{ID: "old", Status: "completed", Created: time.Now().Add(-10 * time.Second).UnixMilli(), Finished: time.Now().Add(-10 * time.Second).UnixMilli()}
-	sm.tasks["new"] = &SubagentTask{ID: "new", Status: "completed", Created: time.Now().UnixMilli(), Finished: time.Now().UnixMilli()}
+	sm.tasks["old"] = &SubagentTask{ID: "old", Status: "completed", Created: time.Now().Add(-10 * time.Second).UnixMilli(), Finished: time.Now().Add(-10 * time.Second).UnixMilli(), Options: SpawnOptions{}}
+	sm.tasks["new"] = &SubagentTask{ID: "new", Status: "completed", Created: time.Now().UnixMilli(), Finished: time.Now().UnixMilli(), Options: SpawnOptions{}}
 	sm.cleanupLocked(time.Now())
 	sm.mu.Unlock()
 
