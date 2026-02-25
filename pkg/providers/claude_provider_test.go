@@ -134,6 +134,41 @@ func TestBuildClaudeParams_WithTools(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeParams_AnthropicCacheControlOnSystem(t *testing.T) {
+	messages := []Message{
+		{Role: "system", Content: "You are helpful"},
+		{Role: "user", Content: "Hi"},
+	}
+
+	params, err := buildClaudeParams(messages, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
+		"anthropic_cache_ttl": "1h",
+	})
+	if err != nil {
+		t.Fatalf("buildClaudeParams() error: %v", err)
+	}
+	if len(params.System) != 1 {
+		t.Fatalf("len(System) = %d, want 1", len(params.System))
+	}
+	if got := string(params.System[0].CacheControl.Type); got != "ephemeral" {
+		t.Fatalf("System[0].CacheControl.Type = %q, want %q", got, "ephemeral")
+	}
+	if got := string(params.System[0].CacheControl.TTL); got != "1h" {
+		t.Fatalf("System[0].CacheControl.TTL = %q, want %q", got, "1h")
+	}
+}
+
+func TestBuildClaudeParams_AnthropicCacheControlRejectsInvalidTTL(t *testing.T) {
+	_, err := buildClaudeParams([]Message{{Role: "user", Content: "Hi"}}, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
+		"anthropic_cache_ttl": "2h",
+	})
+	if err == nil {
+		t.Fatal("buildClaudeParams() error = nil, want invalid anthropic_cache_ttl error")
+	}
+	if !strings.Contains(err.Error(), "anthropic_cache_ttl") {
+		t.Fatalf("error = %q, want mention of anthropic_cache_ttl", err)
+	}
+}
+
 func TestTranslateToolsForClaude_RequiredStringSlice(t *testing.T) {
 	tools := []ToolDefinition{
 		{
@@ -331,6 +366,56 @@ func TestClaudeProvider_AddsOAuthBetaHeaderForOAuthToken(t *testing.T) {
 	provider.client = createAnthropicTestClient(server.URL, "ignored")
 
 	resp, err := provider.Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "claude-opus-4-6", map[string]interface{}{"max_tokens": 8})
+	if err != nil {
+		t.Fatalf("Chat() error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("Content = %q, want ok", resp.Content)
+	}
+}
+
+func TestClaudeProvider_AddsPromptCachingBetaHeaderWhenCachingEnabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		beta := r.Header.Get("Anthropic-Beta")
+		if !strings.Contains(beta, "prompt-caching-2024-07-31") {
+			http.Error(w, "missing prompt caching beta", http.StatusBadRequest)
+			return
+		}
+
+		resp := map[string]interface{}{
+			"id":          "msg_test",
+			"type":        "message",
+			"role":        "assistant",
+			"model":       "claude-sonnet-4-5-20250929",
+			"stop_reason": "end_turn",
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "ok"},
+			},
+			"usage": map[string]interface{}{
+				"input_tokens":  1,
+				"output_tokens": 1,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	provider := NewClaudeProvider("test-token")
+	provider.client = createAnthropicTestClient(server.URL, "test-token")
+
+	resp, err := provider.Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
+		"max_tokens":      8,
+		"anthropic_cache": true,
+	})
 	if err != nil {
 		t.Fatalf("Chat() error: %v", err)
 	}

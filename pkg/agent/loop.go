@@ -146,6 +146,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	if chatTemperature == 0 {
 		chatTemperature = 0.7
 	}
+	anthropicCacheTTL := strings.TrimSpace(cfg.Agents.Defaults.AnthropicCacheTTL)
 
 	modelCaps := providers.ModelCapabilitiesFor(cfg.Agents.Defaults.Model)
 
@@ -181,13 +182,23 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	}
 
 	return &AgentLoop{
-		bus:               msgBus,
-		provider:          provider,
-		workspace:         workspace,
-		model:             cfg.Agents.Defaults.Model,
-		contextWindow:     cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
-		chatOptions:       providers.ChatOptions{MaxTokens: 8192, Temperature: chatTemperature},
-		compactOptions:    providers.ChatOptions{MaxTokens: 1024, Temperature: 0.3},
+		bus:           msgBus,
+		provider:      provider,
+		workspace:     workspace,
+		model:         cfg.Agents.Defaults.Model,
+		contextWindow: cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
+		chatOptions: providers.ChatOptions{
+			MaxTokens:         8192,
+			Temperature:       chatTemperature,
+			AnthropicCache:    cfg.Agents.Defaults.AnthropicCache,
+			AnthropicCacheTTL: anthropicCacheTTL,
+		},
+		compactOptions: providers.ChatOptions{
+			MaxTokens:         1024,
+			Temperature:       0.3,
+			AnthropicCache:    cfg.Agents.Defaults.AnthropicCache,
+			AnthropicCacheTTL: anthropicCacheTTL,
+		},
 		messageBudget:     messageBudget,
 		maxIterations:     cfg.Agents.Defaults.MaxToolIterations,
 		llmTimeout:        time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds) * time.Second,

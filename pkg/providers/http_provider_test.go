@@ -62,6 +62,45 @@ func newTestOptions() map[string]interface{} {
 	return map[string]interface{}{"max_tokens": 100}
 }
 
+func TestExtractCacheUsageFieldsFromMap_FindsNestedCacheFields(t *testing.T) {
+	var payload struct {
+		Usage map[string]interface{} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(`{
+		"usage": {
+			"prompt_tokens": 1200,
+			"prompt_tokens_details": {"cached_tokens": 800},
+			"cache_creation_input_tokens": 10
+		}
+	}`), &payload); err != nil {
+		t.Fatalf("json.Unmarshal error: %v", err)
+	}
+
+	fields := extractCacheUsageFieldsFromMap(payload.Usage)
+
+	if got, ok := fields["usage.prompt_tokens_details.cached_tokens"].(float64); !ok || got != 800 {
+		t.Fatalf("cached_tokens = %#v, want 800", fields["usage.prompt_tokens_details.cached_tokens"])
+	}
+	if got, ok := fields["usage.cache_creation_input_tokens"].(float64); !ok || got != 10 {
+		t.Fatalf("cache_creation_input_tokens = %#v, want 10", fields["usage.cache_creation_input_tokens"])
+	}
+	if _, ok := fields["usage.prompt_tokens"]; ok {
+		t.Fatalf("unexpected non-cache field captured: usage.prompt_tokens=%#v", fields["usage.prompt_tokens"])
+	}
+}
+
+func TestExtractCacheUsageFieldsFromMap_NoCacheFields(t *testing.T) {
+	usage := map[string]interface{}{
+		"prompt_tokens":     100,
+		"completion_tokens": 30,
+		"total_tokens":      130,
+	}
+	fields := extractCacheUsageFieldsFromMap(usage)
+	if len(fields) != 0 {
+		t.Fatalf("expected no cache fields, got %+v", fields)
+	}
+}
+
 // newTestProvider creates an HTTPProvider with near-zero backoff for fast tests.
 func newTestProvider(apiKey, apiBase string) *HTTPProvider {
 	p := NewHTTPProvider(apiKey, apiBase)

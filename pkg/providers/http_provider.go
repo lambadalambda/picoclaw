@@ -414,6 +414,8 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
+	logHTTPProviderCacheUsage(body)
+
 	if len(apiResponse.Choices) == 0 {
 		logger.WarnCF("provider", "LLM returned 0 choices",
 			map[string]interface{}{
@@ -480,6 +482,59 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 		FinishReason: choice.FinishReason,
 		Usage:        apiResponse.Usage,
 	}, nil
+}
+
+func logHTTPProviderCacheUsage(body []byte) {
+	var payload struct {
+		Model string                 `json:"model"`
+		Usage map[string]interface{} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return
+	}
+	if len(payload.Usage) == 0 {
+		return
+	}
+
+	cacheFields := extractCacheUsageFieldsFromMap(payload.Usage)
+	if len(cacheFields) == 0 {
+		return
+	}
+
+	fields := map[string]interface{}{
+		"provider": "openai-compatible",
+	}
+	if payload.Model != "" {
+		fields["model"] = payload.Model
+	}
+	for k, v := range cacheFields {
+		fields[k] = v
+	}
+
+	logger.InfoCF("provider", "LLM cache usage reported", fields)
+}
+
+func extractCacheUsageFieldsFromMap(usage map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{})
+	collectCacheUsageFields("usage", usage, out)
+	return out
+}
+
+func collectCacheUsageFields(path string, value interface{}, out map[string]interface{}) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for key, child := range v {
+			collectCacheUsageFields(path+"."+key, child, out)
+		}
+	case []interface{}:
+		for i, child := range v {
+			collectCacheUsageFields(fmt.Sprintf("%s[%d]", path, i), child, out)
+		}
+	default:
+		if strings.Contains(strings.ToLower(path), "cache") {
+			out[path] = v
+		}
+	}
 }
 
 func (p *HTTPProvider) GetDefaultModel() string {

@@ -27,6 +27,8 @@ type AgentDefaults struct {
 	Model                       string  `json:"model" env:"PICOCLAW_AGENTS_DEFAULTS_MODEL"`
 	MaxTokens                   int     `json:"max_tokens" env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOKENS"`
 	Temperature                 float64 `json:"temperature" env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
+	AnthropicCache              bool    `json:"anthropic_cache" env:"PICOCLAW_AGENTS_DEFAULTS_ANTHROPIC_CACHE"`
+	AnthropicCacheTTL           string  `json:"anthropic_cache_ttl" env:"PICOCLAW_AGENTS_DEFAULTS_ANTHROPIC_CACHE_TTL"`
 	MaxToolIterations           int     `json:"max_tool_iterations" env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
 	LLMTimeoutSeconds           int     `json:"llm_timeout_seconds" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_TIMEOUT_SECONDS"`
 	ToolTimeoutSeconds          int     `json:"tool_timeout_seconds" env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_TIMEOUT_SECONDS"`
@@ -186,6 +188,8 @@ func DefaultConfig() *Config {
 				Model:                       "glm-4.7",
 				MaxTokens:                   8192,
 				Temperature:                 0.7,
+				AnthropicCache:              false,
+				AnthropicCacheTTL:           "",
 				MaxToolIterations:           20,
 				LLMTimeoutSeconds:           120,
 				ToolTimeoutSeconds:          60,

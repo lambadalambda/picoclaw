@@ -31,6 +31,19 @@ These optional limits prevent oversized requests to providers:
 
 Budgeting is disabled by default. Set one or more values above `0` to enable it.
 
+## Prompt Caching
+
+Anthropic cache controls can be set in agent defaults:
+
+- `agents.defaults.anthropic_cache` (boolean)
+- `agents.defaults.anthropic_cache_ttl` (`"5m"` or `"1h"`)
+
+Notes:
+
+- Anthropic cache controls are applied on Claude provider calls.
+- Z.AI/GLM context caching is automatic (no explicit request toggle required).
+- When a provider response includes cache-usage fields, PicoClaw logs them at `INFO` level.
+
 ## Subagent Retention
 
 - `agents.defaults.subagent_max_tasks`
