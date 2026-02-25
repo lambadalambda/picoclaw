@@ -466,6 +466,21 @@ func TestClaudeProvider_AddsPromptCachingBetaHeaderWhenCachingEnabled(t *testing
 			return
 		}
 
+		var reqBody map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		cacheControl, ok := reqBody["cache_control"].(map[string]interface{})
+		if !ok {
+			http.Error(w, "missing top-level cache_control", http.StatusBadRequest)
+			return
+		}
+		if got, _ := cacheControl["type"].(string); got != "ephemeral" {
+			http.Error(w, "invalid top-level cache_control.type", http.StatusBadRequest)
+			return
+		}
+
 		resp := map[string]interface{}{
 			"id":          "msg_test",
 			"type":        "message",
