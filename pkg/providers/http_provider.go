@@ -646,7 +646,54 @@ func createCodexAuthProvider() (LLMProvider, error) {
 }
 
 func CreateProvider(cfg *config.Config) (LLMProvider, error) {
-	model := cfg.Agents.Defaults.Model
+	primaryModel := strings.TrimSpace(cfg.Agents.Defaults.Model)
+	if primaryModel == "" {
+		return nil, fmt.Errorf("agents.defaults.model must not be empty")
+	}
+
+	primaryProvider, err := createProviderForModel(cfg, primaryModel)
+	if err != nil {
+		return nil, err
+	}
+
+	fallbackModels := normalizeFallbackModels(primaryModel, cfg.Agents.Defaults.FallbackModels)
+	if len(fallbackModels) == 0 {
+		return primaryProvider, nil
+	}
+
+	candidates := []fallbackCandidate{{model: primaryModel, provider: primaryProvider}}
+	for _, fallbackModel := range fallbackModels {
+		fallbackProvider, err := createProviderForModel(cfg, fallbackModel)
+		if err != nil {
+			logger.WarnCF("provider", "Skipping unavailable fallback model",
+				map[string]interface{}{
+					"model": fallbackModel,
+					"error": err.Error(),
+				})
+			continue
+		}
+		candidates = append(candidates, fallbackCandidate{model: fallbackModel, provider: fallbackProvider})
+	}
+
+	if len(candidates) == 1 {
+		return primaryProvider, nil
+	}
+
+	logger.InfoCF("provider", "Model fallback chain enabled",
+		map[string]interface{}{
+			"primary_model":   primaryModel,
+			"fallback_models": fallbackModels,
+			"count":           len(candidates),
+		})
+
+	return newFallbackProvider(primaryModel, candidates), nil
+}
+
+func createProviderForModel(cfg *config.Config, model string) (LLMProvider, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil, fmt.Errorf("model must not be empty")
+	}
 
 	var apiKey, apiBase string
 	var routing map[string]interface{}
