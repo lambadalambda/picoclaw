@@ -1,6 +1,9 @@
 package heartbeat
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,5 +61,40 @@ func TestHeartbeatService_StartWithNonPositiveInterval_ReturnsError(t *testing.T
 
 	if err := hs.Start(); err == nil {
 		t.Fatal("expected error for non-positive heartbeat interval")
+	}
+}
+
+func TestHeartbeatService_BuildPromptReadsWorkspaceHeartbeatFile(t *testing.T) {
+	workspace := t.TempDir()
+	content := "HEARTBEAT RULE: daytime proactive check"
+	if err := os.WriteFile(filepath.Join(workspace, "HEARTBEAT.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("write HEARTBEAT.md: %v", err)
+	}
+
+	hs := NewHeartbeatService(workspace, nil, 60, true)
+	prompt := hs.buildPrompt()
+
+	if !strings.Contains(prompt, content) {
+		t.Fatalf("expected prompt to include workspace HEARTBEAT.md content, got: %q", prompt)
+	}
+}
+
+func TestHeartbeatService_BuildPromptDoesNotReadMemoryHeartbeatFile(t *testing.T) {
+	workspace := t.TempDir()
+	memoryDir := filepath.Join(workspace, "memory")
+	if err := os.MkdirAll(memoryDir, 0755); err != nil {
+		t.Fatalf("mkdir memory: %v", err)
+	}
+
+	legacyContent := "LEGACY MEMORY HEARTBEAT CONTENT"
+	if err := os.WriteFile(filepath.Join(memoryDir, "HEARTBEAT.md"), []byte(legacyContent), 0644); err != nil {
+		t.Fatalf("write memory/HEARTBEAT.md: %v", err)
+	}
+
+	hs := NewHeartbeatService(workspace, nil, 60, true)
+	prompt := hs.buildPrompt()
+
+	if strings.Contains(prompt, legacyContent) {
+		t.Fatalf("did not expect prompt to include memory/HEARTBEAT.md content, got: %q", prompt)
 	}
 }

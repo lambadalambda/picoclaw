@@ -675,7 +675,13 @@ func gatewayCmd() {
 			}
 
 			result = strings.TrimSpace(result)
-			if result == "" || result == "HEARTBEAT_OK" {
+			if result == "" {
+				return "ok", nil
+			}
+			if heartbeatSuppressesDelivery(result) {
+				if !strings.EqualFold(strings.TrimSpace(result), "HEARTBEAT_OK") {
+					logger.WarnC("heartbeat", "Suppressed heartbeat output because HEARTBEAT_OK token appeared in response")
+				}
 				return "ok", nil
 			}
 			if !ok {
@@ -767,6 +773,10 @@ func gatewayCmd() {
 	agentLoop.Stop()
 	channelManager.StopAll(ctx)
 	fmt.Println("✓ Gateway stopped")
+}
+
+func heartbeatSuppressesDelivery(result string) bool {
+	return strings.Contains(strings.ToUpper(result), "HEARTBEAT_OK")
 }
 
 func statusCmd() {

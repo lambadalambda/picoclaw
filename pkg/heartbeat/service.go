@@ -102,8 +102,7 @@ func (hs *HeartbeatService) checkHeartbeat() {
 }
 
 func (hs *HeartbeatService) buildPrompt() string {
-	notesDir := filepath.Join(hs.workspace, "memory")
-	notesFile := filepath.Join(notesDir, "HEARTBEAT.md")
+	notesFile := filepath.Join(hs.workspace, "HEARTBEAT.md")
 
 	var notes string
 	if data, err := os.ReadFile(notesFile); err == nil {
