@@ -204,7 +204,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	}
 
 	compactTool := tools.NewCompactTool(func(sessionKey string, mode tools.CompactMode, keepLast int) (string, error) {
-		return al.CompactSession(sessionKey, keepLast)
+		return al.CompactSession(sessionKey, mode, keepLast)
 	})
 	toolsRegistry.Register(compactTool)
 
@@ -679,7 +679,27 @@ func (al *AgentLoop) maybeSummarize(sessionKey string) {
 // CompactSession explicitly compacts a session's history, returning the summary.
 // This is called by the compact tool when the agent requests context compaction.
 // keepLast specifies how many recent messages to preserve (0 = summarize all in hard mode).
-func (al *AgentLoop) CompactSession(sessionKey string, keepLast int) (string, error) {
+func (al *AgentLoop) CompactSession(sessionKey string, mode tools.CompactMode, keepLast int) (string, error) {
+	if keepLast <= 0 && mode == tools.CompactModeSoft {
+		keepLast = 4
+	}
+	result := al.doCompaction(sessionKey, keepLast)
+	if result.noMessages {
+		return "No messages to compact.", nil
+	}
+	if result.noValidMsgs {
+		return "No valid messages to compact.", nil
+	}
+	return result.summary, nil
+}
+
+type compactionResult struct {
+	summary     string
+	noMessages  bool
+	noValidMsgs bool
+}
+
+func (al *AgentLoop) doCompaction(sessionKey string, keepLast int) compactionResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
 
@@ -687,7 +707,7 @@ func (al *AgentLoop) CompactSession(sessionKey string, keepLast int) (string, er
 	summary := al.sessions.GetSummary(sessionKey)
 
 	if len(history) <= keepLast {
-		return "No messages to compact.", nil
+		return compactionResult{noMessages: true}
 	}
 
 	toSummarize := history
@@ -712,7 +732,7 @@ func (al *AgentLoop) CompactSession(sessionKey string, keepLast int) (string, er
 	}
 
 	if len(validMessages) == 0 {
-		return "No valid messages to compact.", nil
+		return compactionResult{noValidMsgs: true}
 	}
 
 	var finalSummary string
@@ -741,17 +761,12 @@ func (al *AgentLoop) CompactSession(sessionKey string, keepLast int) (string, er
 
 	if finalSummary != "" {
 		al.sessions.SetSummary(sessionKey, finalSummary)
-		if keepLast > 0 {
-			al.sessions.TruncateHistory(sessionKey, keepLast)
-		} else {
-			al.sessions.TruncateHistory(sessionKey, 0)
-		}
+		al.sessions.TruncateHistory(sessionKey, keepLast)
 		al.sessions.Save(al.sessions.GetOrCreate(sessionKey))
-
 		al.extractAndStoreMemories(ctx, toSummarize)
 	}
 
-	return finalSummary, nil
+	return compactionResult{summary: finalSummary}
 }
 
 // GetStartupInfo returns information about loaded tools and skills for logging.
@@ -828,77 +843,7 @@ func (al *AgentLoop) summarizeSession(sessionKey string, keepLast int) {
 	if keepLast <= 0 {
 		keepLast = 4
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
-	defer cancel()
-
-	history := al.sessions.GetHistory(sessionKey)
-	summary := al.sessions.GetSummary(sessionKey)
-
-	if len(history) <= keepLast {
-		return
-	}
-
-	toSummarize := history[:len(history)-keepLast]
-
-	// Oversized Message Guard
-	// Skip messages larger than 50% of context window to prevent summarizer overflow
-	maxMessageTokens := al.contextWindow / 2
-	validMessages := make([]providers.Message, 0)
-	omitted := false
-
-	for _, m := range toSummarize {
-		if m.Role != "user" && m.Role != "assistant" {
-			continue
-		}
-		// Estimate tokens for this message
-		msgTokens := len(m.Content) / 4
-		if msgTokens > maxMessageTokens {
-			omitted = true
-			continue
-		}
-		validMessages = append(validMessages, m)
-	}
-
-	if len(validMessages) == 0 {
-		return
-	}
-
-	// Multi-Part Summarization
-	// Split into two parts if history is significant
-	var finalSummary string
-	if len(validMessages) > 10 {
-		mid := len(validMessages) / 2
-		part1 := validMessages[:mid]
-		part2 := validMessages[mid:]
-
-		s1, _ := al.summarizeBatch(ctx, part1, "")
-		s2, _ := al.summarizeBatch(ctx, part2, "")
-
-		// Merge them
-		mergePrompt := fmt.Sprintf("Merge these two conversation summaries into one cohesive summary:\n\n1: %s\n\n2: %s", s1, s2)
-		resp, err := al.provider.Chat(ctx, []providers.Message{{Role: "user", Content: mergePrompt}}, nil, al.model, al.compactOptions.ToMap())
-		if err == nil {
-			finalSummary = resp.Content
-		} else {
-			finalSummary = s1 + " " + s2
-		}
-	} else {
-		finalSummary, _ = al.summarizeBatch(ctx, validMessages, summary)
-	}
-
-	if omitted && finalSummary != "" {
-		finalSummary += "\n[Note: Some oversized messages were omitted from this summary for efficiency.]"
-	}
-
-	if finalSummary != "" {
-		al.sessions.SetSummary(sessionKey, finalSummary)
-		al.sessions.TruncateHistory(sessionKey, keepLast)
-		al.sessions.Save(al.sessions.GetOrCreate(sessionKey))
-
-		// Extract and store notable memories from the compacted messages
-		al.extractAndStoreMemories(ctx, toSummarize)
-	}
+	al.doCompaction(sessionKey, keepLast)
 }
 
 // summarizeBatch summarizes a batch of messages.
