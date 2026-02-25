@@ -3,11 +3,14 @@ package tools
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -62,6 +65,10 @@ func (t *ExecTool) Parameters() map[string]interface{} {
 				"type":        "string",
 				"description": "Optional working directory for the command",
 			},
+			"timeout_seconds": map[string]interface{}{
+				"type":        "number",
+				"description": "Optional per-command timeout in seconds (must be > 0). Overrides the default timeout for this call.",
+			},
 		},
 		"required": []string{"command"},
 	}
@@ -89,10 +96,20 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]interface{}) (st
 		return fmt.Sprintf("Error: %s", guardError), nil
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, t.timeout)
+	effectiveTimeout, err := resolveExecTimeout(args, t.timeout)
+	if err != nil {
+		return "", err
+	}
+
+	cmdCtx := ctx
+	cancel := func() {}
+	if effectiveTimeout > 0 {
+		cmdCtx, cancel = context.WithTimeout(ctx, effectiveTimeout)
+	}
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
+	cmd := exec.Command("sh", "-c", command)
+	configureExecCommand(cmd)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -101,15 +118,18 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]interface{}) (st
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = runCommandWithContext(cmdCtx, cmd)
 	output := stdout.String()
 	if stderr.Len() > 0 {
 		output += "\nSTDERR:\n" + stderr.String()
 	}
 
 	if err != nil {
-		if cmdCtx.Err() == context.DeadlineExceeded {
-			return fmt.Sprintf("Error: Command timed out after %v", t.timeout), nil
+		if errors.Is(err, context.DeadlineExceeded) || cmdCtx.Err() == context.DeadlineExceeded {
+			if effectiveTimeout > 0 {
+				return fmt.Sprintf("Error: Command timed out after %v", effectiveTimeout), nil
+			}
+			return "Error: Command timed out", nil
 		}
 		output += fmt.Sprintf("\nExit code: %v", err)
 	}
@@ -219,4 +239,92 @@ func (t *ExecTool) SetAllowPatterns(patterns []string) error {
 		t.allowPatterns = append(t.allowPatterns, re)
 	}
 	return nil
+}
+
+func resolveExecTimeout(args map[string]interface{}, defaultTimeout time.Duration) (time.Duration, error) {
+	raw, exists := args["timeout_seconds"]
+	if !exists || raw == nil {
+		return defaultTimeout, nil
+	}
+
+	seconds, err := parseTimeoutSeconds(raw)
+	if err != nil {
+		return 0, err
+	}
+	return seconds, nil
+}
+
+func parseTimeoutSeconds(raw interface{}) (time.Duration, error) {
+	var seconds float64
+
+	switch v := raw.(type) {
+	case float64:
+		seconds = v
+	case float32:
+		seconds = float64(v)
+	case int:
+		seconds = float64(v)
+	case int8:
+		seconds = float64(v)
+	case int16:
+		seconds = float64(v)
+	case int32:
+		seconds = float64(v)
+	case int64:
+		seconds = float64(v)
+	case uint:
+		seconds = float64(v)
+	case uint8:
+		seconds = float64(v)
+	case uint16:
+		seconds = float64(v)
+	case uint32:
+		seconds = float64(v)
+	case uint64:
+		seconds = float64(v)
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("timeout_seconds must be a positive number: %w", err)
+		}
+		seconds = f
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0, fmt.Errorf("timeout_seconds must be a positive number: %w", err)
+		}
+		seconds = f
+	default:
+		return 0, fmt.Errorf("timeout_seconds must be a positive number")
+	}
+
+	if seconds <= 0 {
+		return 0, fmt.Errorf("timeout_seconds must be greater than 0")
+	}
+
+	return time.Duration(seconds * float64(time.Second)), nil
+}
+
+func runCommandWithContext(ctx context.Context, cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		_ = killExecCommand(cmd)
+		select {
+		case <-done:
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+			return ctx.Err()
+		}
+	}
 }

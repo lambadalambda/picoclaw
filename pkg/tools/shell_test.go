@@ -2,8 +2,13 @@ package tools
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGuardCommand_DenyPatterns(t *testing.T) {
@@ -200,6 +205,66 @@ func TestExecTool_Execute(t *testing.T) {
 		_, err := tool.Execute(context.Background(), map[string]interface{}{})
 		if err == nil {
 			t.Error("expected error for missing command")
+		}
+	})
+
+	t.Run("per-call timeout overrides default", func(t *testing.T) {
+		tool.SetTimeout(5 * time.Second)
+
+		start := time.Now()
+		result, err := tool.Execute(context.Background(), map[string]interface{}{
+			"command":         "sleep 2",
+			"timeout_seconds": 0.5,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, "timed out") {
+			t.Fatalf("expected timeout result, got %q", result)
+		}
+
+		elapsed := time.Since(start)
+		if elapsed >= 1500*time.Millisecond {
+			t.Fatalf("expected timeout to trigger quickly, elapsed=%v", elapsed)
+		}
+	})
+
+	t.Run("invalid per-call timeout returns error", func(t *testing.T) {
+		_, err := tool.Execute(context.Background(), map[string]interface{}{
+			"command":         "echo hello",
+			"timeout_seconds": "soon",
+		})
+		if err == nil {
+			t.Fatal("expected error for invalid timeout_seconds")
+		}
+		if !strings.Contains(err.Error(), "timeout_seconds") {
+			t.Fatalf("expected timeout_seconds error, got %v", err)
+		}
+	})
+
+	t.Run("timeout kills process group", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("process-group behavior differs on windows")
+		}
+
+		marker := filepath.Join(t.TempDir(), "leaked.txt")
+		cmd := fmt.Sprintf("(sleep 2; printf leaked > %q) & sleep 30", marker)
+
+		result, err := tool.Execute(context.Background(), map[string]interface{}{
+			"command":         cmd,
+			"timeout_seconds": 0.5,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, "timed out") {
+			t.Fatalf("expected timeout result, got %q", result)
+		}
+
+		// Give any leaked child process enough time to run.
+		time.Sleep(2500 * time.Millisecond)
+		if _, statErr := os.Stat(marker); statErr == nil {
+			t.Fatalf("expected timed-out command descendants to be killed, but %s was created", marker)
 		}
 	})
 }
