@@ -45,6 +45,24 @@ type HTTPProvider struct {
 	routing       map[string]interface{}
 }
 
+type chatCompletionMessage struct {
+	Role       string                   `json:"role"`
+	Content    string                   `json:"content"`
+	ToolCalls  []chatCompletionToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string                   `json:"tool_call_id,omitempty"`
+}
+
+type chatCompletionToolCall struct {
+	ID       string                     `json:"id,omitempty"`
+	Type     string                     `json:"type"`
+	Function chatCompletionFunctionCall `json:"function"`
+}
+
+type chatCompletionFunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
 func NewHTTPProvider(apiKey, apiBase string) *HTTPProvider {
 	return &HTTPProvider{
 		apiKey:        apiKey,
@@ -71,9 +89,12 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 		return nil, fmt.Errorf("API base not configured")
 	}
 
+	requestMessages := canonicalizeMessages(messages)
+	wireMessages := toChatCompletionMessages(requestMessages)
+
 	requestBody := map[string]interface{}{
 		"model":    model,
-		"messages": messages,
+		"messages": wireMessages,
 	}
 
 	if len(tools) > 0 {
@@ -186,6 +207,52 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 	}
 
 	return nil, fmt.Errorf("LLM request failed after %d attempts: %w", p.maxRetries+1, lastErr)
+}
+
+func toChatCompletionMessages(messages []Message) []chatCompletionMessage {
+	out := make([]chatCompletionMessage, 0, len(messages))
+	for _, msg := range messages {
+		wireMsg := chatCompletionMessage{
+			Role:       msg.Role,
+			Content:    msg.Content,
+			ToolCallID: msg.ToolCallID,
+		}
+
+		if len(msg.ToolCalls) > 0 {
+			calls := make([]chatCompletionToolCall, 0, len(msg.ToolCalls))
+			for _, tc := range msg.ToolCalls {
+				callType := strings.TrimSpace(tc.Type)
+				if callType == "" {
+					callType = "function"
+				}
+
+				fnName := strings.TrimSpace(tc.Name)
+				fnArgs := "{}"
+				if tc.Function != nil {
+					if name := strings.TrimSpace(tc.Function.Name); name != "" {
+						fnName = name
+					}
+					if args := strings.TrimSpace(tc.Function.Arguments); args != "" {
+						fnArgs = args
+					}
+				}
+
+				calls = append(calls, chatCompletionToolCall{
+					ID:   tc.ID,
+					Type: callType,
+					Function: chatCompletionFunctionCall{
+						Name:      fnName,
+						Arguments: fnArgs,
+					},
+				})
+			}
+			wireMsg.ToolCalls = calls
+		}
+
+		out = append(out, wireMsg)
+	}
+
+	return out
 }
 
 func (p *HTTPProvider) computeRetryWait(attempt int, retryAfterHint time.Duration, hasRetryAfterHint bool) time.Duration {

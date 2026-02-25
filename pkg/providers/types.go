@@ -45,10 +45,14 @@ type LLMProvider interface {
 // The returned message has Role "assistant" and carries the response's tool
 // calls in the canonical OpenAI wire format (Type + Function populated).
 func AssistantMessageFromResponse(resp *LLMResponse) Message {
+	if resp == nil {
+		return Message{Role: "assistant"}
+	}
+
 	return Message{
 		Role:      "assistant",
 		Content:   resp.Content,
-		ToolCalls: resp.ToolCalls,
+		ToolCalls: canonicalizeToolCalls(resp.ToolCalls),
 	}
 }
 

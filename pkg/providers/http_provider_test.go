@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -515,6 +516,88 @@ func TestChat_ProviderRoutingOmittedWhenEmpty(t *testing.T) {
 
 	if _, ok := capturedBody["provider"]; ok {
 		t.Fatal("expected no 'provider' field in request body when routing is not set")
+	}
+}
+
+func TestChat_CanonicalizesLegacyAssistantToolCallsInRequest(t *testing.T) {
+	var capturedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, validResponse("ok"))
+	}))
+	defer srv.Close()
+
+	p := newTestProvider("test-key", srv.URL)
+	messages := []Message{
+		{Role: "user", Content: "hello"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{
+					ID:   "call_1",
+					Name: "exec",
+					Arguments: map[string]interface{}{
+						"command": "pwd",
+					},
+				},
+			},
+		},
+		{Role: "tool", ToolCallID: "call_1", Content: "/tmp"},
+		{Role: "user", Content: "next"},
+	}
+
+	_, err := p.Chat(context.Background(), messages, nil, "glm-5", newTestOptions())
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	rawMessages, ok := capturedBody["messages"].([]interface{})
+	if !ok || len(rawMessages) < 2 {
+		t.Fatalf("unexpected messages payload: %#v", capturedBody["messages"])
+	}
+
+	assistant, ok := rawMessages[1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("assistant payload has unexpected type: %T", rawMessages[1])
+	}
+
+	rawToolCalls, ok := assistant["tool_calls"].([]interface{})
+	if !ok || len(rawToolCalls) != 1 {
+		t.Fatalf("assistant.tool_calls has unexpected shape: %#v", assistant["tool_calls"])
+	}
+
+	toolCall, ok := rawToolCalls[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool_call has unexpected type: %T", rawToolCalls[0])
+	}
+
+	if got, _ := toolCall["type"].(string); got != "function" {
+		t.Fatalf("tool_call.type = %q, want function", got)
+	}
+	if _, exists := toolCall["name"]; exists {
+		t.Fatalf("tool_call should not include top-level name: %#v", toolCall)
+	}
+	if _, exists := toolCall["arguments"]; exists {
+		t.Fatalf("tool_call should not include top-level arguments: %#v", toolCall)
+	}
+
+	fn, ok := toolCall["function"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool_call.function has unexpected shape: %#v", toolCall["function"])
+	}
+
+	if got, _ := fn["name"].(string); got != "exec" {
+		t.Fatalf("function.name = %q, want exec", got)
+	}
+	fnArgs, ok := fn["arguments"].(string)
+	if !ok {
+		t.Fatalf("function.arguments should be string, got: %T", fn["arguments"])
+	}
+	if !strings.Contains(fnArgs, `"command":"pwd"`) {
+		t.Fatalf("function.arguments = %q, want JSON containing command=pwd", fnArgs)
 	}
 }
 
