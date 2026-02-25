@@ -41,8 +41,8 @@ func TestCompactTool_NoCallback(t *testing.T) {
 	tool := NewCompactTool(nil)
 
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
-		"__channel__": "telegram",
-		"__chat_id__": "123",
+		"__context_channel": "telegram",
+		"__context_chat_id": "123",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -66,10 +66,10 @@ func TestCompactTool_SoftMode(t *testing.T) {
 
 	tool := NewCompactTool(callback)
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
-		"__channel__":  "telegram",
-		"__chat_id__":  "123",
-		"mode":         "soft",
-		"keep_last":    10,
+		"__context_channel": "telegram",
+		"__context_chat_id": "123",
+		"mode":              "soft",
+		"keep_last":         10,
 	})
 
 	if err != nil {
@@ -99,10 +99,10 @@ func TestCompactTool_HardMode(t *testing.T) {
 
 	tool := NewCompactTool(callback)
 	_, err := tool.Execute(context.Background(), map[string]interface{}{
-		"__channel__":  "telegram",
-		"__chat_id__":  "123",
-		"mode":         "hard",
-		"keep_last":    10, // should be ignored
+		"__context_channel": "telegram",
+		"__context_chat_id": "123",
+		"mode":              "hard",
+		"keep_last":         10,
 	})
 
 	if err != nil {
@@ -123,9 +123,8 @@ func TestCompactTool_DefaultKeepLast(t *testing.T) {
 
 	tool := NewCompactTool(callback)
 	_, err := tool.Execute(context.Background(), map[string]interface{}{
-		"__channel__": "telegram",
-		"__chat_id__": "123",
-		// no keep_last specified
+		"__context_channel": "telegram",
+		"__context_chat_id": "123",
 	})
 
 	if err != nil {
@@ -159,9 +158,9 @@ func TestCompactTool_KeepLastBounds(t *testing.T) {
 
 			tool := NewCompactTool(callback)
 			_, err := tool.Execute(context.Background(), map[string]interface{}{
-				"__channel__":  "telegram",
-				"__chat_id__":  "123",
-				"keep_last":    tt.input,
+				"__context_channel": "telegram",
+				"__context_chat_id": "123",
+				"keep_last":         tt.input,
 			})
 
 			if err != nil {
@@ -179,9 +178,7 @@ func TestCompactTool_MissingContext(t *testing.T) {
 		return "should not be called", nil
 	})
 
-	_, err := tool.Execute(context.Background(), map[string]interface{}{
-		// no channel/chat_id
-	})
+	_, err := tool.Execute(context.Background(), map[string]interface{}{})
 	if err == nil {
 		t.Error("expected error for missing context")
 	}
@@ -196,8 +193,8 @@ func TestCompactTool_SessionKeyFormat(t *testing.T) {
 
 	tool := NewCompactTool(callback)
 	_, err := tool.Execute(context.Background(), map[string]interface{}{
-		"__channel__": "deltachat",
-		"__chat_id__": "42",
+		"__context_channel": "deltachat",
+		"__context_chat_id": "42",
 	})
 
 	if err != nil {

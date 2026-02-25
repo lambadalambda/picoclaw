@@ -180,12 +180,12 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		}
 	}
 
-	return &AgentLoop{
+	al := &AgentLoop{
 		bus:               msgBus,
 		provider:          provider,
 		workspace:         workspace,
 		model:             cfg.Agents.Defaults.Model,
-		contextWindow:     cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
+		contextWindow:     cfg.Agents.Defaults.MaxTokens,
 		chatOptions:       providers.ChatOptions{MaxTokens: 8192, Temperature: chatTemperature},
 		compactOptions:    providers.ChatOptions{MaxTokens: 1024, Temperature: 0.3},
 		messageBudget:     messageBudget,
@@ -202,6 +202,13 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		modelCapabilities: modelCaps,
 		visionAnalyzer:    visionAnalyzer,
 	}
+
+	compactTool := tools.NewCompactTool(func(sessionKey string, mode tools.CompactMode, keepLast int) (string, error) {
+		return al.CompactSession(sessionKey, keepLast)
+	})
+	toolsRegistry.Register(compactTool)
+
+	return al
 }
 
 func resolveZAISearchCredentials(webCfg config.WebSearchConfig, providersCfg config.ProvidersConfig) (string, string) {
@@ -663,10 +670,88 @@ func (al *AgentLoop) maybeSummarize(sessionKey string) {
 		if _, loading := al.summarizing.LoadOrStore(sessionKey, true); !loading {
 			go func() {
 				defer al.summarizing.Delete(sessionKey)
-				al.summarizeSession(sessionKey)
+				al.summarizeSession(sessionKey, 4)
 			}()
 		}
 	}
+}
+
+// CompactSession explicitly compacts a session's history, returning the summary.
+// This is called by the compact tool when the agent requests context compaction.
+// keepLast specifies how many recent messages to preserve (0 = summarize all in hard mode).
+func (al *AgentLoop) CompactSession(sessionKey string, keepLast int) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	defer cancel()
+
+	history := al.sessions.GetHistory(sessionKey)
+	summary := al.sessions.GetSummary(sessionKey)
+
+	if len(history) <= keepLast {
+		return "No messages to compact.", nil
+	}
+
+	toSummarize := history
+	if keepLast > 0 {
+		toSummarize = history[:len(history)-keepLast]
+	}
+
+	maxMessageTokens := al.contextWindow / 2
+	validMessages := make([]providers.Message, 0)
+	omitted := false
+
+	for _, m := range toSummarize {
+		if m.Role != "user" && m.Role != "assistant" {
+			continue
+		}
+		msgTokens := len(m.Content) / 4
+		if msgTokens > maxMessageTokens {
+			omitted = true
+			continue
+		}
+		validMessages = append(validMessages, m)
+	}
+
+	if len(validMessages) == 0 {
+		return "No valid messages to compact.", nil
+	}
+
+	var finalSummary string
+	if len(validMessages) > 10 {
+		mid := len(validMessages) / 2
+		part1 := validMessages[:mid]
+		part2 := validMessages[mid:]
+
+		s1, _ := al.summarizeBatch(ctx, part1, "")
+		s2, _ := al.summarizeBatch(ctx, part2, "")
+
+		mergePrompt := fmt.Sprintf("Merge these two conversation summaries into one cohesive summary:\n\n1: %s\n\n2: %s", s1, s2)
+		resp, err := al.provider.Chat(ctx, []providers.Message{{Role: "user", Content: mergePrompt}}, nil, al.model, al.compactOptions.ToMap())
+		if err == nil {
+			finalSummary = resp.Content
+		} else {
+			finalSummary = s1 + " " + s2
+		}
+	} else {
+		finalSummary, _ = al.summarizeBatch(ctx, validMessages, summary)
+	}
+
+	if omitted && finalSummary != "" {
+		finalSummary += "\n[Note: Some oversized messages were omitted from this summary for efficiency.]"
+	}
+
+	if finalSummary != "" {
+		al.sessions.SetSummary(sessionKey, finalSummary)
+		if keepLast > 0 {
+			al.sessions.TruncateHistory(sessionKey, keepLast)
+		} else {
+			al.sessions.TruncateHistory(sessionKey, 0)
+		}
+		al.sessions.Save(al.sessions.GetOrCreate(sessionKey))
+
+		al.extractAndStoreMemories(ctx, toSummarize)
+	}
+
+	return finalSummary, nil
 }
 
 // GetStartupInfo returns information about loaded tools and skills for logging.
@@ -738,19 +823,23 @@ func formatToolsForLog(tools []providers.ToolDefinition) string {
 }
 
 // summarizeSession summarizes the conversation history for a session.
-func (al *AgentLoop) summarizeSession(sessionKey string) {
+// keepLast specifies how many recent messages to preserve (default 4 if 0).
+func (al *AgentLoop) summarizeSession(sessionKey string, keepLast int) {
+	if keepLast <= 0 {
+		keepLast = 4
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
 
 	history := al.sessions.GetHistory(sessionKey)
 	summary := al.sessions.GetSummary(sessionKey)
 
-	// Keep last 4 messages for continuity
-	if len(history) <= 4 {
+	if len(history) <= keepLast {
 		return
 	}
 
-	toSummarize := history[:len(history)-4]
+	toSummarize := history[:len(history)-keepLast]
 
 	// Oversized Message Guard
 	// Skip messages larger than 50% of context window to prevent summarizer overflow
@@ -804,7 +893,7 @@ func (al *AgentLoop) summarizeSession(sessionKey string) {
 
 	if finalSummary != "" {
 		al.sessions.SetSummary(sessionKey, finalSummary)
-		al.sessions.TruncateHistory(sessionKey, 4)
+		al.sessions.TruncateHistory(sessionKey, keepLast)
 		al.sessions.Save(al.sessions.GetOrCreate(sessionKey))
 
 		// Extract and store notable memories from the compacted messages
