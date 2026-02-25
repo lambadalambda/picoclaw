@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,55 @@ import (
 
 var deltaReactionCommandPattern = regexp.MustCompile(`(?i)^/react\s+([0-9]+)\s+(.+)$`)
 var deltaSetProfilePictureCommandPattern = regexp.MustCompile(`(?i)^/(?:set_profile_picture|set_profile_photo)(?:\s+(.+))?$`)
+
+func parseDeltaTimestampMillis(raw interface{}) (int64, bool) {
+	switch value := raw.(type) {
+	case int:
+		if value <= 0 {
+			return 0, false
+		}
+		return int64(value), true
+	case int64:
+		if value <= 0 {
+			return 0, false
+		}
+		return value, true
+	case float64:
+		if value <= 0 {
+			return 0, false
+		}
+		return int64(value), true
+	case string:
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return 0, false
+		}
+		if parsedInt, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
+			if parsedInt <= 0 {
+				return 0, false
+			}
+			return parsedInt, true
+		}
+		parsedFloat, err := strconv.ParseFloat(trimmed, 64)
+		if err != nil || parsedFloat <= 0 {
+			return 0, false
+		}
+		return int64(parsedFloat), true
+	default:
+		return 0, false
+	}
+}
+
+func deltaLatencyMillis(sinceMillis int64, now time.Time) (int64, bool) {
+	if sinceMillis <= 0 {
+		return 0, false
+	}
+	nowMillis := now.UnixMilli()
+	if nowMillis <= sinceMillis {
+		return 0, false
+	}
+	return nowMillis - sinceMillis, true
+}
 
 type typingCancel struct {
 	fn context.CancelFunc
@@ -627,6 +677,8 @@ func (c *DeltaChatChannel) listen(ctx context.Context) {
 }
 
 func (c *DeltaChatChannel) handleIncomingMessage(msg map[string]interface{}) {
+	receivedAt := time.Now()
+
 	senderID, ok := msg["from"].(string)
 	if !ok {
 		return
@@ -672,6 +724,37 @@ func (c *DeltaChatChannel) handleIncomingMessage(msg map[string]interface{}) {
 		metadata["user_name"] = userName
 	}
 
+	bridgeReceivedMillis, hasBridgeReceived := parseDeltaTimestampMillis(msg["bridge_received_ms"])
+	if hasBridgeReceived {
+		metadata["bridge_received_ms"] = strconv.FormatInt(bridgeReceivedMillis, 10)
+		if bridgeToGatewayMillis, ok := deltaLatencyMillis(bridgeReceivedMillis, receivedAt); ok {
+			metadata["bridge_to_gateway_ms"] = strconv.FormatInt(bridgeToGatewayMillis, 10)
+		}
+	}
+
+	sentMillis, hasSentMillis := parseDeltaTimestampMillis(msg["dc_timestamp_sent_ms"])
+	if hasSentMillis {
+		metadata["dc_timestamp_sent_ms"] = strconv.FormatInt(sentMillis, 10)
+	}
+
+	rcvdMillis, hasRcvdMillis := parseDeltaTimestampMillis(msg["dc_timestamp_rcvd_ms"])
+	if hasRcvdMillis {
+		metadata["dc_timestamp_rcvd_ms"] = strconv.FormatInt(rcvdMillis, 10)
+	}
+
+	createdMillis, hasCreatedMillis := parseDeltaTimestampMillis(msg["dc_timestamp_ms"])
+	if hasCreatedMillis {
+		metadata["dc_timestamp_ms"] = strconv.FormatInt(createdMillis, 10)
+	}
+
+	if hasSentMillis && hasRcvdMillis && rcvdMillis >= sentMillis {
+		metadata["dc_transport_ms"] = strconv.FormatInt(rcvdMillis-sentMillis, 10)
+	}
+
+	if hasSentMillis && hasBridgeReceived && bridgeReceivedMillis >= sentMillis {
+		metadata["dc_sent_to_bridge_ms"] = strconv.FormatInt(bridgeReceivedMillis-sentMillis, 10)
+	}
+
 	if messageID != "" {
 		if c.doneReaction != "" || c.errorReaction != "" {
 			if isDeltaNumericMessageID(messageID) {
@@ -683,7 +766,21 @@ func (c *DeltaChatChannel) handleIncomingMessage(msg map[string]interface{}) {
 		}
 	}
 
-	logger.DebugCF("deltachat", "Received message", map[string]interface{}{"sender": senderID, "preview": utils.Truncate(content, 50)})
+	logFields := map[string]interface{}{
+		"sender":  senderID,
+		"preview": utils.Truncate(content, 50),
+	}
+	if bridgeToGatewayMillis, ok := metadata["bridge_to_gateway_ms"]; ok {
+		logFields["bridge_to_gateway_ms"] = bridgeToGatewayMillis
+	}
+	if sentToBridgeMillis, ok := metadata["dc_sent_to_bridge_ms"]; ok {
+		logFields["dc_sent_to_bridge_ms"] = sentToBridgeMillis
+	}
+	if transportMillis, ok := metadata["dc_transport_ms"]; ok {
+		logFields["dc_transport_ms"] = transportMillis
+	}
+
+	logger.DebugCF("deltachat", "Received message", logFields)
 
 	c.HandleMessage(senderID, chatID, content, mediaPaths, metadata)
 	c.startTypingIndicator(chatID)

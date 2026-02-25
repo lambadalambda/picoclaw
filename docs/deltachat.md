@@ -72,6 +72,10 @@ docker compose restart picoclaw
   - `channels.deltachat.ack_reaction` (default: eyes)
   - `channels.deltachat.done_reaction` (default: empty)
   - `channels.deltachat.error_reaction` (default: empty)
+- Inbound timing metadata is attached to DeltaChat messages and surfaced in gateway logs when available:
+  - `dc_transport_ms` (sender-side send -> relay/account receive)
+  - `dc_sent_to_bridge_ms` (sender-side send -> bridge process receive)
+  - `bridge_to_gateway_ms` (bridge process receive -> PicoClaw channel receive)
 - Outbound reactions are supported with a command-style message content:
 
 ```text

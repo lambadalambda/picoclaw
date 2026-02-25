@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -248,6 +249,82 @@ func TestDeltaChatChannelIncomingMessage(t *testing.T) {
 	}
 	if msg.Metadata["user_name"] != "Alice" {
 		t.Fatalf("metadata.user_name = %q, want Alice", msg.Metadata["user_name"])
+	}
+}
+
+func TestDeltaChatChannelIncomingMessageAddsTimingMetadata(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	now := time.Now()
+	sentMillis := now.Add(-4 * time.Second).UnixMilli()
+	rcvdMillis := now.Add(-2900 * time.Millisecond).UnixMilli()
+	bridgeMillis := now.Add(-2700 * time.Millisecond).UnixMilli()
+
+	incoming := map[string]interface{}{
+		"type":                 "message",
+		"id":                   "m-timing",
+		"from":                 "dc-user-99",
+		"chat":                 "chat-99",
+		"content":              "timed message",
+		"bridge_received_ms":   float64(bridgeMillis),
+		"dc_timestamp_sent_ms": float64(sentMillis),
+		"dc_timestamp_rcvd_ms": float64(rcvdMillis),
+	}
+	if err := conn.WriteJSON(incoming); err != nil {
+		t.Fatalf("bridge write failed: %v", err)
+	}
+
+	consumeCtx, consumeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer consumeCancel()
+
+	msg, ok := mb.ConsumeInbound(consumeCtx)
+	if !ok {
+		t.Fatal("expected inbound message from DeltaChat")
+	}
+
+	if got := msg.Metadata["bridge_received_ms"]; got != strconv.FormatInt(bridgeMillis, 10) {
+		t.Fatalf("metadata.bridge_received_ms = %q, want %q", got, strconv.FormatInt(bridgeMillis, 10))
+	}
+	if got := msg.Metadata["dc_timestamp_sent_ms"]; got != strconv.FormatInt(sentMillis, 10) {
+		t.Fatalf("metadata.dc_timestamp_sent_ms = %q, want %q", got, strconv.FormatInt(sentMillis, 10))
+	}
+	if got := msg.Metadata["dc_timestamp_rcvd_ms"]; got != strconv.FormatInt(rcvdMillis, 10) {
+		t.Fatalf("metadata.dc_timestamp_rcvd_ms = %q, want %q", got, strconv.FormatInt(rcvdMillis, 10))
+	}
+
+	if got := msg.Metadata["dc_transport_ms"]; got != "1100" {
+		t.Fatalf("metadata.dc_transport_ms = %q, want 1100", got)
+	}
+	if got := msg.Metadata["dc_sent_to_bridge_ms"]; got != "1300" {
+		t.Fatalf("metadata.dc_sent_to_bridge_ms = %q, want 1300", got)
+	}
+
+	bridgeToGateway, err := strconv.ParseInt(msg.Metadata["bridge_to_gateway_ms"], 10, 64)
+	if err != nil {
+		t.Fatalf("metadata.bridge_to_gateway_ms parse error: %v (value=%q)", err, msg.Metadata["bridge_to_gateway_ms"])
+	}
+	if bridgeToGateway <= 0 {
+		t.Fatalf("metadata.bridge_to_gateway_ms = %d, want > 0", bridgeToGateway)
 	}
 }
 

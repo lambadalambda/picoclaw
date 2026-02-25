@@ -307,14 +307,25 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 
 	// Add message preview to log
 	preview := utils.Truncate(msg.Content, 80)
+	logFields := map[string]interface{}{
+		"channel":     msg.Channel,
+		"chat_id":     msg.ChatID,
+		"sender_id":   msg.SenderID,
+		"session_key": msg.SessionKey,
+		"trace_id":    traceID,
+	}
+	if bridgeToGateway := strings.TrimSpace(msg.Metadata["bridge_to_gateway_ms"]); bridgeToGateway != "" {
+		logFields["bridge_to_gateway_ms"] = bridgeToGateway
+	}
+	if sentToBridge := strings.TrimSpace(msg.Metadata["dc_sent_to_bridge_ms"]); sentToBridge != "" {
+		logFields["dc_sent_to_bridge_ms"] = sentToBridge
+	}
+	if transportMillis := strings.TrimSpace(msg.Metadata["dc_transport_ms"]); transportMillis != "" {
+		logFields["dc_transport_ms"] = transportMillis
+	}
+
 	logger.InfoCF("agent", fmt.Sprintf("Processing message from %s:%s: %s", msg.Channel, msg.SenderID, preview),
-		map[string]interface{}{
-			"channel":     msg.Channel,
-			"chat_id":     msg.ChatID,
-			"sender_id":   msg.SenderID,
-			"session_key": msg.SessionKey,
-			"trace_id":    traceID,
-		})
+		logFields)
 
 	// Route system messages to processSystemMessage
 	if msg.Channel == "system" {

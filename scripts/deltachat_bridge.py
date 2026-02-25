@@ -249,6 +249,21 @@ class DeltaChatBridge:
             "content": snapshot.get("text") or "",
         }
 
+        bridge_received_ms = int(time.time() * 1000)
+        payload["bridge_received_ms"] = bridge_received_ms
+
+        timestamp_ms = self._coerce_millis(snapshot.get("timestamp"))
+        if timestamp_ms > 0:
+            payload["dc_timestamp_ms"] = timestamp_ms
+
+        timestamp_sent_ms = self._coerce_millis(snapshot.get("timestamp_sent"))
+        if timestamp_sent_ms > 0:
+            payload["dc_timestamp_sent_ms"] = timestamp_sent_ms
+
+        timestamp_rcvd_ms = self._coerce_millis(snapshot.get("timestamp_rcvd"))
+        if timestamp_rcvd_ms > 0:
+            payload["dc_timestamp_rcvd_ms"] = timestamp_rcvd_ms
+
         media = snapshot.get("file")
         if media:
             payload["media"] = [self._normalize_media_path(media, self.settings.accounts_dir)]
@@ -268,6 +283,36 @@ class DeltaChatBridge:
         if isinstance(value, (int, float)):
             return value != 0
         return default
+
+    @staticmethod
+    def _coerce_millis(value: Any) -> int:
+        if value is None:
+            return 0
+
+        parsed: float | None = None
+
+        if isinstance(value, (int, float)):
+            parsed = float(value)
+        elif isinstance(value, str):
+            stripped = value.strip()
+            if stripped == "":
+                return 0
+            try:
+                parsed = float(stripped)
+            except ValueError:
+                return 0
+        else:
+            return 0
+
+        if parsed is None or parsed <= 0:
+            return 0
+
+        # DeltaChat snapshot timestamps are usually epoch seconds. Bridge fields
+        # use epoch milliseconds for easier latency calculations downstream.
+        if parsed < 10_000_000_000:
+            parsed *= 1000
+
+        return int(parsed)
 
     def _reaction_event_to_bridge_payload(self, event: Any) -> dict[str, Any] | None:
         assert self.account is not None
@@ -366,6 +411,28 @@ class DeltaChatBridge:
                 event = self.account.wait_for_event()
                 kind = str(event.get("kind", ""))
 
+                if kind == EventType.INCOMING_MSG.value:
+                    msg_id_raw = event.get("msg_id")
+                    msg_id = 0
+                    try:
+                        msg_id = int(msg_id_raw)
+                    except (TypeError, ValueError):
+                        msg_id = 0
+
+                    if msg_id > 0:
+                        try:
+                            message = self.account.get_message_by_id(msg_id)
+                            payload = self._message_to_bridge_payload(message)
+                            if payload is not None:
+                                self.delta_to_ws_queue.put(payload)
+                            try:
+                                message.mark_seen()
+                            except Exception:
+                                pass
+                            continue
+                        except Exception as exc:
+                            logging.debug("Failed to handle INCOMING_MSG via msg_id=%s, falling back to get_next_messages: %s", msg_id, exc)
+
                 if kind in reaction_kinds:
                     payload = self._reaction_event_to_bridge_payload(event)
                     if payload is not None:
@@ -379,11 +446,11 @@ class DeltaChatBridge:
                     payload = self._message_to_bridge_payload(message)
                     if payload is None:
                         continue
+                    self.delta_to_ws_queue.put(payload)
                     try:
                         message.mark_seen()
                     except Exception:
                         pass
-                    self.delta_to_ws_queue.put(payload)
             except Exception as exc:
                 if self.stop_event.is_set():
                     break
