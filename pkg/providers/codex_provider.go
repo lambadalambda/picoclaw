@@ -234,11 +234,17 @@ func logCodexCacheUsage(resp *responses.Response) {
 		return
 	}
 
-	logger.InfoCF("provider", "LLM cache usage reported", map[string]interface{}{
+	fields := map[string]interface{}{
 		"provider": "codex",
 		"model":    resp.Model,
 		"usage.input_tokens_details.cached_tokens": resp.Usage.InputTokensDetails.CachedTokens,
-	})
+	}
+	if resp.Usage.InputTokens > 0 {
+		fields["usage.input_tokens"] = resp.Usage.InputTokens
+		fields["usage.cache_hit_ratio"] = roundTo(float64(resp.Usage.InputTokensDetails.CachedTokens)/float64(resp.Usage.InputTokens), 4)
+	}
+
+	logger.InfoCF("provider", "LLM cache usage reported", fields)
 }
 
 func createCodexTokenSource() func() (string, string, error) {

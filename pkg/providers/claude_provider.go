@@ -377,14 +377,20 @@ func logClaudeCacheUsage(resp *anthropic.Message) {
 		return
 	}
 
-	logger.InfoCF("provider", "LLM cache usage reported", map[string]interface{}{
+	fields := map[string]interface{}{
 		"provider":                          "anthropic",
 		"model":                             string(resp.Model),
 		"usage.cache_creation_input_tokens": resp.Usage.CacheCreationInputTokens,
 		"usage.cache_read_input_tokens":     resp.Usage.CacheReadInputTokens,
 		"usage.cache_creation.ephemeral_5m_input_tokens": resp.Usage.CacheCreation.Ephemeral5mInputTokens,
 		"usage.cache_creation.ephemeral_1h_input_tokens": resp.Usage.CacheCreation.Ephemeral1hInputTokens,
-	})
+	}
+	if resp.Usage.InputTokens > 0 {
+		fields["usage.input_tokens"] = resp.Usage.InputTokens
+		fields["usage.cache_hit_ratio"] = roundTo(float64(resp.Usage.CacheReadInputTokens)/float64(resp.Usage.InputTokens), 4)
+	}
+
+	logger.InfoCF("provider", "LLM cache usage reported", fields)
 }
 
 func createClaudeTokenSource() func() (string, error) {

@@ -49,7 +49,7 @@ func (cb *ContextBuilder) SetToolsRegistry(registry *tools.ToolRegistry) {
 }
 
 func (cb *ContextBuilder) getIdentity() string {
-	now := time.Now().Format("2006-01-02 15:04 (Monday)")
+	today := time.Now().Format("2006-01-02 (Monday)")
 	workspacePath, _ := filepath.Abs(filepath.Join(cb.workspace))
 	runtime := fmt.Sprintf("%s %s, Go %s", runtime.GOOS, runtime.GOARCH, runtime.Version())
 
@@ -60,7 +60,7 @@ func (cb *ContextBuilder) getIdentity() string {
 
 You are picoclaw, a helpful AI assistant.
 
-## Current Time
+## Current Date
 %s
 
 ## Runtime
@@ -88,7 +88,7 @@ Your workspace is at: %s
 5. **Delegate with spawn** - When a task involves a skill (like image generation, complex builds, or multi-step research), use the spawn tool to delegate it to a background subagent. You can keep talking to the user while the subagent works. The subagent will report back when done.
 
 6. **Compaction recovery** - If conversation history has been compacted and you need exact prior tool calls/results, use the session_history tool to retrieve the missing context from the on-disk transcript.`,
-		now, runtime, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
+		today, runtime, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
 }
 
 func (cb *ContextBuilder) buildToolsSection() string {
