@@ -494,10 +494,19 @@ class DeltaChatBridge:
         if content is None:
             content = ""
 
+        content_text = str(content)
+
         media = payload.get("media")
         media_items: list[str] = []
         if isinstance(media, list):
             media_items = [str(item) for item in media if isinstance(item, str)]
+
+        logging.info(
+            "Outbound payload to Delta Chat: chat=%s content_chars=%d media_count=%d",
+            target,
+            len(content_text),
+            len(media_items),
+        )
 
         if media_items:
             first_file = self._resolve_outbound_file(media_items[0])
@@ -511,10 +520,22 @@ class DeltaChatBridge:
                 resolved = self._resolve_outbound_file(extra_file)
                 vt = ViewType.IMAGE if Path(resolved).suffix.lower() in _IMAGE_EXTENSIONS else None
                 chat.send_message(file=resolved, viewtype=vt) if vt else chat.send_file(resolved)
+
+            logging.info(
+                "Outbound payload accepted by Delta Chat: chat=%s content_chars=%d media_count=%d",
+                target,
+                len(content_text),
+                len(media_items),
+            )
             return
 
         if content != "":
             chat.send_text(content)
+            logging.info(
+                "Outbound payload accepted by Delta Chat: chat=%s content_chars=%d media_count=0",
+                target,
+                len(content_text),
+            )
             return
 
         logging.warning("Ignoring empty outbound message for target %s", target)
@@ -651,6 +672,7 @@ class DeltaChatBridge:
 
         try:
             await websocket.send(json.dumps(ack_payload, ensure_ascii=True))
+            logging.info("Bridge ack sent: request_id=%s op=%s ok=%s", request_id, payload_type or "payload", ok)
         except Exception as exc:
             logging.error("Failed to send Delta Chat bridge ack: %s", exc)
 

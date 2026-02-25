@@ -356,11 +356,24 @@ func (c *DeltaChatChannel) sendPayloadWithAck(ctx context.Context, payload map[s
 	requestPayload["request_id"] = requestID
 	requestPayload["require_ack"] = true
 
+	payloadType, _ := payload["type"].(string)
+	if payloadType == "" {
+		payloadType = "payload"
+	}
+
+	logFields := deltaOutboundLogFields(payload, payloadType, requestID)
+	logger.InfoCF("deltachat", "Sending outbound payload", logFields)
+
 	ackCh := make(chan deltaBridgeAck, 1)
 	c.pendingAcks.Store(requestID, ackCh)
 	defer c.pendingAcks.Delete(requestID)
 
+	startedAt := time.Now()
+
 	if err := c.sendPayload(requestPayload); err != nil {
+		errFields := cloneLogFields(logFields)
+		errFields["error"] = err.Error()
+		logger.ErrorCF("deltachat", "Failed to send outbound payload", errFields)
 		return err
 	}
 
@@ -372,14 +385,12 @@ func (c *DeltaChatChannel) sendPayloadWithAck(ctx context.Context, payload map[s
 	ackTimer := time.NewTimer(ackTimeout)
 	defer ackTimer.Stop()
 
-	payloadType, _ := payload["type"].(string)
-	if payloadType == "" {
-		payloadType = "payload"
-	}
-
 	select {
 	case ack := <-ackCh:
 		if ack.OK {
+			ackFields := cloneLogFields(logFields)
+			ackFields["ack_latency_ms"] = time.Since(startedAt).Milliseconds()
+			logger.InfoCF("deltachat", "Outbound payload acknowledged", ackFields)
 			return nil
 		}
 
@@ -387,12 +398,79 @@ func (c *DeltaChatChannel) sendPayloadWithAck(ctx context.Context, payload map[s
 		if ackErr == "" {
 			ackErr = "bridge rejected request"
 		}
+		rejectFields := cloneLogFields(logFields)
+		rejectFields["ack_latency_ms"] = time.Since(startedAt).Milliseconds()
+		rejectFields["error"] = ackErr
+		logger.WarnCF("deltachat", "Outbound payload rejected", rejectFields)
 		return fmt.Errorf("DeltaChat %s send failed: %s", payloadType, ackErr)
 	case <-ackTimer.C:
+		timeoutFields := cloneLogFields(logFields)
+		timeoutFields["ack_timeout_ms"] = ackTimeout.Milliseconds()
+		timeoutFields["elapsed_ms"] = time.Since(startedAt).Milliseconds()
+		logger.WarnCF("deltachat", "Timed out waiting for outbound payload acknowledgement", timeoutFields)
 		return fmt.Errorf("timed out waiting for DeltaChat bridge acknowledgement for %s", payloadType)
 	case <-ctx.Done():
+		cancelFields := cloneLogFields(logFields)
+		cancelFields["elapsed_ms"] = time.Since(startedAt).Milliseconds()
+		cancelFields["error"] = ctx.Err().Error()
+		logger.WarnCF("deltachat", "Outbound payload acknowledgement interrupted", cancelFields)
 		return fmt.Errorf("waiting for DeltaChat bridge acknowledgement interrupted: %w", ctx.Err())
 	}
+}
+
+func deltaOutboundLogFields(payload map[string]interface{}, payloadType, requestID string) map[string]interface{} {
+	fields := map[string]interface{}{
+		"payload_type": payloadType,
+		"request_id":   requestID,
+	}
+
+	if chatID, ok := payload["to"].(string); ok {
+		chatID = strings.TrimSpace(chatID)
+		if chatID != "" {
+			fields["chat_id"] = chatID
+		}
+	}
+
+	if messageID, ok := payload["message_id"].(string); ok {
+		messageID = strings.TrimSpace(messageID)
+		if messageID != "" {
+			fields["message_id"] = messageID
+		}
+	}
+
+	if content, ok := payload["content"].(string); ok {
+		trimmed := strings.TrimSpace(content)
+		if trimmed != "" {
+			fields["content_chars"] = len(content)
+		}
+	}
+
+	mediaCount := 0
+	switch media := payload["media"].(type) {
+	case []string:
+		mediaCount = len(media)
+	case []interface{}:
+		mediaCount = len(media)
+	}
+	if mediaCount > 0 {
+		fields["media_count"] = mediaCount
+	}
+
+	if path, ok := payload["path"].(string); ok {
+		if strings.TrimSpace(path) != "" {
+			fields["has_path"] = true
+		}
+	}
+
+	return fields
+}
+
+func cloneLogFields(fields map[string]interface{}) map[string]interface{} {
+	cloned := make(map[string]interface{}, len(fields))
+	for key, value := range fields {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (c *DeltaChatChannel) handleBridgeAck(msg map[string]interface{}) {
