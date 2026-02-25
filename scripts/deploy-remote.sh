@@ -9,6 +9,8 @@ LOCAL_BIN="${PICOCLAW_LOCAL_BIN:-build/picoclaw-linux-amd64}"
 REMOTE_BIN="${PICOCLAW_REMOTE_BIN:-/home/alice/.local/bin/picoclaw}"
 REMOTE_SERVICE="${PICOCLAW_REMOTE_SERVICE:-/home/alice/.config/runit/service/picoclaw-gateway}"
 REMOTE_LOG="${PICOCLAW_REMOTE_LOG:-/home/alice/.picoclaw/log/picoclaw-gateway/current}"
+REMOTE_BRIDGE_SERVICE="${PICOCLAW_REMOTE_BRIDGE_SERVICE:-/home/alice/.config/runit/service/deltachat-bridge}"
+REMOTE_BRIDGE_LOG="${PICOCLAW_REMOTE_BRIDGE_LOG:-/home/alice/.picoclaw/log/deltachat-bridge/current}"
 GO_VERSION="${PICOCLAW_GO_VERSION:-1.24}"
 LOG_LINES="${PICOCLAW_LOG_LINES:-30}"
 BRIDGE_SRC="${PICOCLAW_BRIDGE_SRC:-scripts/deltachat_bridge.py}"
@@ -31,7 +33,9 @@ Options:
       --local-bin <path>         Local output binary path
       --remote-bin <path>        Remote binary path
       --service <path>           Remote runit service directory path
+      --bridge-service <path>    Remote DeltaChat bridge runit service path
       --remote-log <path>        Remote gateway log file path
+      --remote-bridge-log <path> Remote DeltaChat bridge log file path
       --go-version <version>     Go version for mise fallback (default: 1.24)
       --log-lines <n>            Log lines to show after deploy (default: 30)
       --copy-bridge              Also deploy scripts/deltachat_bridge.py
@@ -44,8 +48,9 @@ Options:
 
 Environment overrides:
   PICOCLAW_REMOTE, PICOCLAW_LOCAL_BIN, PICOCLAW_REMOTE_BIN,
-  PICOCLAW_REMOTE_SERVICE, PICOCLAW_REMOTE_LOG, PICOCLAW_GO_VERSION,
-  PICOCLAW_LOG_LINES, PICOCLAW_BRIDGE_SRC, PICOCLAW_REMOTE_BRIDGE
+  PICOCLAW_REMOTE_SERVICE, PICOCLAW_REMOTE_LOG, PICOCLAW_REMOTE_BRIDGE_SERVICE,
+  PICOCLAW_REMOTE_BRIDGE_LOG, PICOCLAW_GO_VERSION, PICOCLAW_LOG_LINES,
+  PICOCLAW_BRIDGE_SRC, PICOCLAW_REMOTE_BRIDGE
 EOF
 }
 
@@ -67,8 +72,16 @@ while [[ $# -gt 0 ]]; do
       REMOTE_SERVICE="$2"
       shift 2
       ;;
+    --bridge-service)
+      REMOTE_BRIDGE_SERVICE="$2"
+      shift 2
+      ;;
     --remote-log)
       REMOTE_LOG="$2"
+      shift 2
+      ;;
+    --remote-bridge-log)
+      REMOTE_BRIDGE_LOG="$2"
       shift 2
       ;;
     --go-version)
@@ -179,6 +192,11 @@ if [[ "$COPY_BRIDGE" -eq 1 ]]; then
 fi
 
 if [[ "$SKIP_RESTART" -eq 0 ]]; then
+  if [[ "$COPY_BRIDGE" -eq 1 ]]; then
+    echo "[deploy] Restarting bridge service $REMOTE_BRIDGE_SERVICE"
+    ssh "$REMOTE" "sv restart \"$REMOTE_BRIDGE_SERVICE\" && sleep 1 && sv status \"$REMOTE_BRIDGE_SERVICE\""
+  fi
+
   echo "[deploy] Restarting service $REMOTE_SERVICE"
   ssh "$REMOTE" "sv restart \"$REMOTE_SERVICE\" && sleep 1 && sv status \"$REMOTE_SERVICE\""
 else
@@ -186,6 +204,11 @@ else
 fi
 
 if [[ "$SHOW_LOGS" -eq 1 && "$LOG_LINES" -gt 0 ]]; then
+  if [[ "$COPY_BRIDGE" -eq 1 ]]; then
+    echo "[deploy] Last $LOG_LINES lines from $REMOTE_BRIDGE_LOG"
+    ssh "$REMOTE" "if [ -f \"$REMOTE_BRIDGE_LOG\" ]; then tail -n $LOG_LINES \"$REMOTE_BRIDGE_LOG\"; else echo \"Log file not found: $REMOTE_BRIDGE_LOG\"; fi"
+  fi
+
   echo "[deploy] Last $LOG_LINES lines from $REMOTE_LOG"
   ssh "$REMOTE" "if [ -f \"$REMOTE_LOG\" ]; then tail -n $LOG_LINES \"$REMOTE_LOG\"; else echo \"Log file not found: $REMOTE_LOG\"; fi"
 fi
