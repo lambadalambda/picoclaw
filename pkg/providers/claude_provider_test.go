@@ -169,6 +169,72 @@ func TestBuildClaudeParams_AnthropicCacheControlRejectsInvalidTTL(t *testing.T) 
 	}
 }
 
+func TestBuildClaudeParams_AnthropicCacheControlAppliesOnlyOneBlock(t *testing.T) {
+	messages := []Message{
+		{Role: "system", Content: "System A"},
+		{Role: "system", Content: "System B"},
+		{Role: "user", Content: "User A"},
+		{Role: "assistant", Content: "Assistant A"},
+		{Role: "user", Content: "User B"},
+	}
+
+	params, err := buildClaudeParams(messages, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
+		"anthropic_cache":     true,
+		"anthropic_cache_ttl": "1h",
+	})
+	if err != nil {
+		t.Fatalf("buildClaudeParams() error: %v", err)
+	}
+
+	count := 0
+	for _, sb := range params.System {
+		if string(sb.CacheControl.Type) != "" {
+			count++
+		}
+	}
+	for _, msg := range params.Messages {
+		for _, block := range msg.Content {
+			if cc := block.GetCacheControl(); cc != nil && string(cc.Type) != "" {
+				count++
+			}
+		}
+	}
+
+	if count != anthropicCacheControlBlockLimit {
+		t.Fatalf("cache_control blocks = %d, want %d", count, anthropicCacheControlBlockLimit)
+	}
+	if len(params.System) == 0 || string(params.System[0].CacheControl.Type) != "ephemeral" {
+		t.Fatalf("expected first system block to carry cache_control")
+	}
+}
+
+func TestBuildClaudeParams_AnthropicCacheControlWithoutSystemAppliesOnlyOneBlock(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "User A"},
+		{Role: "assistant", Content: "Assistant A"},
+		{Role: "user", Content: "User B"},
+	}
+
+	params, err := buildClaudeParams(messages, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
+		"anthropic_cache": true,
+	})
+	if err != nil {
+		t.Fatalf("buildClaudeParams() error: %v", err)
+	}
+
+	count := 0
+	for _, msg := range params.Messages {
+		for _, block := range msg.Content {
+			if cc := block.GetCacheControl(); cc != nil && string(cc.Type) != "" {
+				count++
+			}
+		}
+	}
+	if count != anthropicCacheControlBlockLimit {
+		t.Fatalf("cache_control blocks = %d, want %d", count, anthropicCacheControlBlockLimit)
+	}
+}
+
 func TestTranslateToolsForClaude_RequiredStringSlice(t *testing.T) {
 	tools := []ToolDefinition{
 		{
