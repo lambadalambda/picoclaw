@@ -65,6 +65,14 @@ type processOptions struct {
 	SendResponse    bool   // Whether to send response via bus
 }
 
+type processTaskResult struct {
+	message     bus.InboundMessage
+	sessionKey  string
+	response    string
+	err         error
+	interrupted bool
+}
+
 func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers.LLMProvider) *AgentLoop {
 	workspace := cfg.WorkspacePath()
 	os.MkdirAll(workspace, 0755)
@@ -235,32 +243,138 @@ func resolveZAISearchCredentials(webCfg config.WebSearchConfig, providersCfg con
 func (al *AgentLoop) Run(ctx context.Context) error {
 	al.running.Store(true)
 
-	for al.running.Load() {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
+	inboundCh := make(chan bus.InboundMessage, 100)
+	go func() {
+		defer close(inboundCh)
+		for al.running.Load() {
 			msg, ok := al.bus.ConsumeInbound(ctx)
 			if !ok {
+				return
+			}
+
+			select {
+			case inboundCh <- msg:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	pendingBySession := make(map[string]bus.InboundMessage)
+	pendingOrder := make([]string, 0)
+
+	var activeDone <-chan processTaskResult
+	var activeCancel context.CancelFunc
+	activeSessionKey := ""
+
+	startNext := func() {
+		if activeDone != nil || len(pendingOrder) == 0 {
+			return
+		}
+
+		sessionKey := pendingOrder[0]
+		pendingOrder = pendingOrder[1:]
+		msg := pendingBySession[sessionKey]
+		delete(pendingBySession, sessionKey)
+
+		procCtx, cancel := context.WithCancel(ctx)
+		done := make(chan processTaskResult, 1)
+		activeCancel = cancel
+		activeDone = done
+		activeSessionKey = sessionKey
+
+		go func(procCtx context.Context, msg bus.InboundMessage, sessionKey string, done chan<- processTaskResult) {
+			response, err := al.processMessage(procCtx, msg)
+			done <- processTaskResult{
+				message:     msg,
+				sessionKey:  sessionKey,
+				response:    response,
+				err:         err,
+				interrupted: procCtx.Err() != nil,
+			}
+		}(procCtx, msg, sessionKey, done)
+	}
+
+	for al.running.Load() {
+		startNext()
+
+		select {
+		case <-ctx.Done():
+			if activeCancel != nil {
+				activeCancel()
+			}
+			return nil
+		case msg, ok := <-inboundCh:
+			if !ok {
+				if activeCancel != nil {
+					activeCancel()
+				}
+				return nil
+			}
+
+			sessionKey := inboundSessionKey(msg)
+			msg.SessionKey = sessionKey
+
+			if shouldInterruptActiveRun(msg) && activeDone != nil && activeSessionKey == sessionKey && activeCancel != nil {
+				logger.InfoCF("agent", "Interrupting active run due to newer user message",
+					map[string]interface{}{
+						"session_key": sessionKey,
+						"channel":     msg.Channel,
+						"chat_id":     msg.ChatID,
+					})
+				activeCancel()
+			}
+
+			if _, exists := pendingBySession[sessionKey]; !exists {
+				pendingOrder = append(pendingOrder, sessionKey)
+			}
+			pendingBySession[sessionKey] = msg
+		case res := <-activeDone:
+			activeDone = nil
+			activeCancel = nil
+			activeSessionKey = ""
+
+			if res.interrupted {
+				logger.InfoCF("agent", "Message processing interrupted",
+					map[string]interface{}{
+						"session_key": res.sessionKey,
+						"channel":     res.message.Channel,
+						"chat_id":     res.message.ChatID,
+					})
 				continue
 			}
 
-			response, err := al.processMessage(ctx, msg)
-			if err != nil {
-				response = fmt.Sprintf("Error processing message: %v", err)
+			response := res.response
+			if res.err != nil {
+				response = fmt.Sprintf("Error processing message: %v", res.err)
 			}
 
 			if response != "" {
 				al.bus.PublishOutbound(bus.OutboundMessage{
-					Channel: msg.Channel,
-					ChatID:  msg.ChatID,
+					Channel: res.message.Channel,
+					ChatID:  res.message.ChatID,
 					Content: response,
 				})
 			}
 		}
 	}
 
+	if activeCancel != nil {
+		activeCancel()
+	}
+
 	return nil
+}
+
+func inboundSessionKey(msg bus.InboundMessage) string {
+	if sessionKey := strings.TrimSpace(msg.SessionKey); sessionKey != "" {
+		return sessionKey
+	}
+	return fmt.Sprintf("%s:%s", msg.Channel, msg.ChatID)
+}
+
+func shouldInterruptActiveRun(msg bus.InboundMessage) bool {
+	return msg.Channel != "system"
 }
 
 func (al *AgentLoop) Stop() {

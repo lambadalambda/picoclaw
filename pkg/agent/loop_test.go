@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -44,6 +45,60 @@ func (p *blockingProvider) Chat(ctx context.Context, _ []providers.Message, _ []
 }
 
 func (p *blockingProvider) GetDefaultModel() string { return "test-model" }
+
+type interruptibleProvider struct {
+	canceledCalls atomic.Int32
+}
+
+func (p *interruptibleProvider) Chat(ctx context.Context, messages []providers.Message, _ []providers.ToolDefinition, _ string, _ map[string]interface{}) (*providers.LLMResponse, error) {
+	select {
+	case <-ctx.Done():
+		p.canceledCalls.Add(1)
+		return nil, ctx.Err()
+	default:
+	}
+
+	lastUser := ""
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			lastUser = messages[i].Content
+			break
+		}
+	}
+
+	if strings.Contains(lastUser, "first message") {
+		return &providers.LLMResponse{
+			ToolCalls: []providers.ToolCall{{ID: "wait-1", Name: "wait_tool", Arguments: map[string]interface{}{}}},
+		}, nil
+	}
+
+	if strings.Contains(lastUser, "second message") {
+		return &providers.LLMResponse{Content: "handled second"}, nil
+	}
+
+	return &providers.LLMResponse{Content: "ok"}, nil
+}
+
+func (p *interruptibleProvider) GetDefaultModel() string { return "test-model" }
+
+type waitTool struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (t *waitTool) Name() string        { return "wait_tool" }
+func (t *waitTool) Description() string { return "waits until cancelled" }
+func (t *waitTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+}
+
+func (t *waitTool) Execute(ctx context.Context, _ map[string]interface{}) (string, error) {
+	t.once.Do(func() {
+		close(t.started)
+	})
+	<-ctx.Done()
+	return "", ctx.Err()
+}
 
 func (m *mockProvider) Chat(_ context.Context, messages []providers.Message, tdefs []providers.ToolDefinition, _ string, _ map[string]interface{}) (*providers.LLMResponse, error) {
 	m.mu.Lock()
@@ -104,6 +159,8 @@ func newTestAgentLoop(t *testing.T, provider providers.LLMProvider, maxIter int,
 	for _, tool := range testTools {
 		registry.Register(tool)
 	}
+	contextBuilder := NewContextBuilder(tmpDir)
+	contextBuilder.SetToolsRegistry(registry)
 
 	return &AgentLoop{
 		bus:            bus.NewMessageBus(),
@@ -114,8 +171,75 @@ func newTestAgentLoop(t *testing.T, provider providers.LLMProvider, maxIter int,
 		compactOptions: providers.ChatOptions{MaxTokens: 1024, Temperature: 0.3},
 		maxIterations:  maxIter,
 		sessions:       session.NewSessionManager(filepath.Join(tmpDir, "sessions")),
+		contextBuilder: contextBuilder,
 		tools:          registry,
 		summarizing:    sync.Map{},
+	}
+}
+
+func TestRun_InterruptsActiveSessionOnNewUserMessage(t *testing.T) {
+	provider := &interruptibleProvider{}
+	tool := &waitTool{started: make(chan struct{})}
+	al := newTestAgentLoop(t, provider, 5, []tools.Tool{tool})
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- al.Run(runCtx)
+	}()
+
+	cleanup := func() {
+		al.Stop()
+		runCancel()
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("agent loop did not stop")
+		}
+		al.bus.Close()
+	}
+	defer cleanup()
+
+	al.bus.PublishInbound(bus.InboundMessage{
+		Channel:    "telegram",
+		SenderID:   "user-1",
+		ChatID:     "chat-1",
+		Content:    "first message",
+		SessionKey: "telegram:chat-1",
+	})
+
+	select {
+	case <-tool.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first tool call did not start")
+	}
+
+	al.bus.PublishInbound(bus.InboundMessage{
+		Channel:    "telegram",
+		SenderID:   "user-1",
+		ChatID:     "chat-1",
+		Content:    "second message",
+		SessionKey: "telegram:chat-1",
+	})
+
+	outCtx, outCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer outCancel()
+	out, ok := al.bus.SubscribeOutbound(outCtx)
+	if !ok {
+		t.Fatal("expected outbound response for second message")
+	}
+	if out.Content != "handled second" {
+		t.Fatalf("outbound content = %q, want %q", out.Content, "handled second")
+	}
+
+	extraCtx, extraCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer extraCancel()
+	if extra, ok := al.bus.SubscribeOutbound(extraCtx); ok {
+		t.Fatalf("unexpected extra outbound message: %+v", extra)
+	}
+
+	if provider.canceledCalls.Load() == 0 {
+		t.Fatal("expected at least one canceled provider call from interrupted run")
 	}
 }
 
