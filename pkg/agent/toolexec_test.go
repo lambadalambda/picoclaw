@@ -210,6 +210,10 @@ func TestShouldEchoToolCallsForSession(t *testing.T) {
 		{name: "heartbeat root", sessionKey: "heartbeat", want: false},
 		{name: "heartbeat scoped", sessionKey: "heartbeat:telegram:chat1", want: false},
 		{name: "heartbeat uppercase", sessionKey: "HEARTBEAT:telegram:chat1", want: false},
+		{name: "cron root", sessionKey: "cron", want: false},
+		{name: "cron dashed", sessionKey: "cron-job-123", want: false},
+		{name: "cron scoped", sessionKey: "cron:telegram:chat1", want: false},
+		{name: "cron uppercase", sessionKey: "CRON:telegram:chat1", want: false},
 	}
 
 	for _, tt := range tests {
@@ -252,6 +256,40 @@ func TestExecuteToolsConcurrently_DoesNotEchoForHeartbeatSession(t *testing.T) {
 	defer cancel()
 	if msg, ok := testBus.SubscribeOutbound(ctx); ok {
 		t.Fatalf("unexpected tool echo for heartbeat session: %+v", msg)
+	}
+}
+
+func TestExecuteToolsConcurrently_DoesNotEchoForCronSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	registry := tools.NewToolRegistry()
+	testBus := bus.NewMessageBus()
+	defer testBus.Close()
+
+	al := &AgentLoop{
+		bus:           testBus,
+		workspace:     tmpDir,
+		model:         "test-model",
+		chatOptions:   providers.ChatOptions{MaxTokens: 8192, Temperature: 0.7},
+		maxIterations: 5,
+		sessions:      session.NewSessionManager(filepath.Join(tmpDir, "sessions")),
+		tools:         registry,
+		summarizing:   sync.Map{},
+		echoToolCalls: true,
+	}
+
+	toolCalls := []providers.ToolCall{{
+		ID:        "tc1",
+		Name:      "exec",
+		Arguments: map[string]interface{}{"command": "pwd"},
+	}}
+
+	opts := processOptions{SessionKey: "cron-job-42", Channel: "telegram", ChatID: "chat1", TraceID: "trace-test"}
+	_ = al.executeToolsConcurrently(context.Background(), toolCalls, 1, opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if msg, ok := testBus.SubscribeOutbound(ctx); ok {
+		t.Fatalf("unexpected tool echo for cron session: %+v", msg)
 	}
 }
 

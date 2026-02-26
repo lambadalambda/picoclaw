@@ -172,6 +172,9 @@ func shouldEchoToolCallsForSession(sessionKey string) bool {
 	if sessionKey == "heartbeat" || strings.HasPrefix(sessionKey, "heartbeat:") {
 		return false
 	}
+	if sessionKey == "cron" || strings.HasPrefix(sessionKey, "cron-") || strings.HasPrefix(sessionKey, "cron:") {
+		return false
+	}
 	return true
 }
 
