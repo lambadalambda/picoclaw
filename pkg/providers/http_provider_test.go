@@ -62,6 +62,85 @@ func newTestOptions() map[string]interface{} {
 	return map[string]interface{}{"max_tokens": 100}
 }
 
+func TestExtractCacheUsageFieldsFromMap_FindsNestedCacheFields(t *testing.T) {
+	var payload struct {
+		Usage map[string]interface{} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(`{
+		"usage": {
+			"prompt_tokens": 1200,
+			"prompt_tokens_details": {"cached_tokens": 800},
+			"cache_creation_input_tokens": 10
+		}
+	}`), &payload); err != nil {
+		t.Fatalf("json.Unmarshal error: %v", err)
+	}
+
+	fields := extractCacheUsageFieldsFromMap(payload.Usage)
+
+	if got, ok := fields["usage.prompt_tokens_details.cached_tokens"].(float64); !ok || got != 800 {
+		t.Fatalf("cached_tokens = %#v, want 800", fields["usage.prompt_tokens_details.cached_tokens"])
+	}
+	if got, ok := fields["usage.cache_creation_input_tokens"].(float64); !ok || got != 10 {
+		t.Fatalf("cache_creation_input_tokens = %#v, want 10", fields["usage.cache_creation_input_tokens"])
+	}
+	if _, ok := fields["usage.prompt_tokens"]; ok {
+		t.Fatalf("unexpected non-cache field captured: usage.prompt_tokens=%#v", fields["usage.prompt_tokens"])
+	}
+}
+
+func TestExtractCacheUsageFieldsFromMap_NoCacheFields(t *testing.T) {
+	usage := map[string]interface{}{
+		"prompt_tokens":     100,
+		"completion_tokens": 30,
+		"total_tokens":      130,
+	}
+	fields := extractCacheUsageFieldsFromMap(usage)
+	if len(fields) != 0 {
+		t.Fatalf("expected no cache fields, got %+v", fields)
+	}
+}
+
+func TestPromptAndCachedTokensFromUsageMap_OpenAIStyle(t *testing.T) {
+	usage := map[string]interface{}{
+		"prompt_tokens": 1200.0,
+		"prompt_tokens_details": map[string]interface{}{
+			"cached_tokens": 800.0,
+		},
+	}
+	cacheFields := extractCacheUsageFieldsFromMap(usage)
+
+	promptTokens, ok := promptTokensFromUsageMap(usage)
+	if !ok || promptTokens != 1200 {
+		t.Fatalf("promptTokens = %v, %v; want 1200, true", promptTokens, ok)
+	}
+	cachedTokens, ok := cachedTokensFromUsageMap(usage, cacheFields)
+	if !ok || cachedTokens != 800 {
+		t.Fatalf("cachedTokens = %v, %v; want 800, true", cachedTokens, ok)
+	}
+	ratio := roundTo(cachedTokens/promptTokens, 4)
+	if ratio != 0.6667 {
+		t.Fatalf("ratio = %v, want 0.6667", ratio)
+	}
+}
+
+func TestPromptAndCachedTokensFromUsageMap_AnthropicStyle(t *testing.T) {
+	usage := map[string]interface{}{
+		"input_tokens":            1000.0,
+		"cache_read_input_tokens": 700.0,
+	}
+	cacheFields := extractCacheUsageFieldsFromMap(usage)
+
+	promptTokens, ok := promptTokensFromUsageMap(usage)
+	if !ok || promptTokens != 1000 {
+		t.Fatalf("promptTokens = %v, %v; want 1000, true", promptTokens, ok)
+	}
+	cachedTokens, ok := cachedTokensFromUsageMap(usage, cacheFields)
+	if !ok || cachedTokens != 700 {
+		t.Fatalf("cachedTokens = %v, %v; want 700, true", cachedTokens, ok)
+	}
+}
+
 // newTestProvider creates an HTTPProvider with near-zero backoff for fast tests.
 func newTestProvider(apiKey, apiBase string) *HTTPProvider {
 	p := NewHTTPProvider(apiKey, apiBase)

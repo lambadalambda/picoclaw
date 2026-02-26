@@ -147,6 +147,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	if chatTemperature == 0 {
 		chatTemperature = 0.7
 	}
+	anthropicCacheTTL := strings.TrimSpace(cfg.Agents.Defaults.AnthropicCacheTTL)
 
 	modelCaps := providers.ModelCapabilitiesFor(cfg.Agents.Defaults.Model)
 
@@ -182,13 +183,23 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	}
 
 	return &AgentLoop{
-		bus:               msgBus,
-		provider:          provider,
-		workspace:         workspace,
-		model:             cfg.Agents.Defaults.Model,
-		contextWindow:     cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
-		chatOptions:       providers.ChatOptions{MaxTokens: 8192, Temperature: chatTemperature},
-		compactOptions:    providers.ChatOptions{MaxTokens: 1024, Temperature: 0.3},
+		bus:           msgBus,
+		provider:      provider,
+		workspace:     workspace,
+		model:         cfg.Agents.Defaults.Model,
+		contextWindow: cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
+		chatOptions: providers.ChatOptions{
+			MaxTokens:         8192,
+			Temperature:       chatTemperature,
+			AnthropicCache:    cfg.Agents.Defaults.AnthropicCache,
+			AnthropicCacheTTL: anthropicCacheTTL,
+		},
+		compactOptions: providers.ChatOptions{
+			MaxTokens:         1024,
+			Temperature:       0.3,
+			AnthropicCache:    cfg.Agents.Defaults.AnthropicCache,
+			AnthropicCacheTTL: anthropicCacheTTL,
+		},
 		messageBudget:     messageBudget,
 		maxIterations:     cfg.Agents.Defaults.MaxToolIterations,
 		llmTimeout:        time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds) * time.Second,
@@ -298,14 +309,25 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 
 	// Add message preview to log
 	preview := utils.Truncate(msg.Content, 80)
+	logFields := map[string]interface{}{
+		"channel":     msg.Channel,
+		"chat_id":     msg.ChatID,
+		"sender_id":   msg.SenderID,
+		"session_key": msg.SessionKey,
+		"trace_id":    traceID,
+	}
+	if bridgeToGateway := strings.TrimSpace(msg.Metadata["bridge_to_gateway_ms"]); bridgeToGateway != "" {
+		logFields["bridge_to_gateway_ms"] = bridgeToGateway
+	}
+	if sentToBridge := strings.TrimSpace(msg.Metadata["dc_sent_to_bridge_ms"]); sentToBridge != "" {
+		logFields["dc_sent_to_bridge_ms"] = sentToBridge
+	}
+	if transportMillis := strings.TrimSpace(msg.Metadata["dc_transport_ms"]); transportMillis != "" {
+		logFields["dc_transport_ms"] = transportMillis
+	}
+
 	logger.InfoCF("agent", fmt.Sprintf("Processing message from %s:%s: %s", msg.Channel, msg.SenderID, preview),
-		map[string]interface{}{
-			"channel":     msg.Channel,
-			"chat_id":     msg.ChatID,
-			"sender_id":   msg.SenderID,
-			"session_key": msg.SessionKey,
-			"trace_id":    traceID,
-		})
+		logFields)
 
 	// Route system messages to processSystemMessage
 	if msg.Channel == "system" {

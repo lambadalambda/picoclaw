@@ -10,6 +10,7 @@ import (
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/sipeed/picoclaw/pkg/auth"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 type CodexProvider struct {
@@ -213,12 +214,37 @@ func parseCodexResponse(resp *responses.Response) *LLMResponse {
 		}
 	}
 
+	logCodexCacheUsage(resp)
+
 	return &LLMResponse{
 		Content:      content.String(),
 		ToolCalls:    toolCalls,
 		FinishReason: finishReason,
 		Usage:        usage,
 	}
+}
+
+func logCodexCacheUsage(resp *responses.Response) {
+	if resp == nil {
+		return
+	}
+
+	hasCacheInfo := resp.Usage.JSON.InputTokensDetails.Valid() || resp.Usage.InputTokensDetails.CachedTokens > 0
+	if !hasCacheInfo {
+		return
+	}
+
+	fields := map[string]interface{}{
+		"provider": "codex",
+		"model":    resp.Model,
+		"usage.input_tokens_details.cached_tokens": resp.Usage.InputTokensDetails.CachedTokens,
+	}
+	if resp.Usage.InputTokens > 0 {
+		fields["usage.input_tokens"] = resp.Usage.InputTokens
+		fields["usage.cache_hit_ratio"] = roundTo(float64(resp.Usage.InputTokensDetails.CachedTokens)/float64(resp.Usage.InputTokens), 4)
+	}
+
+	logger.InfoCF("provider", "LLM cache usage reported", fields)
 }
 
 func createCodexTokenSource() func() (string, string, error) {

@@ -9,7 +9,10 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/sipeed/picoclaw/pkg/auth"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
+
+const anthropicPromptCachingBeta = "prompt-caching-2024-07-31"
 
 type ClaudeProvider struct {
 	client      *anthropic.Client
@@ -50,6 +53,11 @@ func oauthAnthropicBetaHeader(token string) string {
 func (p *ClaudeProvider) Chat(ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]interface{}) (*LLMResponse, error) {
 	var opts []option.RequestOption
 
+	cacheControl, err := parseAnthropicCacheControl(options)
+	if err != nil {
+		return nil, err
+	}
+
 	tok := strings.TrimSpace(p.token)
 	if p.tokenSource != nil {
 		refreshed, err := p.tokenSource()
@@ -60,7 +68,7 @@ func (p *ClaudeProvider) Chat(ctx context.Context, messages []Message, tools []T
 	}
 	if tok != "" {
 		opts = append(opts, option.WithAuthToken(tok))
-		if beta := oauthAnthropicBetaHeader(tok); beta != "" {
+		if beta := buildAnthropicBetaHeader(tok, options, cacheControl != nil); beta != "" {
 			opts = append(opts, option.WithHeader("anthropic-beta", beta))
 		}
 	}
@@ -85,6 +93,10 @@ func (p *ClaudeProvider) GetDefaultModel() string {
 func buildClaudeParams(messages []Message, tools []ToolDefinition, model string, options map[string]interface{}) (anthropic.MessageNewParams, error) {
 	var system []anthropic.TextBlockParam
 	var anthropicMessages []anthropic.MessageParam
+	cacheControl, err := parseAnthropicCacheControl(options)
+	if err != nil {
+		return anthropic.MessageNewParams{}, err
+	}
 	toolResultIsError := func(content string) bool {
 		content = strings.TrimSpace(content)
 		if content == "" {
@@ -97,30 +109,34 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
-			system = append(system, anthropic.TextBlockParam{Text: msg.Content})
+			tb := anthropic.TextBlockParam{Text: msg.Content}
+			system = append(system, tb)
 		case "user":
 			if msg.ToolCallID != "" {
 				anthropicMessages = append(anthropicMessages,
 					anthropic.NewUserMessage(anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, toolResultIsError(msg.Content))),
 				)
 			} else {
+				textBlock := anthropic.NewTextBlock(msg.Content)
 				anthropicMessages = append(anthropicMessages,
-					anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content)),
+					anthropic.NewUserMessage(textBlock),
 				)
 			}
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
 				var blocks []anthropic.ContentBlockParamUnion
 				if msg.Content != "" {
-					blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+					textBlock := anthropic.NewTextBlock(msg.Content)
+					blocks = append(blocks, textBlock)
 				}
 				for _, tc := range msg.ToolCalls {
 					blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, tc.Arguments, tc.Name))
 				}
 				anthropicMessages = append(anthropicMessages, anthropic.NewAssistantMessage(blocks...))
 			} else {
+				textBlock := anthropic.NewTextBlock(msg.Content)
 				anthropicMessages = append(anthropicMessages,
-					anthropic.NewAssistantMessage(anthropic.NewTextBlock(msg.Content)),
+					anthropic.NewAssistantMessage(textBlock),
 				)
 			}
 		case "tool":
@@ -153,7 +169,100 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 		params.Tools = translateToolsForClaude(tools)
 	}
 
+	if cacheControl != nil {
+		extra := map[string]interface{}{
+			"type": string(cacheControl.Type),
+		}
+		if cacheControl.TTL != "" {
+			extra["ttl"] = string(cacheControl.TTL)
+		}
+		params.SetExtraFields(map[string]interface{}{
+			"cache_control": extra,
+		})
+	}
+
 	return params, nil
+}
+
+func parseAnthropicCacheControl(options map[string]interface{}) (*anthropic.CacheControlEphemeralParam, error) {
+	if len(options) == 0 {
+		return nil, nil
+	}
+
+	enabled := false
+	if rawEnabled, ok := options["anthropic_cache"]; ok {
+		v, ok := rawEnabled.(bool)
+		if !ok {
+			return nil, fmt.Errorf("anthropic_cache must be a bool")
+		}
+		enabled = v
+	}
+
+	var ttl string
+	if rawTTL, ok := options["anthropic_cache_ttl"]; ok {
+		v, ok := rawTTL.(string)
+		if !ok {
+			return nil, fmt.Errorf("anthropic_cache_ttl must be a string")
+		}
+		ttl = strings.TrimSpace(v)
+		if ttl != "" {
+			enabled = true
+		}
+	}
+
+	if !enabled {
+		return nil, nil
+	}
+
+	cacheControl := anthropic.NewCacheControlEphemeralParam()
+	switch ttl {
+	case "", "5m":
+		if ttl == "5m" {
+			cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
+		}
+	case "1h":
+		cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
+	default:
+		return nil, fmt.Errorf("unsupported anthropic_cache_ttl %q (expected \"5m\" or \"1h\")", ttl)
+	}
+
+	return &cacheControl, nil
+}
+
+func buildAnthropicBetaHeader(token string, options map[string]interface{}, cacheEnabled bool) string {
+	betaValues := []string{oauthAnthropicBetaHeader(token)}
+	if cacheEnabled {
+		betaValues = append(betaValues, anthropicPromptCachingBeta)
+	}
+
+	if rawBeta, ok := options["anthropic_beta"]; ok {
+		if beta, ok := rawBeta.(string); ok {
+			betaValues = append(betaValues, beta)
+		}
+	}
+
+	return mergeAnthropicBetaHeaders(betaValues...)
+}
+
+func mergeAnthropicBetaHeaders(values ...string) string {
+	seen := make(map[string]struct{})
+	merged := make([]string, 0, len(values))
+
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if _, ok := seen[part]; ok {
+				continue
+			}
+			seen[part] = struct{}{}
+			merged = append(merged, part)
+		}
+	}
+
+	return strings.Join(merged, ",")
 }
 
 func translateToolsForClaude(tools []ToolDefinition) []anthropic.ToolUnionParam {
@@ -238,6 +347,8 @@ func parseClaudeResponse(resp *anthropic.Message) *LLMResponse {
 		finishReason = "stop"
 	}
 
+	logClaudeCacheUsage(resp)
+
 	return &LLMResponse{
 		Content:      content,
 		ToolCalls:    toolCalls,
@@ -248,6 +359,48 @@ func parseClaudeResponse(resp *anthropic.Message) *LLMResponse {
 			TotalTokens:      int(resp.Usage.InputTokens + resp.Usage.OutputTokens),
 		},
 	}
+}
+
+func logClaudeCacheUsage(resp *anthropic.Message) {
+	if resp == nil {
+		return
+	}
+
+	hasCacheInfo := resp.Usage.JSON.CacheCreation.Valid() ||
+		resp.Usage.JSON.CacheCreationInputTokens.Valid() ||
+		resp.Usage.JSON.CacheReadInputTokens.Valid() ||
+		resp.Usage.CacheCreationInputTokens > 0 ||
+		resp.Usage.CacheReadInputTokens > 0 ||
+		resp.Usage.CacheCreation.Ephemeral5mInputTokens > 0 ||
+		resp.Usage.CacheCreation.Ephemeral1hInputTokens > 0
+	if !hasCacheInfo {
+		return
+	}
+
+	fields := map[string]interface{}{
+		"provider":                          "anthropic",
+		"model":                             string(resp.Model),
+		"usage.cache_creation_input_tokens": resp.Usage.CacheCreationInputTokens,
+		"usage.cache_read_input_tokens":     resp.Usage.CacheReadInputTokens,
+		"usage.cache_creation.ephemeral_5m_input_tokens": resp.Usage.CacheCreation.Ephemeral5mInputTokens,
+		"usage.cache_creation.ephemeral_1h_input_tokens": resp.Usage.CacheCreation.Ephemeral1hInputTokens,
+	}
+	if resp.Usage.InputTokens > 0 {
+		fields["usage.input_tokens"] = resp.Usage.InputTokens
+	}
+	if ratio, ok := anthropicCacheHitRatio(resp.Usage.InputTokens, resp.Usage.CacheReadInputTokens); ok {
+		fields["usage.cache_hit_ratio"] = ratio
+	}
+
+	logger.InfoCF("provider", "LLM cache usage reported", fields)
+}
+
+func anthropicCacheHitRatio(inputTokens, cacheReadInputTokens int64) (float64, bool) {
+	totalInput := inputTokens + cacheReadInputTokens
+	if totalInput <= 0 {
+		return 0, false
+	}
+	return roundTo(float64(cacheReadInputTokens)/float64(totalInput), 4), true
 }
 
 func createClaudeTokenSource() func() (string, error) {

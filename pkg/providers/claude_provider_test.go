@@ -134,6 +134,117 @@ func TestBuildClaudeParams_WithTools(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeParams_AnthropicCacheControlTopLevel(t *testing.T) {
+	messages := []Message{
+		{Role: "system", Content: "You are helpful"},
+		{Role: "user", Content: "Hi"},
+	}
+
+	params, err := buildClaudeParams(messages, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
+		"anthropic_cache_ttl": "1h",
+	})
+	if err != nil {
+		t.Fatalf("buildClaudeParams() error: %v", err)
+	}
+
+	var payload map[string]interface{}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("json.Marshal(params) error: %v", err)
+	}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("json.Unmarshal payload error: %v", err)
+	}
+
+	cacheControl, ok := payload["cache_control"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("cache_control = %#v, want object", payload["cache_control"])
+	}
+	if got, ok := cacheControl["type"].(string); !ok || got != "ephemeral" {
+		t.Fatalf("cache_control.type = %#v, want ephemeral", cacheControl["type"])
+	}
+	if got, ok := cacheControl["ttl"].(string); !ok || got != "1h" {
+		t.Fatalf("cache_control.ttl = %#v, want 1h", cacheControl["ttl"])
+	}
+
+	if systems, ok := payload["system"].([]interface{}); ok && len(systems) > 0 {
+		if first, ok := systems[0].(map[string]interface{}); ok {
+			if _, has := first["cache_control"]; has {
+				t.Fatalf("system[0].cache_control should be omitted in automatic mode")
+			}
+		}
+	}
+	if msgs, ok := payload["messages"].([]interface{}); ok && len(msgs) > 0 {
+		if firstMsg, ok := msgs[0].(map[string]interface{}); ok {
+			if content, ok := firstMsg["content"].([]interface{}); ok && len(content) > 0 {
+				if firstBlock, ok := content[0].(map[string]interface{}); ok {
+					if _, has := firstBlock["cache_control"]; has {
+						t.Fatalf("messages[0].content[0].cache_control should be omitted in automatic mode")
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestBuildClaudeParams_AnthropicCacheControlRejectsInvalidTTL(t *testing.T) {
+	_, err := buildClaudeParams([]Message{{Role: "user", Content: "Hi"}}, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
+		"anthropic_cache_ttl": "2h",
+	})
+	if err == nil {
+		t.Fatal("buildClaudeParams() error = nil, want invalid anthropic_cache_ttl error")
+	}
+	if !strings.Contains(err.Error(), "anthropic_cache_ttl") {
+		t.Fatalf("error = %q, want mention of anthropic_cache_ttl", err)
+	}
+}
+
+func TestBuildClaudeParams_AnthropicCacheControlTopLevel_DefaultTTL(t *testing.T) {
+	params, err := buildClaudeParams([]Message{{Role: "user", Content: "Hi"}}, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
+		"anthropic_cache": true,
+	})
+	if err != nil {
+		t.Fatalf("buildClaudeParams() error: %v", err)
+	}
+
+	var payload map[string]interface{}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("json.Marshal(params) error: %v", err)
+	}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("json.Unmarshal payload error: %v", err)
+	}
+
+	cacheControl, ok := payload["cache_control"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("cache_control = %#v, want object", payload["cache_control"])
+	}
+	if got, ok := cacheControl["type"].(string); !ok || got != "ephemeral" {
+		t.Fatalf("cache_control.type = %#v, want ephemeral", cacheControl["type"])
+	}
+	if _, has := cacheControl["ttl"]; has {
+		t.Fatalf("cache_control.ttl should be omitted when using default TTL")
+	}
+}
+
+func TestAnthropicCacheHitRatio_ComputesAgainstTotalInput(t *testing.T) {
+	ratio, ok := anthropicCacheHitRatio(1153, 39349)
+	if !ok {
+		t.Fatal("anthropicCacheHitRatio() ok = false, want true")
+	}
+	if ratio != 0.9715 {
+		t.Fatalf("anthropicCacheHitRatio() = %v, want 0.9715", ratio)
+	}
+}
+
+func TestAnthropicCacheHitRatio_HandlesZeroTotals(t *testing.T) {
+	_, ok := anthropicCacheHitRatio(0, 0)
+	if ok {
+		t.Fatal("anthropicCacheHitRatio() ok = true, want false")
+	}
+}
+
 func TestTranslateToolsForClaude_RequiredStringSlice(t *testing.T) {
 	tools := []ToolDefinition{
 		{
@@ -331,6 +442,71 @@ func TestClaudeProvider_AddsOAuthBetaHeaderForOAuthToken(t *testing.T) {
 	provider.client = createAnthropicTestClient(server.URL, "ignored")
 
 	resp, err := provider.Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "claude-opus-4-6", map[string]interface{}{"max_tokens": 8})
+	if err != nil {
+		t.Fatalf("Chat() error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("Content = %q, want ok", resp.Content)
+	}
+}
+
+func TestClaudeProvider_AddsPromptCachingBetaHeaderWhenCachingEnabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		beta := r.Header.Get("Anthropic-Beta")
+		if !strings.Contains(beta, "prompt-caching-2024-07-31") {
+			http.Error(w, "missing prompt caching beta", http.StatusBadRequest)
+			return
+		}
+
+		var reqBody map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		cacheControl, ok := reqBody["cache_control"].(map[string]interface{})
+		if !ok {
+			http.Error(w, "missing top-level cache_control", http.StatusBadRequest)
+			return
+		}
+		if got, _ := cacheControl["type"].(string); got != "ephemeral" {
+			http.Error(w, "invalid top-level cache_control.type", http.StatusBadRequest)
+			return
+		}
+
+		resp := map[string]interface{}{
+			"id":          "msg_test",
+			"type":        "message",
+			"role":        "assistant",
+			"model":       "claude-sonnet-4-5-20250929",
+			"stop_reason": "end_turn",
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "ok"},
+			},
+			"usage": map[string]interface{}{
+				"input_tokens":  1,
+				"output_tokens": 1,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	provider := NewClaudeProvider("test-token")
+	provider.client = createAnthropicTestClient(server.URL, "test-token")
+
+	resp, err := provider.Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{
+		"max_tokens":      8,
+		"anthropic_cache": true,
+	})
 	if err != nil {
 		t.Fatalf("Chat() error: %v", err)
 	}

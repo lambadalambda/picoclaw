@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -414,6 +415,8 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
+	logHTTPProviderCacheUsage(body)
+
 	if len(apiResponse.Choices) == 0 {
 		logger.WarnCF("provider", "LLM returned 0 choices",
 			map[string]interface{}{
@@ -482,6 +485,140 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 	}, nil
 }
 
+func logHTTPProviderCacheUsage(body []byte) {
+	var payload struct {
+		Model string                 `json:"model"`
+		Usage map[string]interface{} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return
+	}
+	if len(payload.Usage) == 0 {
+		return
+	}
+
+	cacheFields := extractCacheUsageFieldsFromMap(payload.Usage)
+	if len(cacheFields) == 0 {
+		return
+	}
+
+	fields := map[string]interface{}{
+		"provider": "openai-compatible",
+	}
+	if payload.Model != "" {
+		fields["model"] = payload.Model
+	}
+	for k, v := range cacheFields {
+		fields[k] = v
+	}
+
+	if promptTokens, ok := promptTokensFromUsageMap(payload.Usage); ok && promptTokens > 0 {
+		fields["usage.prompt_tokens"] = promptTokens
+		if cachedTokens, ok := cachedTokensFromUsageMap(payload.Usage, cacheFields); ok {
+			fields["usage.cache_hit_ratio"] = roundTo(cachedTokens/promptTokens, 4)
+		}
+	}
+
+	logger.InfoCF("provider", "LLM cache usage reported", fields)
+}
+
+func extractCacheUsageFieldsFromMap(usage map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{})
+	collectCacheUsageFields("usage", usage, out)
+	return out
+}
+
+func collectCacheUsageFields(path string, value interface{}, out map[string]interface{}) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for key, child := range v {
+			collectCacheUsageFields(path+"."+key, child, out)
+		}
+	case []interface{}:
+		for i, child := range v {
+			collectCacheUsageFields(fmt.Sprintf("%s[%d]", path, i), child, out)
+		}
+	default:
+		if strings.Contains(strings.ToLower(path), "cache") {
+			out[path] = v
+		}
+	}
+}
+
+func promptTokensFromUsageMap(usage map[string]interface{}) (float64, bool) {
+	if v, ok := toFloat64(usage["prompt_tokens"]); ok {
+		return v, true
+	}
+	if v, ok := toFloat64(usage["input_tokens"]); ok {
+		return v, true
+	}
+	return 0, false
+}
+
+func cachedTokensFromUsageMap(usage map[string]interface{}, cacheFields map[string]interface{}) (float64, bool) {
+	if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
+		if v, ok := toFloat64(details["cached_tokens"]); ok {
+			return v, true
+		}
+	}
+	if details, ok := usage["input_tokens_details"].(map[string]interface{}); ok {
+		if v, ok := toFloat64(details["cached_tokens"]); ok {
+			return v, true
+		}
+	}
+	if v, ok := toFloat64(usage["cache_read_input_tokens"]); ok {
+		return v, true
+	}
+	if v, ok := toFloat64(usage["cached_tokens"]); ok {
+		return v, true
+	}
+	for key, value := range cacheFields {
+		if strings.HasSuffix(key, ".cached_tokens") {
+			if v, ok := toFloat64(value); ok {
+				return v, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func toFloat64(v interface{}) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case float32:
+		return float64(x), true
+	case int:
+		return float64(x), true
+	case int32:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case uint:
+		return float64(x), true
+	case uint32:
+		return float64(x), true
+	case uint64:
+		return float64(x), true
+	case json.Number:
+		f, err := x.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	default:
+		return 0, false
+	}
+}
+
+func roundTo(value float64, digits int) float64 {
+	if digits < 0 {
+		return value
+	}
+	factor := math.Pow10(digits)
+	return math.Round(value*factor) / factor
+}
+
 func (p *HTTPProvider) GetDefaultModel() string {
 	return ""
 }
@@ -509,7 +646,54 @@ func createCodexAuthProvider() (LLMProvider, error) {
 }
 
 func CreateProvider(cfg *config.Config) (LLMProvider, error) {
-	model := cfg.Agents.Defaults.Model
+	primaryModel := strings.TrimSpace(cfg.Agents.Defaults.Model)
+	if primaryModel == "" {
+		return nil, fmt.Errorf("agents.defaults.model must not be empty")
+	}
+
+	primaryProvider, err := createProviderForModel(cfg, primaryModel)
+	if err != nil {
+		return nil, err
+	}
+
+	fallbackModels := normalizeFallbackModels(primaryModel, cfg.Agents.Defaults.FallbackModels)
+	if len(fallbackModels) == 0 {
+		return primaryProvider, nil
+	}
+
+	candidates := []fallbackCandidate{{model: primaryModel, provider: primaryProvider}}
+	for _, fallbackModel := range fallbackModels {
+		fallbackProvider, err := createProviderForModel(cfg, fallbackModel)
+		if err != nil {
+			logger.WarnCF("provider", "Skipping unavailable fallback model",
+				map[string]interface{}{
+					"model": fallbackModel,
+					"error": err.Error(),
+				})
+			continue
+		}
+		candidates = append(candidates, fallbackCandidate{model: fallbackModel, provider: fallbackProvider})
+	}
+
+	if len(candidates) == 1 {
+		return primaryProvider, nil
+	}
+
+	logger.InfoCF("provider", "Model fallback chain enabled",
+		map[string]interface{}{
+			"primary_model":   primaryModel,
+			"fallback_models": fallbackModels,
+			"count":           len(candidates),
+		})
+
+	return newFallbackProvider(primaryModel, candidates), nil
+}
+
+func createProviderForModel(cfg *config.Config, model string) (LLMProvider, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil, fmt.Errorf("model must not be empty")
+	}
 
 	var apiKey, apiBase string
 	var routing map[string]interface{}

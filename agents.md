@@ -37,3 +37,10 @@ Rules and conventions for AI agents (and humans) working on this codebase.
 - The Docker setup uses a bind mount at `./picoclaw-home/` for the picoclaw home directory, so config can be edited from the host.
 - The entrypoint script patches `config.json` with `jq` from environment variables because the env tag templates in `ProviderConfig` don't actually work with `caarlos0/env`.
 - Build with `docker compose build`, run with `docker compose up`.
+
+## Remote deploy helper
+
+- Use `scripts/deploy-remote.sh` to deploy the gateway binary to the remote host (`alice@100.79.8.81` by default).
+- The script builds `./cmd/picoclaw` for `linux/amd64`, uploads to `/home/alice/.local/bin/picoclaw`, restarts `/home/alice/.config/runit/service/picoclaw-gateway`, and tails logs.
+- If `scripts/deltachat_bridge.py` changed, deploy it in the same run with `scripts/deploy-remote.sh --copy-bridge`.
+- Useful flags: `--skip-build`, `--skip-restart`, `--no-logs`, `--log-lines <n>`, and `--remote <user@host>`.

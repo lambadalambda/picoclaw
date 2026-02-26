@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -117,7 +118,8 @@ func (r *ToolRegistry) GetDefinitions() []map[string]interface{} {
 	defer r.mu.RUnlock()
 
 	definitions := make([]map[string]interface{}, 0, len(r.tools))
-	for _, tool := range r.tools {
+	for _, name := range sortedKeys(r.tools) {
+		tool := r.tools[name]
 		definitions = append(definitions, ToolToSchema(tool))
 	}
 	return definitions
@@ -157,11 +159,7 @@ func (r *ToolRegistry) List() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	names := make([]string, 0, len(r.tools))
-	for name := range r.tools {
-		names = append(names, name)
-	}
-	return names
+	return sortedKeys(r.tools)
 }
 
 // Count returns the number of registered tools.
@@ -191,10 +189,20 @@ func (r *ToolRegistry) GetSummaries() []string {
 	defer r.mu.RUnlock()
 
 	summaries := make([]string, 0, len(r.tools))
-	for _, tool := range r.tools {
+	for _, name := range sortedKeys(r.tools) {
+		tool := r.tools[name]
 		summaries = append(summaries, fmt.Sprintf("- `%s` - %s", tool.Name(), tool.Description()))
 	}
 	return summaries
+}
+
+func sortedKeys[T any](m map[string]T) []string {
+	keys := make([]string, 0, len(m))
+	for name := range m {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (r *ToolRegistry) checkPolicy(name string) error {

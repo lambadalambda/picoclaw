@@ -14,6 +14,7 @@ Base template:
 | Key | Purpose |
 |---|---|
 | `agents.defaults.model` | LLM model name |
+| `agents.defaults.fallback_models` | Optional ordered fallback model list used when the primary model is unavailable/rate-limited |
 | `agents.defaults.max_tokens` | Context window estimate used for compaction heuristics |
 | `agents.defaults.max_tool_iterations` | Tool loop cap per turn |
 | `agents.defaults.llm_timeout_seconds` | Per-LLM-call timeout |
@@ -30,6 +31,28 @@ These optional limits prevent oversized requests to providers:
 - `agents.defaults.request_max_tool_message_chars`
 
 Budgeting is disabled by default. Set one or more values above `0` to enable it.
+
+## Model Fallbacks
+
+Set `agents.defaults.fallback_models` to an ordered list of model names.
+
+- PicoClaw tries the primary `agents.defaults.model` first.
+- If the call fails with model availability errors (for example: 429/503/model unavailable), it automatically retries with the next fallback model.
+- Fallbacks can cross providers (for example Claude -> GLM), as long as credentials for the fallback model's provider are configured.
+- If a fallback model is not configured correctly, PicoClaw skips it and continues with remaining fallbacks.
+
+## Prompt Caching
+
+Anthropic cache controls can be set in agent defaults:
+
+- `agents.defaults.anthropic_cache` (boolean)
+- `agents.defaults.anthropic_cache_ttl` (`"5m"` or `"1h"`)
+
+Notes:
+
+- Anthropic cache controls are applied on Claude provider calls.
+- Z.AI/GLM context caching is automatic (no explicit request toggle required).
+- When a provider response includes cache-usage fields, PicoClaw logs them at `INFO` level.
 
 ## Subagent Retention
 

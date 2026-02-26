@@ -49,7 +49,7 @@ func (cb *ContextBuilder) SetToolsRegistry(registry *tools.ToolRegistry) {
 }
 
 func (cb *ContextBuilder) getIdentity() string {
-	now := time.Now().Format("2006-01-02 15:04 (Monday)")
+	today := time.Now().Format("2006-01-02 (Monday)")
 	workspacePath, _ := filepath.Abs(filepath.Join(cb.workspace))
 	runtime := fmt.Sprintf("%s %s, Go %s", runtime.GOOS, runtime.GOARCH, runtime.Version())
 
@@ -60,7 +60,7 @@ func (cb *ContextBuilder) getIdentity() string {
 
 You are picoclaw, a helpful AI assistant.
 
-## Current Time
+## Current Date
 %s
 
 ## Runtime
@@ -88,7 +88,7 @@ Your workspace is at: %s
 5. **Delegate with spawn** - When a task involves a skill (like image generation, complex builds, or multi-step research), use the spawn tool to delegate it to a background subagent. You can keep talking to the user while the subagent works. The subagent will report back when done.
 
 6. **Compaction recovery** - If conversation history has been compacted and you need exact prior tool calls/results, use the session_history tool to retrieve the missing context from the on-disk transcript.`,
-		now, runtime, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
+		today, runtime, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
 }
 
 func (cb *ContextBuilder) buildToolsSection() string {
@@ -173,6 +173,11 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 	// Add Current Session info if provided
 	if channel != "" && chatID != "" {
 		systemPrompt += fmt.Sprintf("\n\n## Current Session\nChannel: %s\nChat ID: %s", channel, chatID)
+
+		// Include delivery constraints so the agent can format responses for the target channel.
+		if constraints := deliveryConstraintsForChannel(channel); constraints != "" {
+			systemPrompt += "\n\n## Delivery Constraints\n" + constraints
+		}
 	}
 
 	// Log system prompt summary for debugging (debug mode only)
@@ -222,6 +227,17 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 	})
 
 	return messages
+}
+
+func deliveryConstraintsForChannel(channel string) string {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "telegram":
+		return "- Telegram messages are limited to 4096 characters. Keep replies under ~3500 characters when possible, or structure the response into short sections so it can be safely split."
+	case "discord":
+		return "- Discord messages are limited to 2000 characters. Keep replies concise, or split long answers into smaller chunks."
+	default:
+		return ""
+	}
 }
 
 func (cb *ContextBuilder) AddToolResult(messages []providers.Message, toolCallID, toolName, result string) []providers.Message {

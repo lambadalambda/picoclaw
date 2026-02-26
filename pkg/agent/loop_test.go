@@ -976,3 +976,26 @@ func TestMessageBudgetFromDefaults_DefaultsDisabled(t *testing.T) {
 		t.Fatalf("expected request budget disabled by default, got %+v", b)
 	}
 }
+
+func TestNewAgentLoop_PropagatesAnthropicCacheDefaults(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.AnthropicCache = true
+	cfg.Agents.Defaults.AnthropicCacheTTL = "1h"
+
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	defer al.bus.Close()
+
+	if !al.chatOptions.AnthropicCache {
+		t.Fatal("chatOptions.AnthropicCache = false, want true")
+	}
+	if al.chatOptions.AnthropicCacheTTL != "1h" {
+		t.Fatalf("chatOptions.AnthropicCacheTTL = %q, want 1h", al.chatOptions.AnthropicCacheTTL)
+	}
+	if !al.compactOptions.AnthropicCache {
+		t.Fatal("compactOptions.AnthropicCache = false, want true")
+	}
+	if al.compactOptions.AnthropicCacheTTL != "1h" {
+		t.Fatalf("compactOptions.AnthropicCacheTTL = %q, want 1h", al.compactOptions.AnthropicCacheTTL)
+	}
+}
