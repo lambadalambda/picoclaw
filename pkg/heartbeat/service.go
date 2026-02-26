@@ -117,10 +117,10 @@ Current time: %s
 
 This is a background heartbeat run.
 
+- You may use any tools.
+- If there is something important to tell the user, send it using the message tool (including any media), then respond with exactly: HEARTBEAT_OK
 - If there is nothing actionable to tell the user, respond with exactly: HEARTBEAT_OK
-- If there is something important, write the message you want to send to the user.
-- Keep it short and concrete.
-- Do NOT call the message tool; your assistant response will be delivered automatically.
+- Keep actions short and concrete.
 
 %s
 `, now, notes)
