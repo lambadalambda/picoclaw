@@ -16,3 +16,17 @@ func TestBuildSystemPrompt_UsesCurrentDateHeading(t *testing.T) {
 		t.Fatalf("BuildSystemPrompt() should not include current time heading")
 	}
 }
+
+func TestBuildMessages_IncludesTelegramDeliveryConstraints(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+	msgs := cb.BuildMessages(nil, "", "hi", nil, "telegram", "123")
+	if len(msgs) == 0 {
+		t.Fatalf("BuildMessages returned no messages")
+	}
+	if msgs[0].Role != "system" {
+		t.Fatalf("expected first message to be system, got %q", msgs[0].Role)
+	}
+	if !strings.Contains(msgs[0].Content, "Telegram messages are limited to 4096 characters") {
+		t.Fatalf("expected system prompt to include Telegram delivery constraints")
+	}
+}

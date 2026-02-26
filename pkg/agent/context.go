@@ -173,6 +173,11 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 	// Add Current Session info if provided
 	if channel != "" && chatID != "" {
 		systemPrompt += fmt.Sprintf("\n\n## Current Session\nChannel: %s\nChat ID: %s", channel, chatID)
+
+		// Include delivery constraints so the agent can format responses for the target channel.
+		if constraints := deliveryConstraintsForChannel(channel); constraints != "" {
+			systemPrompt += "\n\n## Delivery Constraints\n" + constraints
+		}
 	}
 
 	// Log system prompt summary for debugging (debug mode only)
@@ -222,6 +227,17 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 	})
 
 	return messages
+}
+
+func deliveryConstraintsForChannel(channel string) string {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "telegram":
+		return "- Telegram messages are limited to 4096 characters. Keep replies under ~3500 characters when possible, or structure the response into short sections so it can be safely split."
+	case "discord":
+		return "- Discord messages are limited to 2000 characters. Keep replies concise, or split long answers into smaller chunks."
+	default:
+		return ""
+	}
 }
 
 func (cb *ContextBuilder) AddToolResult(messages []providers.Message, toolCallID, toolName, result string) []providers.Message {
