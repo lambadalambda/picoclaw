@@ -79,7 +79,7 @@ Your workspace is at: %s
 
 1. **ALWAYS use tools** - When you need to perform an action (schedule reminders, send messages, execute commands, etc.), you MUST call the appropriate tool. Do NOT just say you'll do it or pretend to do it.
 
-2. **Be helpful and accurate** - When using tools, briefly explain what you're doing.
+2. **Be helpful and accurate** - When using tools, include a short 'description' parameter (about 3-8 words) so progress echoing can show what you're doing.
 
 3. **Memory** - When remembering something, write to %s/memory/MEMORY.md
 

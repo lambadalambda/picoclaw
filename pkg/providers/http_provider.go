@@ -466,8 +466,9 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 			rawArgs = tc.Function.Arguments
 		}
 		toolCalls = append(toolCalls, ToolCall{
-			ID:   tc.ID,
-			Type: "function",
+			ID:          tc.ID,
+			Type:        "function",
+			Description: normalizeToolCallDescription(toolCallDescriptionFromArgs(arguments)),
 			Function: &FunctionCall{
 				Name:      name,
 				Arguments: rawArgs,

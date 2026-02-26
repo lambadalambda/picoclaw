@@ -246,6 +246,34 @@ func TestFormatToolCallSummary_Truncation(t *testing.T) {
 	}
 }
 
+func TestFormatToolCallSummary_IncludesDescriptionAndArgsSnippet(t *testing.T) {
+	tc := providers.ToolCall{
+		Name:        "exec",
+		Description: "Check repository status",
+		Arguments:   map[string]interface{}{"command": "git status -sb"},
+	}
+	got := formatToolCallSummary(tc)
+	want := "exec - Check repository status (git status -sb)"
+	if got != want {
+		t.Errorf("formatToolCallSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatToolCallSummary_UsesDescriptionArgumentWhenFieldMissing(t *testing.T) {
+	tc := providers.ToolCall{
+		Name: "web_fetch",
+		Arguments: map[string]interface{}{
+			"description": "Fetch release notes",
+			"url":         "https://example.com/releases/latest",
+		},
+	}
+	got := formatToolCallSummary(tc)
+	want := "web_fetch - Fetch release notes (https://example.com/releases/latest)"
+	if got != want {
+		t.Errorf("formatToolCallSummary() = %q, want %q", got, want)
+	}
+}
+
 func TestRedactSensitive_AuthHeader(t *testing.T) {
 	tests := []struct {
 		input    string

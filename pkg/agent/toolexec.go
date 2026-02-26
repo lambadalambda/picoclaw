@@ -45,12 +45,44 @@ var toolsToEcho = map[string]bool{
 }
 
 func formatToolCallSummary(tc providers.ToolCall) string {
+	description := redactSensitive(extractToolCallDescription(tc))
 	keyParam := extractKeyParam(tc.Name, tc.Arguments)
 	keyParam = redactSensitive(keyParam)
+
+	if description != "" && keyParam != "" {
+		return fmt.Sprintf("%s - %s (%s)", tc.Name, description, keyParam)
+	}
+	if description != "" {
+		return fmt.Sprintf("%s - %s", tc.Name, description)
+	}
 	if keyParam != "" {
 		return fmt.Sprintf("%s %s", tc.Name, keyParam)
 	}
 	return tc.Name
+}
+
+func extractToolCallDescription(tc providers.ToolCall) string {
+	description := strings.TrimSpace(tc.Description)
+	if description != "" {
+		return description
+	}
+
+	raw, ok := tc.Arguments["description"]
+	if !ok {
+		return ""
+	}
+	argDescription, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	argDescription = strings.TrimSpace(argDescription)
+	if argDescription == "" {
+		return ""
+	}
+	if len(argDescription) > 80 {
+		return argDescription[:77] + "..."
+	}
+	return argDescription
 }
 
 func extractKeyParam(toolName string, args map[string]interface{}) string {
@@ -81,11 +113,11 @@ func extractKeyParam(toolName string, args map[string]interface{}) string {
 			return url
 		}
 	case "spawn":
-		if desc, ok := args["description"].(string); ok {
-			if len(desc) > 50 {
-				return desc[:47] + "..."
+		if task, ok := args["task"].(string); ok {
+			if len(task) > 50 {
+				return task[:47] + "..."
 			}
-			return desc
+			return task
 		}
 	case "memory_store", "memory_search":
 		if content, ok := args["content"].(string); ok {
@@ -144,13 +176,6 @@ func (al *AgentLoop) executeToolsConcurrently(
 
 	al.maybeEchoToolCalls(toolCalls, opts.Channel, opts.ChatID)
 
-	var notifier *statusNotifier
-	if al.statusDelay > 0 && opts.Channel != "system" {
-		notifier = newStatusNotifier(al.bus, opts.Channel, opts.ChatID, al.statusDelay)
-		notifier.start(fmt.Sprintf("%d tools", len(toolCalls)))
-		notifier.setProgress(0, len(toolCalls))
-	}
-
 	results := al.tools.ExecuteToolCalls(ctx, toolCalls, tools.ExecuteToolCallsOptions{
 		Channel:      opts.Channel,
 		ChatID:       opts.ChatID,
@@ -160,9 +185,6 @@ func (al *AgentLoop) executeToolsConcurrently(
 		LogComponent: "agent",
 		Iteration:    iteration,
 		OnToolComplete: func(completed, total, index int, call providers.ToolCall, _ providers.Message) {
-			if notifier != nil {
-				notifier.setProgress(completed, total)
-			}
 			logger.DebugCF("agent", fmt.Sprintf("Tool completed: %s (%d/%d)", call.Name, completed, total),
 				map[string]interface{}{
 					"tool":      call.Name,
@@ -172,10 +194,6 @@ func (al *AgentLoop) executeToolsConcurrently(
 				})
 		},
 	})
-
-	if notifier != nil {
-		notifier.stop()
-	}
 
 	return results
 }

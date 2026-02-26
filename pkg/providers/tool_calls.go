@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+const toolCallDescriptionMaxChars = 80
+
 func canonicalizeMessages(messages []Message) []Message {
 	if len(messages) == 0 {
 		return messages
@@ -69,8 +71,14 @@ func canonicalizeToolCall(tc ToolCall) ToolCall {
 		}
 	}
 
+	description := normalizeToolCallDescription(tc.Description)
+	if description == "" {
+		description = normalizeToolCallDescription(toolCallDescriptionFromArgs(arguments))
+	}
+
 	normalized.Type = "function"
 	normalized.Name = name
+	normalized.Description = description
 	normalized.Arguments = arguments
 	normalized.Function = &FunctionCall{
 		Name:      name,
@@ -78,4 +86,30 @@ func canonicalizeToolCall(tc ToolCall) ToolCall {
 	}
 
 	return normalized
+}
+
+func toolCallDescriptionFromArgs(arguments map[string]interface{}) string {
+	if len(arguments) == 0 {
+		return ""
+	}
+	raw, ok := arguments["description"]
+	if !ok {
+		return ""
+	}
+	description, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	return description
+}
+
+func normalizeToolCallDescription(description string) string {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return ""
+	}
+	if len(description) > toolCallDescriptionMaxChars {
+		return description[:toolCallDescriptionMaxChars-3] + "..."
+	}
+	return description
 }

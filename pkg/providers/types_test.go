@@ -67,3 +67,25 @@ func TestCanonicalizeToolCalls_BackfillsArgumentsMapFromFunctionJSON(t *testing.
 		t.Fatalf("Arguments[path] = %q, want README.md", got)
 	}
 }
+
+func TestCanonicalizeToolCalls_PullsDescriptionFromArguments(t *testing.T) {
+	out := canonicalizeToolCalls([]ToolCall{
+		{
+			ID:   "call_3",
+			Name: "exec",
+			Arguments: map[string]interface{}{
+				"description": "Check git status",
+				"command":     "git status -sb",
+			},
+		},
+	})
+
+	if len(out) != 1 {
+		t.Fatalf("len(out) = %d, want 1", len(out))
+	}
+
+	tc := out[0]
+	if tc.Description != "Check git status" {
+		t.Fatalf("Description = %q, want %q", tc.Description, "Check git status")
+	}
+}

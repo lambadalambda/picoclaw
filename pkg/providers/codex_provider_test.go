@@ -182,6 +182,44 @@ func TestParseCodexResponse_FunctionCall(t *testing.T) {
 	}
 }
 
+func TestParseCodexResponse_ExtractsToolCallDescription(t *testing.T) {
+	respJSON := `{
+		"id": "resp_test",
+		"object": "response",
+		"status": "completed",
+		"output": [
+			{
+				"id": "fc_2",
+				"type": "function_call",
+				"call_id": "call_desc",
+				"name": "exec",
+				"arguments": "{\"description\":\"Check git status\",\"command\":\"git status -sb\"}",
+				"status": "completed"
+			}
+		],
+		"usage": {
+			"input_tokens": 10,
+			"output_tokens": 8,
+			"total_tokens": 18,
+			"input_tokens_details": {"cached_tokens": 0},
+			"output_tokens_details": {"reasoning_tokens": 0}
+		}
+	}`
+
+	var resp responses.Response
+	if err := json.Unmarshal([]byte(respJSON), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	result := parseCodexResponse(&resp)
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("len(ToolCalls) = %d, want 1", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Description != "Check git status" {
+		t.Fatalf("Description = %q, want %q", result.ToolCalls[0].Description, "Check git status")
+	}
+}
+
 func TestCodexProvider_ChatRoundTrip(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" {

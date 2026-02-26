@@ -91,6 +91,41 @@ func TestParseResponse_Contract_MalformedToolArgs(t *testing.T) {
 	}
 }
 
+func TestParseResponse_Contract_ExtractsToolCallDescription(t *testing.T) {
+	p := NewHTTPProvider("test-key", "https://example.com")
+	body := []byte(`{
+		"choices": [
+			{
+				"message": {
+					"content": "",
+					"tool_calls": [
+						{
+							"id": "call_9",
+							"type": "function",
+							"function": {
+								"name": "exec",
+								"arguments": "{\"description\":\"Check repository status\",\"command\":\"git status -sb\"}"
+							}
+						}
+					]
+				},
+				"finish_reason": "tool_calls"
+			}
+		]
+	}`)
+
+	resp, err := p.parseResponse(body)
+	if err != nil {
+		t.Fatalf("parseResponse error: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0].Description != "Check repository status" {
+		t.Fatalf("Description = %q, want %q", resp.ToolCalls[0].Description, "Check repository status")
+	}
+}
+
 func FuzzHTTPProviderParseResponse_NoPanic(f *testing.F) {
 	f.Add(string(readFixtureForFuzz("response_toolcalls_openai.json")))
 	f.Add(string(readFixtureForFuzz("response_toolcalls_legacy.json")))

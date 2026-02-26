@@ -330,9 +330,10 @@ func parseClaudeResponse(resp *anthropic.Message) *LLMResponse {
 				args = map[string]interface{}{"raw": string(tu.Input)}
 			}
 			toolCalls = append(toolCalls, ToolCall{
-				ID:        tu.ID,
-				Name:      tu.Name,
-				Arguments: args,
+				ID:          tu.ID,
+				Name:        tu.Name,
+				Description: normalizeToolCallDescription(toolCallDescriptionFromArgs(args)),
+				Arguments:   args,
 			})
 		}
 	}

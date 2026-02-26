@@ -47,7 +47,6 @@ type AgentLoop struct {
 	traceSeq          atomic.Uint64
 	running           atomic.Bool
 	summarizing       sync.Map            // Tracks which sessions are currently being summarized
-	statusDelay       time.Duration       // Delay before sending "still working" status updates (0 = disabled)
 	memoryStore       *memory.MemoryStore // Searchable memory DB (nil = disabled)
 	modelCapabilities providers.ModelCapabilities
 	visionAnalyzer    imageAnalyzer
@@ -209,7 +208,6 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		contextBuilder:    contextBuilder,
 		tools:             toolsRegistry,
 		summarizing:       sync.Map{},
-		statusDelay:       15 * time.Second,
 		memoryStore:       memoryDB,
 		modelCapabilities: modelCaps,
 		visionAnalyzer:    visionAnalyzer,

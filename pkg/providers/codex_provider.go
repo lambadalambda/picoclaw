@@ -190,9 +190,10 @@ func parseCodexResponse(resp *responses.Response) *LLMResponse {
 				args = map[string]interface{}{"raw": item.Arguments}
 			}
 			toolCalls = append(toolCalls, ToolCall{
-				ID:        item.CallID,
-				Name:      item.Name,
-				Arguments: args,
+				ID:          item.CallID,
+				Name:        item.Name,
+				Description: normalizeToolCallDescription(toolCallDescriptionFromArgs(args)),
+				Arguments:   args,
 			})
 		}
 	}
