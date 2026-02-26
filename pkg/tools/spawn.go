@@ -4,10 +4,59 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
+
+const (
+	MaxIterationsLimit  = 100
+	TimeoutSecondsLimit = 3600
+)
+
+func parseIntArg(args map[string]interface{}, key string) (int, bool) {
+	raw, exists := args[key]
+	if !exists || raw == nil {
+		return 0, false
+	}
+
+	switch v := raw.(type) {
+	case int:
+		return v, true
+	case int8:
+		return int(v), true
+	case int16:
+		return int(v), true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case uint:
+		return int(v), true
+	case uint8:
+		return int(v), true
+	case uint16:
+		return int(v), true
+	case uint32:
+		return int(v), true
+	case uint64:
+		return int(v), true
+	case float64:
+		if math.Trunc(v) != v {
+			return 0, false
+		}
+		return int(v), true
+	case float32:
+		if math.Trunc(float64(v)) != float64(v) {
+			return 0, false
+		}
+		return int(v), true
+	default:
+		return 0, false
+	}
+}
 
 type SpawnTool struct {
 	manager *SubagentManager
@@ -52,6 +101,22 @@ func (t *SpawnTool) Parameters() map[string]interface{} {
 				"type":        "boolean",
 				"description": "For action='list': include completed/failed/cancelled tasks (default false)",
 			},
+			"model": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional model override for the subagent (e.g., 'claude-sonnet-4', 'glm-4.7')",
+			},
+			"max_iterations": map[string]interface{}{
+				"type":        "integer",
+				"description": "Optional max tool iterations override for the subagent (default: 10)",
+			},
+			"llm_timeout_seconds": map[string]interface{}{
+				"type":        "integer",
+				"description": "Optional LLM timeout in seconds for the subagent (default: 120)",
+			},
+			"tool_timeout_seconds": map[string]interface{}{
+				"type":        "integer",
+				"description": "Optional tool execution timeout in seconds for the subagent (default: 60)",
+			},
 		},
 	}
 }
@@ -79,12 +144,50 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (s
 			originChatID = "direct"
 		}
 
+		opts := SpawnOptions{}
+		if model, ok := args["model"].(string); ok && strings.TrimSpace(model) != "" {
+			opts.Model = strings.TrimSpace(model)
+		}
+		if maxIter, ok := parseIntArg(args, "max_iterations"); ok && maxIter > 0 {
+			if maxIter > MaxIterationsLimit {
+				logger.WarnCF("spawn", "max_iterations clamped to upper limit",
+					map[string]interface{}{
+						"requested": maxIter,
+						"limit":     MaxIterationsLimit,
+					})
+				maxIter = MaxIterationsLimit
+			}
+			opts.MaxIterations = maxIter
+		}
+		if llmTimeout, ok := parseIntArg(args, "llm_timeout_seconds"); ok && llmTimeout > 0 {
+			if llmTimeout > TimeoutSecondsLimit {
+				logger.WarnCF("spawn", "llm_timeout_seconds clamped to upper limit",
+					map[string]interface{}{
+						"requested": llmTimeout,
+						"limit":     TimeoutSecondsLimit,
+					})
+				llmTimeout = TimeoutSecondsLimit
+			}
+			opts.LLMTimeoutSeconds = llmTimeout
+		}
+		if toolTimeout, ok := parseIntArg(args, "tool_timeout_seconds"); ok && toolTimeout > 0 {
+			if toolTimeout > TimeoutSecondsLimit {
+				logger.WarnCF("spawn", "tool_timeout_seconds clamped to upper limit",
+					map[string]interface{}{
+						"requested": toolTimeout,
+						"limit":     TimeoutSecondsLimit,
+					})
+				toolTimeout = TimeoutSecondsLimit
+			}
+			opts.ToolTimeoutSeconds = toolTimeout
+		}
+
 		mgr := t.manager
 		if mgr == nil {
 			return "Error: Subagent manager not configured", nil
 		}
 
-		taskID, err := mgr.Spawn(ctx, task, label, originChannel, originChatID, parentTraceID)
+		taskID, err := mgr.Spawn(ctx, task, label, originChannel, originChatID, parentTraceID, opts)
 		if err != nil {
 			return "", fmt.Errorf("failed to spawn subagent: %w", err)
 		}
