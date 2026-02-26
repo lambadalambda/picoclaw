@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -370,6 +371,174 @@ func TestRedactSensitive_NoRedactionNeeded(t *testing.T) {
 		if got != input {
 			t.Errorf("redactSensitive(%q) = %q, want unchanged", input, got)
 		}
+	}
+}
+
+func TestExecuteToolsConcurrently_MirrorsMessageToolSendToTargetSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	registry := tools.NewToolRegistry()
+	msgTool := tools.NewMessageTool()
+	msgTool.SetSendCallback(func(channel, chatID, content string, media []string) error {
+		return nil
+	})
+	registry.Register(msgTool)
+
+	al := &AgentLoop{
+		bus:           bus.NewMessageBus(),
+		workspace:     tmpDir,
+		model:         "test-model",
+		chatOptions:   providers.ChatOptions{MaxTokens: 8192, Temperature: 0.7},
+		maxIterations: 5,
+		sessions:      session.NewSessionManager(filepath.Join(tmpDir, "sessions")),
+		tools:         registry,
+		summarizing:   sync.Map{},
+	}
+	defer al.bus.Close()
+
+	opts := processOptions{SessionKey: "heartbeat:telegram:chat1", Channel: "telegram", ChatID: "chat1", TraceID: "trace-test"}
+	toolCalls := []providers.ToolCall{{
+		ID:   "tc1",
+		Name: "message",
+		Arguments: map[string]interface{}{
+			"content": "hello",
+			"media":   []interface{}{"/tmp/a.png"},
+		},
+	}}
+
+	results := al.executeToolsConcurrently(context.Background(), toolCalls, 1, opts)
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+
+	history := al.sessions.GetHistory("telegram:chat1")
+	if len(history) != 1 {
+		t.Fatalf("history len = %d, want 1", len(history))
+	}
+	if history[0].Role != "assistant" {
+		t.Fatalf("history role = %q, want assistant", history[0].Role)
+	}
+	if !strings.Contains(history[0].Content, "hello") {
+		t.Fatalf("expected mirrored content to include message text, got %q", history[0].Content)
+	}
+	if !strings.Contains(history[0].Content, "/tmp/a.png") {
+		t.Fatalf("expected mirrored content to include media path, got %q", history[0].Content)
+	}
+}
+
+func TestExecuteToolsConcurrently_DoesNotMirrorMessageToolWhenSameSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	registry := tools.NewToolRegistry()
+	msgTool := tools.NewMessageTool()
+	msgTool.SetSendCallback(func(channel, chatID, content string, media []string) error {
+		return nil
+	})
+	registry.Register(msgTool)
+
+	al := &AgentLoop{
+		bus:           bus.NewMessageBus(),
+		workspace:     tmpDir,
+		model:         "test-model",
+		chatOptions:   providers.ChatOptions{MaxTokens: 8192, Temperature: 0.7},
+		maxIterations: 5,
+		sessions:      session.NewSessionManager(filepath.Join(tmpDir, "sessions")),
+		tools:         registry,
+		summarizing:   sync.Map{},
+	}
+	defer al.bus.Close()
+
+	opts := processOptions{SessionKey: "telegram:chat1", Channel: "telegram", ChatID: "chat1", TraceID: "trace-test"}
+	toolCalls := []providers.ToolCall{{
+		ID:        "tc1",
+		Name:      "message",
+		Arguments: map[string]interface{}{"content": "hello"},
+	}}
+
+	_ = al.executeToolsConcurrently(context.Background(), toolCalls, 1, opts)
+
+	history := al.sessions.GetHistory("telegram:chat1")
+	if len(history) != 0 {
+		t.Fatalf("history len = %d, want 0", len(history))
+	}
+}
+
+func TestExecuteToolsConcurrently_DoesNotMirrorMessageToolOnSendFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	registry := tools.NewToolRegistry()
+	msgTool := tools.NewMessageTool()
+	msgTool.SetSendCallback(func(channel, chatID, content string, media []string) error {
+		return errors.New("send failed")
+	})
+	registry.Register(msgTool)
+
+	al := &AgentLoop{
+		bus:           bus.NewMessageBus(),
+		workspace:     tmpDir,
+		model:         "test-model",
+		chatOptions:   providers.ChatOptions{MaxTokens: 8192, Temperature: 0.7},
+		maxIterations: 5,
+		sessions:      session.NewSessionManager(filepath.Join(tmpDir, "sessions")),
+		tools:         registry,
+		summarizing:   sync.Map{},
+	}
+	defer al.bus.Close()
+
+	opts := processOptions{SessionKey: "heartbeat:telegram:chat1", Channel: "telegram", ChatID: "chat1", TraceID: "trace-test"}
+	toolCalls := []providers.ToolCall{{
+		ID:        "tc1",
+		Name:      "message",
+		Arguments: map[string]interface{}{"content": "hello"},
+	}}
+
+	_ = al.executeToolsConcurrently(context.Background(), toolCalls, 1, opts)
+
+	history := al.sessions.GetHistory("telegram:chat1")
+	if len(history) != 0 {
+		t.Fatalf("history len = %d, want 0", len(history))
+	}
+}
+
+func TestExecuteToolsConcurrently_MirrorsMessageToolSend_UsesAliasArgs(t *testing.T) {
+	tmpDir := t.TempDir()
+	registry := tools.NewToolRegistry()
+	msgTool := tools.NewMessageTool()
+	msgTool.SetSendCallback(func(channel, chatID, content string, media []string) error {
+		return nil
+	})
+	registry.Register(msgTool)
+
+	al := &AgentLoop{
+		bus:           bus.NewMessageBus(),
+		workspace:     tmpDir,
+		model:         "test-model",
+		chatOptions:   providers.ChatOptions{MaxTokens: 8192, Temperature: 0.7},
+		maxIterations: 5,
+		sessions:      session.NewSessionManager(filepath.Join(tmpDir, "sessions")),
+		tools:         registry,
+		summarizing:   sync.Map{},
+	}
+	defer al.bus.Close()
+
+	// Intentionally set fallback ChatID to something else; the tool call uses alias
+	// args (text/target) which should be honored by mirroring.
+	opts := processOptions{SessionKey: "heartbeat:telegram:chatX", Channel: "telegram", ChatID: "chatX", TraceID: "trace-test"}
+	toolCalls := []providers.ToolCall{{
+		ID:   "tc1",
+		Name: "message",
+		Arguments: map[string]interface{}{
+			"text":    "hello",
+			"channel": "telegram",
+			"target":  "chat1",
+		},
+	}}
+
+	_ = al.executeToolsConcurrently(context.Background(), toolCalls, 1, opts)
+
+	history := al.sessions.GetHistory("telegram:chat1")
+	if len(history) != 1 {
+		t.Fatalf("history len = %d, want 1", len(history))
+	}
+	if !strings.Contains(history[0].Content, "hello") {
+		t.Fatalf("expected mirrored content to include message text, got %q", history[0].Content)
 	}
 }
 

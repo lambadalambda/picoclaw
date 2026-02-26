@@ -208,5 +208,175 @@ func (al *AgentLoop) executeToolsConcurrently(
 		},
 	})
 
+	// If the message tool sent user-facing output to a different session
+	// (e.g., heartbeat/cron background sessions), mirror that content into the
+	// target chat session history so the main agent can understand follow-ups.
+	al.mirrorMessageToolSends(toolCalls, results, opts)
+
 	return results
+}
+
+func (al *AgentLoop) mirrorMessageToolSends(toolCalls []providers.ToolCall, results []providers.Message, opts processOptions) {
+	if al == nil || al.sessions == nil {
+		return
+	}
+	if len(toolCalls) == 0 || len(results) == 0 {
+		return
+	}
+
+	for i, tc := range toolCalls {
+		if strings.ToLower(strings.TrimSpace(tc.Name)) != "message" {
+			continue
+		}
+		if i >= len(results) {
+			continue
+		}
+		if !messageToolResultLooksSuccessful(results[i]) {
+			continue
+		}
+
+		args := tc.Arguments
+		content := firstStringArg(args, "content", "text", "message")
+		channel := firstStringArg(args, "channel")
+		chatID := firstStringArg(args, "chat_id", "chatId", "chatID", "target", "target_id", "targetId")
+		if channel == "" {
+			channel = strings.TrimSpace(opts.Channel)
+		}
+		if chatID == "" {
+			chatID = strings.TrimSpace(opts.ChatID)
+		}
+		if channel == "" || chatID == "" {
+			continue
+		}
+
+		targetSessionKey := fmt.Sprintf("%s:%s", channel, chatID)
+		if strings.TrimSpace(targetSessionKey) == "" {
+			continue
+		}
+		if strings.TrimSpace(opts.SessionKey) == strings.TrimSpace(targetSessionKey) {
+			continue
+		}
+
+		media := stringSliceArg(args, "media")
+		mirrored := formatMirroredMessageContent(content, media)
+		al.sessions.AddMessage(targetSessionKey, "assistant", mirrored)
+		_ = al.sessions.Save(al.sessions.GetOrCreate(targetSessionKey))
+
+		logger.DebugCF("agent", "Mirrored outbound message tool send to session history",
+			map[string]interface{}{
+				"from_session": opts.SessionKey,
+				"to_session":   targetSessionKey,
+				"channel":      channel,
+				"chat_id":      chatID,
+				"trace_id":     opts.TraceID,
+			})
+	}
+}
+
+func messageToolResultLooksSuccessful(msg providers.Message) bool {
+	if msg.Role != "tool" {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(msg.Content), "Message sent to ")
+}
+
+func firstStringArg(args map[string]interface{}, keys ...string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		// Fast path: direct lookup.
+		if raw, ok := args[key]; ok {
+			if s, ok := raw.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					return s
+				}
+			}
+		}
+		// Slow path: case-insensitive lookup.
+		for k, raw := range args {
+			if !strings.EqualFold(k, key) {
+				continue
+			}
+			if s, ok := raw.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func stringSliceArg(args map[string]interface{}, key string) []string {
+	if len(args) == 0 || strings.TrimSpace(key) == "" {
+		return nil
+	}
+
+	raw, ok := args[key]
+	if !ok {
+		// Case-insensitive lookup
+		for k, v := range args {
+			if strings.EqualFold(k, key) {
+				raw = v
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok {
+		return nil
+	}
+
+	switch v := raw.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, s := range v {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				continue
+			}
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return nil
+		}
+		return []string{s}
+	default:
+		return nil
+	}
+}
+
+func formatMirroredMessageContent(content string, media []string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		content = "(sent a message)"
+	}
+	if len(media) == 0 {
+		return content
+	}
+	if len(media) == 1 {
+		return content + "\n\n[Media: " + media[0] + "]"
+	}
+	return content + "\n\n[Media: " + strings.Join(media, ", ") + "]"
 }
