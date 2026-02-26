@@ -164,6 +164,17 @@ func (al *AgentLoop) maybeEchoToolCalls(toolCalls []providers.ToolCall, channel,
 	})
 }
 
+func shouldEchoToolCallsForSession(sessionKey string) bool {
+	sessionKey = strings.ToLower(strings.TrimSpace(sessionKey))
+	if sessionKey == "" {
+		return true
+	}
+	if sessionKey == "heartbeat" || strings.HasPrefix(sessionKey, "heartbeat:") {
+		return false
+	}
+	return true
+}
+
 func (al *AgentLoop) executeToolsConcurrently(
 	ctx context.Context,
 	toolCalls []providers.ToolCall,
@@ -187,7 +198,9 @@ func (al *AgentLoop) executeToolsConcurrently(
 		}
 	}
 
-	al.maybeEchoToolCalls(toolCalls, opts.Channel, opts.ChatID)
+	if shouldEchoToolCallsForSession(opts.SessionKey) {
+		al.maybeEchoToolCalls(toolCalls, opts.Channel, opts.ChatID)
+	}
 
 	results := al.tools.ExecuteToolCalls(ctx, toolCalls, tools.ExecuteToolCallsOptions{
 		Channel:      opts.Channel,

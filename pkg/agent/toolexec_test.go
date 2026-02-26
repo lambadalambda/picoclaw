@@ -199,6 +199,62 @@ func TestMaybeEchoToolCalls_SkipsNonEchoTools(t *testing.T) {
 	}
 }
 
+func TestShouldEchoToolCallsForSession(t *testing.T) {
+	tests := []struct {
+		name       string
+		sessionKey string
+		want       bool
+	}{
+		{name: "empty", sessionKey: "", want: true},
+		{name: "normal", sessionKey: "telegram:chat1", want: true},
+		{name: "heartbeat root", sessionKey: "heartbeat", want: false},
+		{name: "heartbeat scoped", sessionKey: "heartbeat:telegram:chat1", want: false},
+		{name: "heartbeat uppercase", sessionKey: "HEARTBEAT:telegram:chat1", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldEchoToolCallsForSession(tt.sessionKey); got != tt.want {
+				t.Fatalf("shouldEchoToolCallsForSession(%q) = %v, want %v", tt.sessionKey, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecuteToolsConcurrently_DoesNotEchoForHeartbeatSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	registry := tools.NewToolRegistry()
+	testBus := bus.NewMessageBus()
+	defer testBus.Close()
+
+	al := &AgentLoop{
+		bus:           testBus,
+		workspace:     tmpDir,
+		model:         "test-model",
+		chatOptions:   providers.ChatOptions{MaxTokens: 8192, Temperature: 0.7},
+		maxIterations: 5,
+		sessions:      session.NewSessionManager(filepath.Join(tmpDir, "sessions")),
+		tools:         registry,
+		summarizing:   sync.Map{},
+		echoToolCalls: true,
+	}
+
+	toolCalls := []providers.ToolCall{{
+		ID:        "tc1",
+		Name:      "exec",
+		Arguments: map[string]interface{}{"command": "pwd"},
+	}}
+
+	opts := processOptions{SessionKey: "heartbeat:telegram:chat1", Channel: "telegram", ChatID: "chat1", TraceID: "trace-test"}
+	_ = al.executeToolsConcurrently(context.Background(), toolCalls, 1, opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if msg, ok := testBus.SubscribeOutbound(ctx); ok {
+		t.Fatalf("unexpected tool echo for heartbeat session: %+v", msg)
+	}
+}
+
 func TestFormatToolCallSummary_Exec(t *testing.T) {
 	tc := providers.ToolCall{
 		Name:      "exec",
