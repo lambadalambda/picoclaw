@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -27,6 +28,9 @@ type mockTelegramBot struct {
 
 	// configurable return for SendMessage
 	sendMessageID int
+
+	// optional hook to customize SendMessage behavior per call
+	sendMessageHook func(params *telego.SendMessageParams) (*telego.Message, error)
 }
 
 func newMockBot() *mockTelegramBot {
@@ -42,9 +46,15 @@ func (m *mockTelegramBot) UpdatesViaLongPolling(ctx context.Context, params *tel
 }
 func (m *mockTelegramBot) SendMessage(ctx context.Context, params *telego.SendMessageParams) (*telego.Message, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.sendMessageCalls = append(m.sendMessageCalls, params)
-	return &telego.Message{MessageID: m.sendMessageID}, nil
+	hook := m.sendMessageHook
+	id := m.sendMessageID
+	m.mu.Unlock()
+
+	if hook != nil {
+		return hook(params)
+	}
+	return &telego.Message{MessageID: id}, nil
 }
 func (m *mockTelegramBot) SendChatAction(ctx context.Context, params *telego.SendChatActionParams) error {
 	m.mu.Lock()
@@ -377,6 +387,109 @@ func TestSend_NeverEditsOrDeletesMessages(t *testing.T) {
 	sends := mock.getSendMessageCalls()
 	if len(sends) != 1 {
 		t.Errorf("expected 1 SendMessage call, got %d", len(sends))
+	}
+}
+
+func TestSend_LongTextMessage_SplitsIntoMultipleMessages(t *testing.T) {
+	mock := newMockBot()
+	ch := newTestTelegramChannel(mock)
+
+	// Simulate Telegram rejecting messages longer than 4096 characters.
+	mock.sendMessageHook = func(params *telego.SendMessageParams) (*telego.Message, error) {
+		if len(params.Text) > 4096 {
+			return nil, errors.New("telego: sendMessage: api: 400 \"Bad Request: message is too long\"")
+		}
+		return &telego.Message{MessageID: 42}, nil
+	}
+
+	content := strings.Repeat("a", 5000)
+	err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: content,
+	})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	calls := mock.getSendMessageCalls()
+	if len(calls) < 2 {
+		t.Fatalf("expected SendMessage to be called multiple times, got %d", len(calls))
+	}
+	for i, c := range calls {
+		if len(c.Text) > 4096 {
+			t.Fatalf("call[%d] text too long: %d", i, len(c.Text))
+		}
+	}
+}
+
+func TestSend_HTMLParseError_FallsBackToPlainMarkdown(t *testing.T) {
+	mock := newMockBot()
+	ch := newTestTelegramChannel(mock)
+
+	mock.sendMessageHook = func(params *telego.SendMessageParams) (*telego.Message, error) {
+		if params.ParseMode == telego.ModeHTML {
+			return nil, errors.New("telego: sendMessage: api: 400 \"Bad Request: can't parse entities\"")
+		}
+		return &telego.Message{MessageID: 42}, nil
+	}
+
+	err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "**bold**",
+	})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	calls := mock.getSendMessageCalls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 SendMessage calls, got %d", len(calls))
+	}
+	if calls[0].ParseMode != telego.ModeHTML {
+		t.Fatalf("expected first call to use HTML parse mode, got %q", calls[0].ParseMode)
+	}
+	if calls[0].Text != "<b>bold</b>" {
+		t.Fatalf("expected first call to send converted HTML, got %q", calls[0].Text)
+	}
+	if calls[1].ParseMode != "" {
+		t.Fatalf("expected second call to be plain text, got %q", calls[1].ParseMode)
+	}
+	if calls[1].Text != "**bold**" {
+		t.Fatalf("expected fallback to send original markdown, got %q", calls[1].Text)
+	}
+}
+
+func TestSend_ConvertedHTMLTooLong_SendsPlainWithoutOversizedAttempt(t *testing.T) {
+	mock := newMockBot()
+	ch := newTestTelegramChannel(mock)
+
+	// Simulate Telegram rejecting messages longer than 4096 characters.
+	mock.sendMessageHook = func(params *telego.SendMessageParams) (*telego.Message, error) {
+		if len(params.Text) > 4096 {
+			return nil, errors.New("telego: sendMessage: api: 400 \"Bad Request: message is too long\"")
+		}
+		return &telego.Message{MessageID: 42}, nil
+	}
+
+	// HTML escaping expands '&' to '&amp;' which would exceed 4096 if sent as HTML.
+	content := strings.Repeat("&", 1000)
+	err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: content,
+	})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	calls := mock.getSendMessageCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(calls))
+	}
+	if calls[0].ParseMode != "" {
+		t.Fatalf("expected plain text send, got parse mode %q", calls[0].ParseMode)
+	}
+	if calls[0].Text != content {
+		t.Fatalf("expected plain text to be original content, got %q", calls[0].Text)
 	}
 }
 

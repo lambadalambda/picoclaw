@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
@@ -18,6 +19,13 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/utils"
 	"github.com/sipeed/picoclaw/pkg/voice"
+)
+
+const (
+	// Telegram hard limit is 4096 characters for sendMessage text.
+	// Use a small safety margin to reduce off-by-one and formatting overhead issues.
+	telegramMaxMessageChars = 4096
+	telegramChunkChars      = 4000
 )
 
 // telegramBot abstracts the telego.Bot methods used by TelegramChannel,
@@ -140,31 +148,17 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		c.stopThinking.Delete(msg.ChatID)
 	}
 
-	htmlContent := markdownToTelegramHTML(msg.Content)
 
 	// If there's no media, send text only
 	if len(msg.Media) == 0 {
-		tgMsg := tu.Message(tu.ID(chatID), htmlContent)
-		tgMsg.ParseMode = telego.ModeHTML
-
-		if _, err = c.bot.SendMessage(ctx, tgMsg); err != nil {
-			logger.ErrorCF("telegram", "HTML parse failed, falling back to plain text", map[string]interface{}{
-				"error": err.Error(),
-			})
-			tgMsg.ParseMode = ""
-			_, err = c.bot.SendMessage(ctx, tgMsg)
-			return err
-		}
-		return nil
+		return c.sendText(ctx, chatID, msg.Content)
 	}
 
 	// Send text content first if present
 	if msg.Content != "" {
-		tgMsg := tu.Message(tu.ID(chatID), htmlContent)
-		tgMsg.ParseMode = telego.ModeHTML
-		if _, err = c.bot.SendMessage(ctx, tgMsg); err != nil {
+		if textErr := c.sendText(ctx, chatID, msg.Content); textErr != nil {
 			logger.ErrorCF("telegram", "Failed to send text before media", map[string]interface{}{
-				"error": err.Error(),
+				"error": textErr.Error(),
 			})
 		}
 	}
@@ -202,6 +196,140 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 	}
 
 	return nil
+}
+
+func (c *TelegramChannel) sendText(ctx context.Context, chatID int64, content string) error {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil
+	}
+
+	chunks := splitByRuneLimit(content, telegramChunkChars)
+	for _, chunk := range chunks {
+		if err := c.sendTextChunk(ctx, chatID, chunk); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (c *TelegramChannel) sendTextChunk(ctx context.Context, chatID int64, chunk string) error {
+	chunk = strings.TrimSpace(chunk)
+	if chunk == "" {
+		return nil
+	}
+
+	// Try HTML first for nicer formatting, but never attempt an oversized payload.
+	htmlContent := markdownToTelegramHTML(chunk)
+	if htmlContent != "" && utf8.RuneCountInString(htmlContent) <= telegramMaxMessageChars {
+		tgMsg := tu.Message(tu.ID(chatID), htmlContent)
+		tgMsg.ParseMode = telego.ModeHTML
+		if _, err := c.bot.SendMessage(ctx, tgMsg); err == nil {
+			return nil
+		} else {
+			// Plain text fallback: send the original chunk (not the HTML string).
+			plainMsg := tu.Message(tu.ID(chatID), chunk)
+			plainMsg.ParseMode = ""
+			_, plainErr := c.bot.SendMessage(ctx, plainMsg)
+			if plainErr == nil {
+				logger.WarnCF("telegram", "Failed to send HTML message; sent plain text instead", map[string]interface{}{
+					"error": err.Error(),
+				})
+				return nil
+			}
+			return fmt.Errorf("failed to send telegram message (html then plain): %w", plainErr)
+		}
+	}
+
+	plainMsg := tu.Message(tu.ID(chatID), chunk)
+	plainMsg.ParseMode = ""
+	_, err := c.bot.SendMessage(ctx, plainMsg)
+	return err
+}
+
+func splitByRuneLimit(text string, limit int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if limit <= 0 {
+		return []string{text}
+	}
+	if utf8.RuneCountInString(text) <= limit {
+		return []string{text}
+	}
+
+	parts := make([]string, 0, 2)
+	remaining := text
+	for {
+		remaining = strings.TrimLeft(remaining, "\n\r\t ")
+		if remaining == "" {
+			break
+		}
+		if utf8.RuneCountInString(remaining) <= limit {
+			parts = append(parts, remaining)
+			break
+		}
+
+		window, _ := splitAtRune(remaining, limit)
+		cut := bestSplitIndex(window)
+		if cut <= 0 {
+			cut = len(window)
+		}
+
+		part := strings.TrimSpace(window[:cut])
+		if part == "" {
+			// Ensure forward progress even if the window starts with whitespace.
+			part = strings.TrimSpace(window)
+			cut = len(window)
+		}
+
+		parts = append(parts, part)
+		remaining = remaining[cut:]
+	}
+
+	return parts
+}
+
+func splitAtRune(s string, n int) (head, tail string) {
+	if n <= 0 || s == "" {
+		return "", s
+	}
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i], s[i:]
+		}
+		count++
+	}
+	return s, ""
+}
+
+func bestSplitIndex(window string) int {
+	// Prefer paragraph boundaries.
+	if idx := strings.LastIndex(window, "\n\n"); idx > 0 {
+		return idx
+	}
+	// Then single newlines.
+	if idx := strings.LastIndex(window, "\n"); idx > 0 {
+		return idx
+	}
+	// Then sentence-ish boundaries.
+	if idx := strings.LastIndex(window, ". "); idx > 0 {
+		return idx + 1
+	}
+	if idx := strings.LastIndex(window, "? "); idx > 0 {
+		return idx + 1
+	}
+	if idx := strings.LastIndex(window, "! "); idx > 0 {
+		return idx + 1
+	}
+	// Finally, whitespace.
+	if idx := strings.LastIndex(window, " "); idx > 0 {
+		return idx
+	}
+	return -1
 }
 
 // startTypingIndicator sends repeated "typing..." chat actions until the
