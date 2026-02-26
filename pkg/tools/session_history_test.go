@@ -108,3 +108,27 @@ func TestSessionHistoryTool_Execute_RequiresSessionKeyOrContext(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 }
+
+func TestSessionHistoryTool_Execute_UsesExecutionSessionKey(t *testing.T) {
+	workspace := t.TempDir()
+	key := "telegram:chat-ctx"
+	transcriptPath := session.TranscriptPath(workspace, key)
+
+	entries := []session.TranscriptEntry{{Role: "user", Content: "hello from transcript"}}
+	writeTranscriptFile(t, transcriptPath, entries)
+
+	tool := NewSessionHistoryTool(workspace)
+	out, err := tool.Execute(context.Background(), map[string]interface{}{
+		execContextSessionKey: key,
+	})
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !strings.Contains(out, "Session: "+key) {
+		t.Fatalf("expected output to use execution session key, got:\n%s", out)
+	}
+	if !strings.Contains(out, "hello from transcript") {
+		t.Fatalf("expected transcript content in output, got:\n%s", out)
+	}
+}

@@ -126,6 +126,9 @@ func (t *SessionHistoryTool) Execute(ctx context.Context, args map[string]interf
 	sessionKey, _ := args["session_key"].(string)
 	sessionKey = strings.TrimSpace(sessionKey)
 	if sessionKey == "" {
+		sessionKey = strings.TrimSpace(getExecutionSessionKey(args))
+	}
+	if sessionKey == "" {
 		ch, chatID := getExecutionContext(args)
 		if ch != "" && chatID != "" {
 			sessionKey = fmt.Sprintf("%s:%s", ch, chatID)

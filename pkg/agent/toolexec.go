@@ -192,6 +192,7 @@ func (al *AgentLoop) executeToolsConcurrently(
 	results := al.tools.ExecuteToolCalls(ctx, toolCalls, tools.ExecuteToolCallsOptions{
 		Channel:      opts.Channel,
 		ChatID:       opts.ChatID,
+		SessionKey:   opts.SessionKey,
 		TraceID:      opts.TraceID,
 		Timeout:      al.toolTimeout,
 		MaxParallel:  al.maxParallelTools,

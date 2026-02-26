@@ -20,6 +20,19 @@ type execTestTool struct {
 	maxSeen  *atomic.Int32
 }
 
+type contextProbeTool struct {
+	name string
+}
+
+func (t *contextProbeTool) Name() string        { return t.name }
+func (t *contextProbeTool) Description() string { return "context probe tool" }
+func (t *contextProbeTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+}
+func (t *contextProbeTool) Execute(_ context.Context, args map[string]interface{}) (string, error) {
+	return getExecutionSessionKey(args), nil
+}
+
 func (t *execTestTool) Name() string        { return t.name }
 func (t *execTestTool) Description() string { return "executor test tool" }
 func (t *execTestTool) Parameters() map[string]interface{} {
@@ -116,5 +129,21 @@ func TestExecuteToolCalls_PanicRecovered(t *testing.T) {
 	}
 	if results[0].Content == "" {
 		t.Fatal("expected panic error content, got empty result")
+	}
+}
+
+func TestExecuteToolCalls_PassesExecutionSessionKey(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&contextProbeTool{name: "ctx_probe"})
+
+	results := registry.ExecuteToolCalls(context.Background(), []providers.ToolCall{
+		{ID: "tc1", Name: "ctx_probe", Arguments: map[string]interface{}{}},
+	}, ExecuteToolCallsOptions{SessionKey: "telegram:chat-42"})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Content != "telegram:chat-42" {
+		t.Fatalf("tool received session key %q, want %q", results[0].Content, "telegram:chat-42")
 	}
 }

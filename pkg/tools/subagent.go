@@ -33,17 +33,18 @@ type SpawnOptions struct {
 }
 
 type SubagentTask struct {
-	ID            string
-	Task          string
-	Label         string
-	OriginChannel string
-	OriginChatID  string
-	ParentTraceID string
-	Status        string
-	Result        string
-	Created       int64
-	Finished      int64
-	Options       SpawnOptions
+	ID               string
+	Task             string
+	Label            string
+	OriginChannel    string
+	OriginChatID     string
+	OriginSessionKey string
+	ParentTraceID    string
+	Status           string
+	Result           string
+	Created          int64
+	Finished         int64
+	Options          SpawnOptions
 }
 
 type SubagentManager struct {
@@ -151,7 +152,7 @@ func (sm *SubagentManager) ConfigureRetention(maxStoredTasks int, completedTTL t
 	}
 }
 
-func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel, originChatID, parentTraceID string, opts SpawnOptions) (string, error) {
+func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel, originChatID, originSessionKey, parentTraceID string, opts SpawnOptions) (string, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.cleanupLocked(time.Now())
@@ -160,16 +161,20 @@ func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel
 	sm.nextID++
 
 	subagentTask := &SubagentTask{
-		ID:            taskID,
-		Task:          task,
-		Label:         label,
-		OriginChannel: originChannel,
-		OriginChatID:  originChatID,
-		ParentTraceID: parentTraceID,
-		Status:        "running",
-		Created:       time.Now().UnixMilli(),
-		Finished:      0,
-		Options:       opts,
+		ID:               taskID,
+		Task:             task,
+		Label:            label,
+		OriginChannel:    originChannel,
+		OriginChatID:     originChatID,
+		OriginSessionKey: strings.TrimSpace(originSessionKey),
+		ParentTraceID:    parentTraceID,
+		Status:           "running",
+		Created:          time.Now().UnixMilli(),
+		Finished:         0,
+		Options:          opts,
+	}
+	if subagentTask.OriginSessionKey == "" && originChannel != "" && originChatID != "" {
+		subagentTask.OriginSessionKey = fmt.Sprintf("%s:%s", originChannel, originChatID)
 	}
 	sm.tasks[taskID] = subagentTask
 	baseCtx := context.Background()
@@ -277,7 +282,13 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 			return registry.GetProviderDefinitions()
 		},
 		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
+			sessionKey := strings.TrimSpace(initial.OriginSessionKey)
+			if sessionKey == "" && initial.OriginChannel != "" && initial.OriginChatID != "" {
+				sessionKey = fmt.Sprintf("%s:%s", initial.OriginChannel, initial.OriginChatID)
+			}
+
 			results := registry.ExecuteToolCalls(ctx, toolCalls, ExecuteToolCallsOptions{
+				SessionKey:   sessionKey,
 				TraceID:      initial.ParentTraceID,
 				Timeout:      toolTimeout,
 				MaxParallel:  maxParallelTools,
@@ -511,7 +522,8 @@ func (sm *SubagentManager) buildSubagentSystemPrompt(registry *ToolRegistry) str
 		"\nRules:",
 		"1. Use tools when you need to perform an action.",
 		"2. Do NOT message the end user. Use `subagent_report` to communicate with the main agent.",
-		"3. When finished, provide a clear result and include any artifact file paths.",
+		"3. If you need prior context, use `session_history` to inspect the parent chat transcript (you have execution context for the originating session).",
+		"4. When finished, provide a clear result and include any artifact file paths.",
 		fmt.Sprintf("\nWorkspace: %s", workspacePath),
 	}
 

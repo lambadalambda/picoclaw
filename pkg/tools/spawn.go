@@ -144,6 +144,9 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (s
 		if originChatID == "" {
 			originChatID = "direct"
 		}
+		if originSessionKey == "" {
+			originSessionKey = originChannel + ":" + originChatID
+		}
 
 		// Heartbeat sessions should keep subagent reports internal to the heartbeat
 		// loop (not injected into the main user chat transcript).
@@ -211,7 +214,7 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (s
 			return "Error: Subagent manager not configured", nil
 		}
 
-		taskID, err := mgr.Spawn(ctx, task, label, originChannel, originChatID, parentTraceID, opts)
+		taskID, err := mgr.Spawn(ctx, task, label, originChannel, originChatID, originSessionKey, parentTraceID, opts)
 		if err != nil {
 			return "", fmt.Errorf("failed to spawn subagent: %w", err)
 		}

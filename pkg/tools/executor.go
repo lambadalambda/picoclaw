@@ -15,6 +15,7 @@ import (
 type ExecuteToolCallsOptions struct {
 	Channel     string
 	ChatID      string
+	SessionKey  string
 	TraceID     string
 	Timeout     time.Duration
 	MaxParallel int // <=0 means unlimited within this batch
@@ -97,7 +98,8 @@ func (r *ToolRegistry) ExecuteToolCalls(
 			if opts.Timeout > 0 {
 				toolCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
 			}
-			result, err := r.ExecuteWithContext(toolCtx, tc.Name, tc.Arguments, opts.Channel, opts.ChatID)
+			execArgs := withExecutionSessionKey(tc.Arguments, opts.SessionKey)
+			result, err := r.ExecuteWithContext(toolCtx, tc.Name, execArgs, opts.Channel, opts.ChatID)
 			cancel()
 			if err != nil {
 				result = fmt.Sprintf("Error: %v", err)

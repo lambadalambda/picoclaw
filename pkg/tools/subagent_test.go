@@ -73,7 +73,7 @@ func TestSubagentManager_SubagentReportPublishesInbound(t *testing.T) {
 	}}
 
 	sm := NewSubagentManager(prov, "test-model", t.TempDir(), msgBus)
-	_, err := sm.Spawn(context.Background(), "do work", "imggen", "telegram", "chat1", "", SpawnOptions{})
+	_, err := sm.Spawn(context.Background(), "do work", "imggen", "telegram", "chat1", "telegram:chat1", "", SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn() error: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestSubagentManager_CancelRunningTask(t *testing.T) {
 	prov := &blockingProvider{started: make(chan struct{})}
 	sm := NewSubagentManager(prov, "test-model", t.TempDir(), nil)
 
-	taskID, err := sm.Spawn(context.Background(), "do long work", "long", "telegram", "chat1", "", SpawnOptions{})
+	taskID, err := sm.Spawn(context.Background(), "do long work", "long", "telegram", "chat1", "telegram:chat1", "", SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn() error: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestSubagentManager_CancelNotRunning(t *testing.T) {
 	prov := &scriptedProvider{responses: []*providers.LLMResponse{{Content: "done"}}}
 	sm := NewSubagentManager(prov, "test-model", t.TempDir(), nil)
 
-	taskID, err := sm.Spawn(context.Background(), "quick work", "quick", "telegram", "chat1", "", SpawnOptions{})
+	taskID, err := sm.Spawn(context.Background(), "quick work", "quick", "telegram", "chat1", "telegram:chat1", "", SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn() error: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestSubagentManager_RetentionMaxTasks(t *testing.T) {
 	sm.ConfigureRetention(2, 24*time.Hour)
 
 	for i := 0; i < 4; i++ {
-		_, err := sm.Spawn(context.Background(), "task", "", "telegram", "chat1", "", SpawnOptions{})
+		_, err := sm.Spawn(context.Background(), "task", "", "telegram", "chat1", "telegram:chat1", "", SpawnOptions{})
 		if err != nil {
 			t.Fatalf("spawn failed: %v", err)
 		}
@@ -293,5 +293,16 @@ func TestIsMissingRequiredToolError(t *testing.T) {
 
 	if strings.TrimSpace(msg.Content) == "" {
 		t.Fatal("expected test message content")
+	}
+}
+
+func TestBuildSubagentSystemPrompt_IncludesSessionHistoryGuidance(t *testing.T) {
+	sm := NewSubagentManager(&doneProvider{}, "test-model", t.TempDir(), nil)
+	registry := NewToolRegistry()
+	RegisterCoreTools(registry, t.TempDir(), WebSearchToolConfig{MaxResults: 5})
+
+	prompt := sm.buildSubagentSystemPrompt(registry)
+	if !strings.Contains(prompt, "session_history") {
+		t.Fatalf("expected prompt to mention session_history guidance, got:\n%s", prompt)
 	}
 }

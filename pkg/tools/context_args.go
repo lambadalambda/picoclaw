@@ -29,6 +29,20 @@ func withExecutionContext(args map[string]interface{}, channel, chatID, traceID 
 	return copyArgs
 }
 
+func withExecutionSessionKey(args map[string]interface{}, sessionKey string) map[string]interface{} {
+	if sessionKey == "" {
+		return args
+	}
+
+	copyArgs := make(map[string]interface{}, len(args)+1)
+	for k, v := range args {
+		copyArgs[k] = v
+	}
+	copyArgs[execContextSessionKey] = sessionKey
+
+	return copyArgs
+}
+
 func getExecutionContext(args map[string]interface{}) (string, string) {
 	channel, _ := args[execContextChannelKey].(string)
 	chatID, _ := args[execContextChatIDKey].(string)
