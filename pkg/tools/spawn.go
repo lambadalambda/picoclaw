@@ -136,12 +136,36 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (s
 
 		label, _ := args["label"].(string)
 		originChannel, originChatID := getExecutionContext(args)
+		originSessionKey := strings.TrimSpace(getExecutionSessionKey(args))
 		parentTraceID := getExecutionTraceID(args)
 		if originChannel == "" {
 			originChannel = "cli"
 		}
 		if originChatID == "" {
 			originChatID = "direct"
+		}
+
+		// Heartbeat sessions should keep subagent reports internal to the heartbeat
+		// loop (not injected into the main user chat transcript).
+		//
+		// We route reports by encoding the heartbeat session key into the system
+		// message routing prefix: ChatID becomes "heartbeat:<channel>:<chat_id>".
+		// AgentLoop.processSystemMessage special-cases originChannel="heartbeat".
+		skLower := strings.ToLower(originSessionKey)
+		if skLower == "heartbeat" || strings.HasPrefix(skLower, "heartbeat:") {
+			ctxChannel := originChannel
+			ctxChatID := originChatID
+			originChannel = "heartbeat"
+			if strings.HasPrefix(skLower, "heartbeat:") {
+				// Preserve the remainder exactly (it may include colons).
+				if idx := strings.Index(originSessionKey, ":"); idx >= 0 && idx+1 < len(originSessionKey) {
+					originChatID = originSessionKey[idx+1:]
+				} else {
+					originChatID = ctxChannel + ":" + ctxChatID
+				}
+			} else {
+				originChatID = ctxChannel + ":" + ctxChatID
+			}
 		}
 
 		opts := SpawnOptions{}

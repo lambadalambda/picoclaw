@@ -4,6 +4,7 @@ const (
 	execContextChannelKey = "__context_channel"
 	execContextChatIDKey  = "__context_chat_id"
 	execContextTraceIDKey = "__context_trace_id"
+	execContextSessionKey = "__context_session_key"
 )
 
 func withExecutionContext(args map[string]interface{}, channel, chatID, traceID string) map[string]interface{} {
@@ -37,4 +38,9 @@ func getExecutionContext(args map[string]interface{}) (string, string) {
 func getExecutionTraceID(args map[string]interface{}) string {
 	traceID, _ := args[execContextTraceIDKey].(string)
 	return traceID
+}
+
+func getExecutionSessionKey(args map[string]interface{}) string {
+	sessionKey, _ := args[execContextSessionKey].(string)
+	return sessionKey
 }

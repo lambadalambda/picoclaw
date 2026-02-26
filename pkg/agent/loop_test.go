@@ -944,6 +944,49 @@ func TestProcessSystemMessage_SubagentCancelled_IsInternal(t *testing.T) {
 	}
 }
 
+func TestProcessSystemMessage_HeartbeatSubagentComplete_IsInternal(t *testing.T) {
+	// Subagent completion events that originate from a heartbeat session should be
+	// stored internally in the heartbeat session transcript and must not produce
+	// user-facing outbound messages.
+	al := newTestAgentLoop(t, &mockProvider{responses: []mockResponse{{Content: "unused"}}}, 1, nil)
+	defer al.bus.Close()
+
+	msg := bus.InboundMessage{
+		Channel:  "system",
+		SenderID: "subagent:subagent-9",
+		ChatID:   "heartbeat:telegram:chat1",
+		Content:  "Task complete",
+		Metadata: map[string]string{"subagent_event": "complete"},
+	}
+
+	resp, err := al.processSystemMessage(context.Background(), msg, "trace-test-hb")
+	if err != nil {
+		t.Fatalf("processSystemMessage error: %v", err)
+	}
+	if resp != "" {
+		t.Errorf("response = %q, want empty", resp)
+	}
+
+	// No outbound message should be published
+	outCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, ok := al.bus.SubscribeOutbound(outCtx); ok {
+		t.Fatal("unexpected outbound message for heartbeat subagent completion")
+	}
+
+	// Internal note should be stored on the heartbeat session key
+	history := al.sessions.GetHistory("heartbeat:telegram:chat1")
+	if len(history) != 1 {
+		t.Fatalf("history len = %d, want 1", len(history))
+	}
+	if history[0].Role != "assistant" {
+		t.Errorf("history role = %q, want %q", history[0].Role, "assistant")
+	}
+	if !containsStr(history[0].Content, "Internal") {
+		t.Errorf("history content should look like internal note; got %q", history[0].Content)
+	}
+}
+
 func TestMessageBudgetFromDefaults_AppliesOverrides(t *testing.T) {
 	d := config.AgentDefaults{
 		MaxTokens:                  8192,

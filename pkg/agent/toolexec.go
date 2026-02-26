@@ -174,6 +174,19 @@ func (al *AgentLoop) executeToolsConcurrently(
 		return nil
 	}
 
+	// Provide session context to tools (notably spawn) so they can route
+	// background work appropriately (e.g., heartbeat-spawned subagents).
+	if strings.TrimSpace(opts.SessionKey) != "" {
+		for i := range toolCalls {
+			if toolCalls[i].Arguments == nil {
+				toolCalls[i].Arguments = map[string]interface{}{}
+			}
+			if _, exists := toolCalls[i].Arguments["__context_session_key"]; !exists {
+				toolCalls[i].Arguments["__context_session_key"] = opts.SessionKey
+			}
+		}
+	}
+
 	al.maybeEchoToolCalls(toolCalls, opts.Channel, opts.ChatID)
 
 	results := al.tools.ExecuteToolCalls(ctx, toolCalls, tools.ExecuteToolCallsOptions{

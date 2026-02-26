@@ -377,6 +377,29 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 	// Use the origin session for context
 	sessionKey := fmt.Sprintf("%s:%s", originChannel, originChatID)
 
+	// Heartbeat-spawned subagents should report back to the heartbeat session
+	// only. They must not inject system messages into the user's active chat.
+	if originChannel == "heartbeat" && strings.HasPrefix(msg.SenderID, "subagent:") {
+		event := ""
+		if msg.Metadata != nil {
+			event = msg.Metadata["subagent_event"]
+		}
+		internal := fmt.Sprintf("[Internal: %s] %s", msg.SenderID, msg.Content)
+		if strings.TrimSpace(event) != "" {
+			internal = fmt.Sprintf("[Internal: %s (%s)] %s", msg.SenderID, event, msg.Content)
+		}
+		al.sessions.AddMessage(sessionKey, "assistant", internal)
+		_ = al.sessions.Save(al.sessions.GetOrCreate(sessionKey))
+		logger.InfoCF("agent", "Stored heartbeat subagent update (internal)",
+			map[string]interface{}{
+				"session_key": sessionKey,
+				"event":       event,
+				"sender_id":   msg.SenderID,
+				"trace_id":    traceID,
+			})
+		return "", nil
+	}
+
 	// Subagent internal reports should not be forwarded to the end user.
 	// They can be stored as internal notes for later integration.
 	if strings.HasPrefix(msg.SenderID, "subagent:") {
