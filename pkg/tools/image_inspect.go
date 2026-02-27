@@ -406,6 +406,10 @@ func (t *ImageInspectTool) downloadImageURL(ctx context.Context, parsed *url.URL
 	if client == nil {
 		client = &http.Client{Timeout: t.downloadTimeout}
 	}
+	manualClient := *client
+	manualClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 
 	current := parsed
 	for redirects := 0; redirects <= imageInspectRedirectLimit; redirects++ {
@@ -418,7 +422,7 @@ func (t *ImageInspectTool) downloadImageURL(ctx context.Context, parsed *url.URL
 			return nil, nil, "", fmt.Errorf("build request: %w", err)
 		}
 
-		resp, err := client.Do(req)
+		resp, err := manualClient.Do(req)
 		if err != nil {
 			return nil, nil, "", fmt.Errorf("download request failed: %w", err)
 		}
