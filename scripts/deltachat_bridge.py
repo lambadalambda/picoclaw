@@ -297,6 +297,44 @@ class DeltaChatBridge:
 
         return ""
 
+    def _wait_for_media_paths(
+        self,
+        message: Any,
+        message_id: int,
+        raw_candidates: list[Any],
+        timeout_seconds: float = 2.0,
+    ) -> list[str]:
+        if timeout_seconds <= 0:
+            return []
+
+        deadline = time.time() + timeout_seconds
+        # Poll for blob creation / download completion.
+        while time.time() < deadline:
+            media_paths: list[str] = []
+
+            for raw in raw_candidates:
+                resolved = self._resolve_snapshot_media_path(raw)
+                if resolved and resolved not in media_paths:
+                    media_paths.append(resolved)
+
+            if not media_paths and message_id > 0:
+                resolved = self._lookup_media_path_from_db(message_id)
+                if resolved:
+                    media_paths.append(resolved)
+
+            if media_paths:
+                return media_paths
+
+            # Refresh snapshot in case DeltaChat updates file/param fields.
+            try:
+                _ = message.get_snapshot()
+            except Exception:
+                pass
+
+            time.sleep(0.2)
+
+        return []
+
     def _message_to_bridge_payload(self, message: Any) -> dict[str, Any] | None:
         snapshot = message.get_snapshot()
 
@@ -335,8 +373,17 @@ class DeltaChatBridge:
 
         media_paths: list[str] = []
 
+        message_id = 0
+        try:
+            message_id = int(getattr(snapshot, "id", 0) or snapshot.get("id") or 0)
+        except (TypeError, ValueError):
+            message_id = 0
+
+        raw_media_candidates: list[Any] = []
+
         media = snapshot.get("file")
         if media:
+            raw_media_candidates.append(media)
             resolved = self._resolve_snapshot_media_path(media)
             if resolved:
                 media_paths.append(resolved)
@@ -344,20 +391,20 @@ class DeltaChatBridge:
         params = self._parse_snapshot_param_map(snapshot.get("param"))
         blob_file = params.get("f")
         if blob_file:
+            raw_media_candidates.append(blob_file)
             resolved = self._resolve_snapshot_media_path(blob_file)
             if resolved and resolved not in media_paths:
                 media_paths.append(resolved)
 
-        if not media_paths:
-            message_id = 0
-            try:
-                message_id = int(snapshot.get("id") or 0)
-            except (TypeError, ValueError):
-                message_id = 0
+        if not media_paths and message_id > 0:
+            resolved = self._lookup_media_path_from_db(message_id)
+            if resolved:
+                media_paths.append(resolved)
 
-            if message_id > 0:
-                resolved = self._lookup_media_path_from_db(message_id)
-                if resolved:
+        if not media_paths and raw_media_candidates and message_id > 0:
+            waited = self._wait_for_media_paths(message, message_id, raw_media_candidates, timeout_seconds=2.0)
+            for resolved in waited:
+                if resolved and resolved not in media_paths:
                     media_paths.append(resolved)
 
         if media_paths:

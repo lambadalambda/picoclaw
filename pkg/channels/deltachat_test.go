@@ -2,11 +2,14 @@ package channels
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -421,6 +424,49 @@ func TestDeltaChatChannelIncomingMediaOnlyMessage(t *testing.T) {
 	}
 	if len(msg.Media) != 1 || msg.Media[0] != "/accounts/1/blob/image.jpg" {
 		t.Fatalf("media = %v, want [/accounts/1/blob/image.jpg]", msg.Media)
+	}
+}
+
+func TestDeltaLookupMediaFallbackResolvesBlobFromDB(t *testing.T) {
+	baseDir := t.TempDir()
+	accountsDir := filepath.Join(baseDir, "accounts")
+	accountDir := filepath.Join(accountsDir, "1")
+	blobsDir := filepath.Join(accountDir, "dc.db-blobs")
+	if err := os.MkdirAll(blobsDir, 0o755); err != nil {
+		t.Fatalf("mkdir blobs dir: %v", err)
+	}
+
+	dbPath := filepath.Join(accountDir, "dc.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(`CREATE TABLE msgs (id INTEGER PRIMARY KEY, chat_id INTEGER, param TEXT)`); err != nil {
+		t.Fatalf("create msgs table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO msgs (id, chat_id, param) VALUES (123, 77, ?)`, "f=$BLOBDIR/image.png"); err != nil {
+		t.Fatalf("insert row: %v", err)
+	}
+
+	blobPath := filepath.Join(blobsDir, "image.png")
+	if err := os.WriteFile(blobPath, []byte("img"), 0o644); err != nil {
+		t.Fatalf("write blob file: %v", err)
+	}
+
+	t.Setenv("DELTACHAT_ACCOUNTS_DIR", accountsDir)
+	t.Setenv("PICOCLAW_HOME", "")
+	t.Setenv("HOME", filepath.Join(baseDir, "home"))
+
+	fallback := deltaLookupMediaFallback("123", "77")
+	if len(fallback.Paths) != 1 || fallback.Paths[0] != blobPath {
+		t.Fatalf("fallback paths = %v, want [%s]", fallback.Paths, blobPath)
+	}
+
+	wrongChat := deltaLookupMediaFallback("123", "78")
+	if len(wrongChat.Paths) != 0 {
+		t.Fatalf("fallback for wrong chat = %v, want []", wrongChat.Paths)
 	}
 }
 

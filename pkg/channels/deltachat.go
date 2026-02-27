@@ -2,8 +2,11 @@ package channels
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,6 +20,8 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/utils"
+
+	_ "modernc.org/sqlite"
 )
 
 var deltaReactionCommandPattern = regexp.MustCompile(`(?i)^/react\s+([0-9]+)\s+(.+)$`)
@@ -69,6 +74,208 @@ func deltaLatencyMillis(sinceMillis int64, now time.Time) (int64, bool) {
 		return 0, false
 	}
 	return nowMillis - sinceMillis, true
+}
+
+const defaultDeltaChatAccountsDir = "/accounts"
+
+func deltaChatAccountsDirs() []string {
+	seen := make(map[string]struct{})
+	dirs := make([]string, 0, 4)
+
+	appendDir := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		cleaned := filepath.Clean(raw)
+		if cleaned == "" {
+			return
+		}
+		if _, exists := seen[cleaned]; exists {
+			return
+		}
+		seen[cleaned] = struct{}{}
+		dirs = append(dirs, cleaned)
+	}
+
+	appendDir(os.Getenv("DELTACHAT_ACCOUNTS_DIR"))
+
+	if picoclawHome := strings.TrimSpace(os.Getenv("PICOCLAW_HOME")); picoclawHome != "" {
+		appendDir(filepath.Join(picoclawHome, "deltachat-accounts"))
+	}
+
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		appendDir(filepath.Join(home, ".picoclaw", "deltachat-accounts"))
+	}
+
+	appendDir(defaultDeltaChatAccountsDir)
+
+	return dirs
+}
+
+func parseDeltaParamMap(raw string) map[string]string {
+	fields := make(map[string]string)
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		fields[key] = strings.TrimSpace(value)
+	}
+	return fields
+}
+
+type deltaMediaFallback struct {
+	Paths   []string
+	DBPath  string
+	BlobRef string
+	WaitMS  int64
+}
+
+func deltaWaitForFile(path string, timeout time.Duration) (bool, int64) {
+	start := time.Now()
+	deadline := start.Add(timeout)
+	for {
+		if path != "" {
+			if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() {
+				return true, time.Since(start).Milliseconds()
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return false, time.Since(start).Milliseconds()
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func deltaBlobPathFromDBParam(dbPath, blobRef string) (string, bool) {
+	blobRef = strings.TrimSpace(blobRef)
+	if blobRef == "" {
+		return "", false
+	}
+
+	const marker = "$BLOBDIR/"
+	if idx := strings.Index(blobRef, marker); idx >= 0 {
+		rel := strings.TrimLeft(blobRef[idx+len(marker):], "/\\")
+		rel = filepath.Clean(filepath.FromSlash(rel))
+		if rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", false
+		}
+		accountDir := filepath.Dir(dbPath)
+		return filepath.Join(accountDir, "dc.db-blobs", rel), true
+	}
+
+	if filepath.IsAbs(blobRef) {
+		return blobRef, true
+	}
+
+	accountDir := filepath.Dir(dbPath)
+	clean := filepath.Clean(filepath.FromSlash(blobRef))
+	if clean == "" || clean == "." {
+		return "", false
+	}
+	return filepath.Join(accountDir, clean), true
+}
+
+func deltaLookupMediaFallback(messageID, chatID string) deltaMediaFallback {
+	result := deltaMediaFallback{}
+
+	messageID = strings.TrimSpace(messageID)
+	if !isDeltaNumericMessageID(messageID) {
+		return result
+	}
+
+	msgID, err := strconv.ParseInt(messageID, 10, 64)
+	if err != nil || msgID <= 0 {
+		return result
+	}
+
+	accountsDirs := deltaChatAccountsDirs()
+	dbSet := make(map[string]struct{})
+	dbPaths := make([]string, 0)
+	for _, accountsDir := range accountsDirs {
+		matches, globErr := filepath.Glob(filepath.Join(accountsDir, "*", "dc.db"))
+		if globErr != nil {
+			continue
+		}
+		for _, match := range matches {
+			if strings.TrimSpace(match) == "" {
+				continue
+			}
+			if _, exists := dbSet[match]; exists {
+				continue
+			}
+			dbSet[match] = struct{}{}
+			dbPaths = append(dbPaths, match)
+		}
+	}
+
+	if len(dbPaths) == 0 {
+		return result
+	}
+
+	incomingChatID, _ := strconv.ParseInt(strings.TrimSpace(chatID), 10, 64)
+
+	for _, dbPath := range dbPaths {
+		if strings.TrimSpace(dbPath) == "" {
+			continue
+		}
+
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			continue
+		}
+		db.SetMaxOpenConns(1)
+		db.SetConnMaxLifetime(30 * time.Second)
+		_, _ = db.Exec("PRAGMA busy_timeout = 2000")
+
+		var param sql.NullString
+		var dbChatID sql.NullInt64
+		rowErr := db.QueryRow("SELECT param, chat_id FROM msgs WHERE id = ? LIMIT 1", msgID).Scan(&param, &dbChatID)
+		if rowErr != nil {
+			rowErr = db.QueryRow("SELECT param FROM msgs WHERE id = ? LIMIT 1", msgID).Scan(&param)
+		}
+		_ = db.Close()
+		if rowErr != nil {
+			continue
+		}
+		if incomingChatID > 0 && dbChatID.Valid && dbChatID.Int64 > 0 && dbChatID.Int64 != incomingChatID {
+			continue
+		}
+
+		raw := ""
+		if param.Valid {
+			raw = param.String
+		}
+		fields := parseDeltaParamMap(raw)
+		blobRef := strings.TrimSpace(fields["f"])
+		if blobRef == "" {
+			continue
+		}
+		candidate, ok := deltaBlobPathFromDBParam(dbPath, blobRef)
+		if !ok || strings.TrimSpace(candidate) == "" {
+			continue
+		}
+
+		if ok, waitMS := deltaWaitForFile(candidate, 2*time.Second); ok {
+			result.Paths = []string{candidate}
+			result.DBPath = dbPath
+			result.BlobRef = blobRef
+			result.WaitMS = waitMS
+			return result
+		}
+	}
+
+	return result
 }
 
 type typingCancel struct {
@@ -772,13 +979,49 @@ func (c *DeltaChatChannel) handleIncomingMessage(msg map[string]interface{}) {
 		content = ""
 	}
 
+	messageID := ""
+	if rawMessageID, ok := msg["id"].(string); ok {
+		messageID = strings.TrimSpace(rawMessageID)
+	}
+
 	var mediaPaths []string
-	if mediaData, ok := msg["media"].([]interface{}); ok {
+	switch mediaData := msg["media"].(type) {
+	case []interface{}:
 		mediaPaths = make([]string, 0, len(mediaData))
 		for _, m := range mediaData {
 			if path, ok := m.(string); ok {
+				path = strings.TrimSpace(path)
+				if path != "" {
+					mediaPaths = append(mediaPaths, path)
+				}
+			}
+		}
+	case []string:
+		for _, path := range mediaData {
+			path = strings.TrimSpace(path)
+			if path != "" {
 				mediaPaths = append(mediaPaths, path)
 			}
+		}
+	case string:
+		trimmed := strings.TrimSpace(mediaData)
+		if trimmed != "" {
+			mediaPaths = []string{trimmed}
+		}
+	}
+
+	mediaFallback := deltaMediaFallback{}
+	if len(mediaPaths) == 0 && messageID != "" {
+		mediaFallback = deltaLookupMediaFallback(messageID, chatID)
+		if len(mediaFallback.Paths) > 0 {
+			mediaPaths = mediaFallback.Paths
+		}
+	}
+
+	if len(mediaPaths) == 0 {
+		lower := strings.ToLower(content)
+		if strings.Contains(lower, "[image") || strings.Contains(lower, "[video") || strings.Contains(lower, "[audio") || strings.Contains(lower, "[file") {
+			logger.WarnCF("deltachat", "DeltaChat message appears to reference an attachment but no media path was resolved", map[string]interface{}{"message_id": messageID, "chat_id": chatID, "sender": senderID})
 		}
 	}
 
@@ -791,12 +1034,8 @@ func (c *DeltaChatChannel) handleIncomingMessage(msg map[string]interface{}) {
 	}
 
 	metadata := make(map[string]string)
-	messageID := ""
-	if rawMessageID, ok := msg["id"].(string); ok {
-		messageID = strings.TrimSpace(rawMessageID)
-		if messageID != "" {
-			metadata["message_id"] = messageID
-		}
+	if messageID != "" {
+		metadata["message_id"] = messageID
 	}
 	if userName, ok := msg["from_name"].(string); ok {
 		metadata["user_name"] = userName
@@ -847,6 +1086,13 @@ func (c *DeltaChatChannel) handleIncomingMessage(msg map[string]interface{}) {
 	logFields := map[string]interface{}{
 		"sender":  senderID,
 		"preview": utils.Truncate(content, 50),
+	}
+	if len(mediaPaths) > 0 {
+		logFields["media_count"] = len(mediaPaths)
+	}
+	if len(mediaFallback.Paths) > 0 {
+		logFields["media_fallback"] = "db"
+		logFields["media_fallback_wait_ms"] = mediaFallback.WaitMS
 	}
 	if bridgeToGatewayMillis, ok := metadata["bridge_to_gateway_ms"]; ok {
 		logFields["bridge_to_gateway_ms"] = bridgeToGatewayMillis
