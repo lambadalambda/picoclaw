@@ -697,6 +697,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 
 	// 2. Save user message to session
 	al.sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
+	_ = al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
 
 	// 3. Run LLM iteration loop
 	finalContent, iteration, err := al.runLLMIteration(ctx, messages, opts)
@@ -846,9 +847,11 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			},
 			AssistantMessage: func(_ int, msg providers.Message) {
 				al.sessions.AddFullMessage(opts.SessionKey, msg)
+				_ = al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
 			},
 			ToolResultMessage: func(_ int, msg providers.Message) {
 				al.sessions.AddFullMessage(opts.SessionKey, msg)
+				_ = al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
 			},
 		},
 	})
