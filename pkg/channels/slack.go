@@ -3,7 +3,6 @@ package channels
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -232,15 +231,11 @@ func (c *SlackChannel) handleMessageEvent(ev *slackevents.MessageEvent) {
 	var mediaPaths []string
 	localFiles := []string{} // 跟踪需要清理的本地文件
 
-	// 确保临时文件在函数返回时被清理
+	// 确保临时文件在函数返回后被清理。
+	// Keep a short retention window so the agent can inspect attachments.
 	defer func() {
 		for _, file := range localFiles {
-			if err := os.Remove(file); err != nil {
-				logger.DebugCF("slack", "Failed to cleanup temp file", map[string]interface{}{
-					"file":  file,
-					"error": err.Error(),
-				})
-			}
+			utils.ScheduleFileCleanup(file, utils.DefaultDownloadedMediaRetention, "slack")
 		}
 	}()
 

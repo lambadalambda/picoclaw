@@ -3,7 +3,6 @@ package channels
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -158,15 +157,11 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	mediaPaths := make([]string, 0, len(m.Attachments))
 	localFiles := make([]string, 0, len(m.Attachments))
 
-	// 确保临时文件在函数返回时被清理
+	// 确保临时文件在函数返回后被清理。
+	// Keep a short retention window so the agent can inspect attachments.
 	defer func() {
 		for _, file := range localFiles {
-			if err := os.Remove(file); err != nil {
-				logger.DebugCF("discord", "Failed to cleanup temp file", map[string]any{
-					"file":  file,
-					"error": err.Error(),
-				})
-			}
+			utils.ScheduleFileCleanup(file, utils.DefaultDownloadedMediaRetention, "discord")
 		}
 	}()
 
