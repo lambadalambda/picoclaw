@@ -1046,8 +1046,11 @@ func (c *DeltaChatChannel) handleIncomingMessage(msg map[string]interface{}) {
 		}
 	}
 
+	lowerContent := strings.ToLower(content)
+	attachmentMarker := strings.Contains(lowerContent, "[image") || strings.Contains(lowerContent, "[video") || strings.Contains(lowerContent, "[audio") || strings.Contains(lowerContent, "[file")
+
 	mediaFallback := deltaMediaFallback{}
-	if len(mediaPaths) == 0 && messageID != "" {
+	if len(mediaPaths) == 0 && messageID != "" && attachmentMarker {
 		mediaFallback = deltaLookupMediaFallback(messageID, chatID)
 		if len(mediaFallback.Paths) > 0 {
 			mediaPaths = mediaFallback.Paths
@@ -1055,8 +1058,7 @@ func (c *DeltaChatChannel) handleIncomingMessage(msg map[string]interface{}) {
 	}
 
 	if len(mediaPaths) == 0 {
-		lower := strings.ToLower(content)
-		if strings.Contains(lower, "[image") || strings.Contains(lower, "[video") || strings.Contains(lower, "[audio") || strings.Contains(lower, "[file") {
+		if attachmentMarker {
 			logger.WarnCF("deltachat", "DeltaChat message appears to reference an attachment but no media path was resolved", map[string]interface{}{"message_id": messageID, "chat_id": chatID, "sender": senderID})
 		}
 	}
