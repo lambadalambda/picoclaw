@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import signal
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -270,6 +271,32 @@ class DeltaChatBridge:
 
         return ""
 
+    def _lookup_media_path_from_db(self, message_id: int) -> str:
+        if message_id <= 0:
+            return ""
+
+        accounts_root = Path(self.settings.accounts_dir)
+        for db_path in accounts_root.glob("*/dc.db"):
+            try:
+                with sqlite3.connect(str(db_path)) as conn:
+                    row = conn.execute("SELECT param FROM msgs WHERE id = ? LIMIT 1", (message_id,)).fetchone()
+            except Exception:
+                continue
+
+            if not row:
+                continue
+
+            fields = self._parse_snapshot_param_map(row[0])
+            blob_file = fields.get("f")
+            if not blob_file:
+                continue
+
+            resolved = self._resolve_snapshot_media_path(blob_file)
+            if resolved:
+                return resolved
+
+        return ""
+
     def _message_to_bridge_payload(self, message: Any) -> dict[str, Any] | None:
         snapshot = message.get_snapshot()
 
@@ -320,6 +347,18 @@ class DeltaChatBridge:
             resolved = self._resolve_snapshot_media_path(blob_file)
             if resolved and resolved not in media_paths:
                 media_paths.append(resolved)
+
+        if not media_paths:
+            message_id = 0
+            try:
+                message_id = int(snapshot.get("id") or 0)
+            except (TypeError, ValueError):
+                message_id = 0
+
+            if message_id > 0:
+                resolved = self._lookup_media_path_from_db(message_id)
+                if resolved:
+                    media_paths.append(resolved)
 
         if media_paths:
             payload["media"] = media_paths
