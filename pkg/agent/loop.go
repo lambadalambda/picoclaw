@@ -258,6 +258,13 @@ func resolvePrimaryVisionAnalyzer(cfg *config.Config) (*vision.Client, string) {
 		return nil, ""
 	}
 
+	// The primary LLM model is only usable as a vision analyzer if it supports
+	// multimodal inputs. Otherwise we'll get generic 400 errors when sending
+	// image_url content.
+	if !providers.ModelCapabilitiesFor(model).SupportsVision {
+		return nil, ""
+	}
+
 	apiKey, apiBase, ok := resolveOpenAICompatibleProviderForModel(cfg, model)
 	if !ok || strings.TrimSpace(apiKey) == "" || strings.TrimSpace(apiBase) == "" {
 		return nil, ""
