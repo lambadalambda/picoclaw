@@ -156,6 +156,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		chatTemperature = 0.7
 	}
 	anthropicCacheTTL := strings.TrimSpace(cfg.Agents.Defaults.AnthropicCacheTTL)
+	subagentManager.ConfigureCache(cfg.Agents.Defaults.AnthropicCache, anthropicCacheTTL)
 
 	modelCaps := providers.ModelCapabilitiesFor(cfg.Agents.Defaults.Model)
 

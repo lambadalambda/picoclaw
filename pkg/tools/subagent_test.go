@@ -54,6 +54,34 @@ func (p *doneProvider) Chat(_ context.Context, _ []providers.Message, _ []provid
 
 func (p *doneProvider) GetDefaultModel() string { return "test-model" }
 
+type recordingOptionsProvider struct {
+	mu      sync.Mutex
+	called  chan struct{}
+	options map[string]interface{}
+	once    sync.Once
+}
+
+func (p *recordingOptionsProvider) Chat(_ context.Context, _ []providers.Message, _ []providers.ToolDefinition, _ string, options map[string]interface{}) (*providers.LLMResponse, error) {
+	p.mu.Lock()
+	if p.options == nil {
+		copy := make(map[string]interface{}, len(options))
+		for k, v := range options {
+			copy[k] = v
+		}
+		p.options = copy
+	}
+	p.mu.Unlock()
+
+	p.once.Do(func() {
+		if p.called != nil {
+			close(p.called)
+		}
+	})
+	return &providers.LLMResponse{Content: "done"}, nil
+}
+
+func (p *recordingOptionsProvider) GetDefaultModel() string { return "test-model" }
+
 func TestSubagentManager_SubagentReportPublishesInbound(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	defer msgBus.Close()
@@ -244,6 +272,35 @@ func TestSubagentManager_RetentionTTL(t *testing.T) {
 	}
 	if _, ok := sm.GetTask("new"); !ok {
 		t.Fatal("expected recent completed task to remain after TTL cleanup")
+	}
+}
+
+func TestSubagentManager_PropagatesAnthropicCacheOptions(t *testing.T) {
+	prov := &recordingOptionsProvider{called: make(chan struct{})}
+	sm := NewSubagentManager(prov, "test-model", t.TempDir(), nil)
+	sm.ConfigureCache(true, "1h")
+
+	_, err := sm.Spawn(context.Background(), "do work", "", "telegram", "chat1", "telegram:chat1", "", SpawnOptions{})
+	if err != nil {
+		t.Fatalf("Spawn() error: %v", err)
+	}
+
+	select {
+	case <-prov.called:
+		// ok
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for provider Chat call")
+	}
+
+	prov.mu.Lock()
+	opts := prov.options
+	prov.mu.Unlock()
+
+	if got, ok := opts["anthropic_cache"].(bool); !ok || !got {
+		t.Fatalf("anthropic_cache = %#v, want true", opts["anthropic_cache"])
+	}
+	if got, ok := opts["anthropic_cache_ttl"].(string); !ok || got != "1h" {
+		t.Fatalf("anthropic_cache_ttl = %#v, want 1h", opts["anthropic_cache_ttl"])
 	}
 }
 

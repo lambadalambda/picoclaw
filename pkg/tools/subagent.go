@@ -152,6 +152,14 @@ func (sm *SubagentManager) ConfigureRetention(maxStoredTasks int, completedTTL t
 	}
 }
 
+func (sm *SubagentManager) ConfigureCache(anthropicCache bool, anthropicCacheTTL string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	sm.chatOptions.AnthropicCache = anthropicCache
+	sm.chatOptions.AnthropicCacheTTL = strings.TrimSpace(anthropicCacheTTL)
+}
+
 func (sm *SubagentManager) Spawn(ctx context.Context, task, label, originChannel, originChatID, originSessionKey, parentTraceID string, opts SpawnOptions) (string, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
