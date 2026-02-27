@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,17 +32,24 @@ type mockTelegramBot struct {
 	// configurable return for SendMessage
 	sendMessageID int
 
+	fileDownloadBase string
+	getFilePath       string
+
 	// optional hook to customize SendMessage behavior per call
 	sendMessageHook func(params *telego.SendMessageParams) (*telego.Message, error)
 }
 
 func newMockBot() *mockTelegramBot {
-	return &mockTelegramBot{sendMessageID: 42}
+	return &mockTelegramBot{sendMessageID: 42, fileDownloadBase: "https://example.com", getFilePath: "photos/test.jpg"}
 }
 
 func (m *mockTelegramBot) Username() string { return "testbot" }
 func (m *mockTelegramBot) FileDownloadURL(filepath string) string {
-	return "https://example.com/" + filepath
+	base := strings.TrimRight(strings.TrimSpace(m.fileDownloadBase), "/")
+	if base == "" {
+		base = "https://example.com"
+	}
+	return base + "/" + strings.TrimLeft(filepath, "/")
 }
 func (m *mockTelegramBot) UpdatesViaLongPolling(ctx context.Context, params *telego.GetUpdatesParams, options ...telego.LongPollingOption) (<-chan telego.Update, error) {
 	return nil, nil
@@ -87,7 +97,11 @@ func (m *mockTelegramBot) DeleteMessage(ctx context.Context, params *telego.Dele
 	return nil
 }
 func (m *mockTelegramBot) GetFile(ctx context.Context, params *telego.GetFileParams) (*telego.File, error) {
-	return &telego.File{FileID: params.FileID, FilePath: "photos/test.jpg"}, nil
+	path := strings.TrimSpace(m.getFilePath)
+	if path == "" {
+		path = "photos/test.jpg"
+	}
+	return &telego.File{FileID: params.FileID, FilePath: path}, nil
 }
 
 func (m *mockTelegramBot) getSendMessageCalls() []*telego.SendMessageParams {
@@ -490,6 +504,52 @@ func TestSend_ConvertedHTMLTooLong_SendsPlainWithoutOversizedAttempt(t *testing.
 	}
 	if calls[0].Text != content {
 		t.Fatalf("expected plain text to be original content, got %q", calls[0].Text)
+	}
+}
+
+func TestHandleMessage_DownloadedPhotoIsRetainedForAgentInspection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("fake-image-bytes"))
+	}))
+	defer srv.Close()
+
+	mock := newMockBot()
+	mock.fileDownloadBase = srv.URL
+	mock.getFilePath = "photos/file_2.jpg"
+	ch := newTestTelegramChannel(mock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	update := telego.Update{Message: &telego.Message{
+		MessageID: 1,
+		From:      &telego.User{ID: 1},
+		Chat:      telego.Chat{ID: 123, Type: "private"},
+		Photo: []telego.PhotoSize{
+			{FileID: "fileid-1"},
+		},
+	}}
+
+	ch.handleMessage(ctx, update)
+
+	outCtx, outCancel := context.WithTimeout(context.Background(), time.Second)
+	defer outCancel()
+	msg, ok := ch.bus.ConsumeInbound(outCtx)
+	if !ok {
+		t.Fatalf("expected inbound message")
+	}
+	if len(msg.Media) != 1 {
+		t.Fatalf("expected 1 media path, got %d", len(msg.Media))
+	}
+	path := msg.Media[0]
+	defer os.Remove(path)
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected downloaded file to exist immediately after handleMessage: %v", err)
+	}
+	if !strings.HasSuffix(path, "_file_2.jpg") {
+		t.Fatalf("expected downloaded filename to end with _file_2.jpg, got %q", path)
 	}
 }
 

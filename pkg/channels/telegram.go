@@ -391,15 +391,11 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 	mediaPaths := []string{}
 	localFiles := []string{} // 跟踪需要清理的本地文件
 
-	// 确保临时文件在函数返回时被清理
+	// 确保临时文件在函数返回后被清理。
+	// We keep a short retention window so the agent can still inspect attachments.
 	defer func() {
 		for _, file := range localFiles {
-			if err := os.Remove(file); err != nil {
-				logger.DebugCF("telegram", "Failed to cleanup temp file", map[string]interface{}{
-					"file":  file,
-					"error": err.Error(),
-				})
-			}
+			utils.ScheduleFileCleanup(file, utils.DefaultDownloadedMediaRetention, "telegram")
 		}
 	}()
 
@@ -538,8 +534,14 @@ func (c *TelegramChannel) downloadFileWithInfo(file *telego.File, ext string) st
 	url := c.bot.FileDownloadURL(file.FilePath)
 	logger.DebugCF("telegram", "File URL", map[string]interface{}{"url": url})
 
-	// Use FilePath as filename for better identification
-	filename := file.FilePath + ext
+	filename := filepath.Base(file.FilePath)
+	ext = strings.TrimSpace(ext)
+	if ext != "" {
+		if !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		filename = strings.TrimSuffix(filename, filepath.Ext(filename)) + ext
+	}
 	return utils.DownloadFile(url, filename, utils.DownloadOptions{
 		LoggerPrefix: "telegram",
 	})
