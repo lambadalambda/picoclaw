@@ -16,6 +16,7 @@ func TestCronService_StartAfterStop_RestartsLoop(t *testing.T) {
 		}
 		return "ok", nil
 	})
+	t.Cleanup(cs.Stop)
 
 	every := int64(1000)
 	if _, err := cs.AddJob("tick", CronSchedule{Kind: "every", EveryMS: &every}, "run", false, "", ""); err != nil {
