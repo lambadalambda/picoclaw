@@ -336,6 +336,7 @@ class DeltaChatBridge:
         return []
 
     def _message_to_bridge_payload(self, message: Any) -> dict[str, Any] | None:
+        started_at = time.time()
         snapshot = message.get_snapshot()
 
         if snapshot.from_id == SpecialContactId.SELF:
@@ -355,6 +356,15 @@ class DeltaChatBridge:
             "chat": str(snapshot.chat_id),
             "content": snapshot.get("text") or "",
         }
+
+        content_preview = str(payload.get("content") or "")
+        lowered_preview = content_preview.lower()
+        attachment_marker = (
+            "[image" in lowered_preview
+            or "[video" in lowered_preview
+            or "[audio" in lowered_preview
+            or "[file" in lowered_preview
+        )
 
         bridge_received_ms = int(time.time() * 1000)
         payload["bridge_received_ms"] = bridge_received_ms
@@ -396,6 +406,22 @@ class DeltaChatBridge:
             if resolved and resolved not in media_paths:
                 media_paths.append(resolved)
 
+        if raw_media_candidates or attachment_marker:
+            short_text = content_preview.strip().replace("\n", " ")
+            if len(short_text) > 160:
+                short_text = short_text[:157] + "..."
+            logging.info(
+                "Inbound message media probe: chat=%s id=%s sender=%s text_chars=%d attachment_hint=%s candidates=%d resolved_now=%d text=%r",
+                payload.get("chat"),
+                payload.get("id"),
+                sender,
+                len(content_preview),
+                attachment_marker,
+                len(raw_media_candidates),
+                len(media_paths),
+                short_text,
+            )
+
         if not media_paths and message_id > 0:
             resolved = self._lookup_media_path_from_db(message_id)
             if resolved:
@@ -410,13 +436,42 @@ class DeltaChatBridge:
                 should_wait = True
 
         if not media_paths and should_wait and message_id > 0:
+            wait_start = time.time()
             waited = self._wait_for_media_paths(message, message_id, raw_media_candidates, timeout_seconds=10.0)
+            waited_ms = int((time.time() - wait_start) * 1000)
             for resolved in waited:
                 if resolved and resolved not in media_paths:
                     media_paths.append(resolved)
 
+            if media_paths:
+                logging.info(
+                    "Inbound media resolved after wait: chat=%s id=%s waited_ms=%d media_count=%d",
+                    payload.get("chat"),
+                    payload.get("id"),
+                    waited_ms,
+                    len(media_paths),
+                )
+            else:
+                logging.warning(
+                    "Inbound media still missing after wait: chat=%s id=%s waited_ms=%d candidates=%d",
+                    payload.get("chat"),
+                    payload.get("id"),
+                    waited_ms,
+                    len(raw_media_candidates),
+                )
+
         if media_paths:
             payload["media"] = media_paths
+
+        total_ms = int((time.time() - started_at) * 1000)
+        if media_paths or raw_media_candidates or attachment_marker:
+            logging.info(
+                "Inbound payload ready: chat=%s id=%s media_count=%d build_ms=%d",
+                payload.get("chat"),
+                payload.get("id"),
+                len(media_paths),
+                total_ms,
+            )
 
         return payload
 
