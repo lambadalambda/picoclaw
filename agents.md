@@ -14,6 +14,7 @@ Rules and conventions for AI agents (and humans) working on this codebase.
 - **TDD (Test-Driven Development).** Write tests first (RED), then implement (GREEN). This applies to all new features and bug fixes.
 - **Verify RED before GREEN.** Run the tests and confirm they fail for the right reason before writing the implementation.
 - **Run the full suite before finishing.** `go test ./...` must pass. `go build ./...` must succeed.
+- **No local Go? Use Docker.** Example: `docker run --rm -v "$PWD":/src -w /src golang:1.25-bookworm sh -lc 'export PATH=/usr/local/go/bin:$PATH; go test ./... && go build ./...'`
 - **Use `httptest` for HTTP-level tests.** Don't hit real APIs in unit tests.
 
 ## Code style
