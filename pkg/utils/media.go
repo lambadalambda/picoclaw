@@ -12,6 +12,8 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
+const DefaultDownloadedMediaRetention = 30 * time.Minute
+
 // IsAudioFile checks if a file is an audio file based on its filename extension and content type.
 func IsAudioFile(filename, contentType string) bool {
 	audioExtensions := []string{".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac", ".wma"}
@@ -72,10 +74,13 @@ func DownloadFile(url, filename string, opts DownloadOptions) string {
 		return ""
 	}
 
-	// Generate unique filename with UUID prefix to prevent conflicts
-	ext := filepath.Ext(filename)
-	safeName := SanitizeFilename(filename)
-	localPath := filepath.Join(mediaDir, uuid.New().String()[:8]+"_"+safeName+ext)
+	// Generate unique filename with UUID prefix to prevent conflicts.
+	// Note: safeName already includes the file extension, if any.
+	safeName := strings.TrimSpace(SanitizeFilename(filename))
+	if safeName == "" || safeName == "." || safeName == "/" {
+		safeName = "file"
+	}
+	localPath := filepath.Join(mediaDir, uuid.New().String()[:8]+"_"+safeName)
 
 	// Create HTTP request
 	req, err := http.NewRequest("GET", url, nil)
@@ -133,6 +138,34 @@ func DownloadFile(url, filename string, opts DownloadOptions) string {
 	})
 
 	return localPath
+}
+
+// ScheduleFileCleanup removes a file after a delay. It is best-effort and
+// ignores "not exists" errors.
+func ScheduleFileCleanup(path string, delay time.Duration, loggerPrefix string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	if delay <= 0 {
+		return
+	}
+	loggerPrefix = strings.TrimSpace(loggerPrefix)
+	if loggerPrefix == "" {
+		loggerPrefix = "utils"
+	}
+
+	time.AfterFunc(delay, func() {
+		if err := os.Remove(path); err != nil {
+			if os.IsNotExist(err) {
+				return
+			}
+			logger.DebugCF(loggerPrefix, "Failed to cleanup temp file", map[string]interface{}{
+				"file":  path,
+				"error": err.Error(),
+			})
+		}
+	})
 }
 
 // DownloadFileSimple is a simplified version of DownloadFile without options
