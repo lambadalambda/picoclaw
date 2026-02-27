@@ -470,6 +470,44 @@ func TestDeltaLookupMediaFallbackResolvesBlobFromDB(t *testing.T) {
 	}
 }
 
+func TestDeltaLookupMediaFallbackWaitsForDBAndBlob(t *testing.T) {
+	baseDir := t.TempDir()
+	accountsDir := filepath.Join(baseDir, "accounts")
+	accountDir := filepath.Join(accountsDir, "1")
+	blobsDir := filepath.Join(accountDir, "dc.db-blobs")
+	if err := os.MkdirAll(blobsDir, 0o755); err != nil {
+		t.Fatalf("mkdir blobs dir: %v", err)
+	}
+
+	dbPath := filepath.Join(accountDir, "dc.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(`CREATE TABLE msgs (id INTEGER PRIMARY KEY, chat_id INTEGER, param TEXT)`); err != nil {
+		t.Fatalf("create msgs table: %v", err)
+	}
+
+	blobPath := filepath.Join(blobsDir, "image.png")
+	go func() {
+		time.Sleep(120 * time.Millisecond)
+		_, _ = db.Exec(`INSERT INTO msgs (id, chat_id, param) VALUES (123, 77, ?)`, "f=$BLOBDIR/image.png")
+		time.Sleep(120 * time.Millisecond)
+		_ = os.WriteFile(blobPath, []byte("img"), 0o644)
+	}()
+
+	t.Setenv("DELTACHAT_ACCOUNTS_DIR", accountsDir)
+	t.Setenv("PICOCLAW_HOME", "")
+	t.Setenv("HOME", filepath.Join(baseDir, "home"))
+
+	fallback := deltaLookupMediaFallback("123", "77")
+	if len(fallback.Paths) != 1 || fallback.Paths[0] != blobPath {
+		t.Fatalf("fallback paths = %v, want [%s]", fallback.Paths, blobPath)
+	}
+}
+
 func TestDeltaChatChannelAllowlist(t *testing.T) {
 	mb := bus.NewMessageBus()
 	defer mb.Close()

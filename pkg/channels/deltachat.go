@@ -140,6 +140,9 @@ type deltaMediaFallback struct {
 	WaitMS  int64
 }
 
+var deltaInboundMediaResolveTimeout = 10 * time.Second
+var deltaInboundMediaResolvePollInterval = 200 * time.Millisecond
+
 func deltaWaitForFile(path string, timeout time.Duration) (bool, int64) {
 	start := time.Now()
 	deadline := start.Add(timeout)
@@ -225,54 +228,87 @@ func deltaLookupMediaFallback(messageID, chatID string) deltaMediaFallback {
 
 	incomingChatID, _ := strconv.ParseInt(strings.TrimSpace(chatID), 10, 64)
 
-	for _, dbPath := range dbPaths {
-		if strings.TrimSpace(dbPath) == "" {
-			continue
-		}
+	start := time.Now()
+	timeout := deltaInboundMediaResolveTimeout
+	if timeout < 0 {
+		timeout = 0
+	}
+	deadline := start.Add(timeout)
+	if timeout <= 0 {
+		deadline = start
+	}
 
-		db, err := sql.Open("sqlite", dbPath)
-		if err != nil {
-			continue
-		}
-		db.SetMaxOpenConns(1)
-		db.SetConnMaxLifetime(30 * time.Second)
-		_, _ = db.Exec("PRAGMA busy_timeout = 2000")
+	for {
+		for _, dbPath := range dbPaths {
+			if strings.TrimSpace(dbPath) == "" {
+				continue
+			}
 
-		var param sql.NullString
-		var dbChatID sql.NullInt64
-		rowErr := db.QueryRow("SELECT param, chat_id FROM msgs WHERE id = ? LIMIT 1", msgID).Scan(&param, &dbChatID)
-		if rowErr != nil {
-			rowErr = db.QueryRow("SELECT param FROM msgs WHERE id = ? LIMIT 1", msgID).Scan(&param)
-		}
-		_ = db.Close()
-		if rowErr != nil {
-			continue
-		}
-		if incomingChatID > 0 && dbChatID.Valid && dbChatID.Int64 > 0 && dbChatID.Int64 != incomingChatID {
-			continue
-		}
+			db, err := sql.Open("sqlite", dbPath)
+			if err != nil {
+				continue
+			}
+			db.SetMaxOpenConns(1)
+			db.SetConnMaxLifetime(30 * time.Second)
+			_, _ = db.Exec("PRAGMA busy_timeout = 2000")
 
-		raw := ""
-		if param.Valid {
-			raw = param.String
-		}
-		fields := parseDeltaParamMap(raw)
-		blobRef := strings.TrimSpace(fields["f"])
-		if blobRef == "" {
-			continue
-		}
-		candidate, ok := deltaBlobPathFromDBParam(dbPath, blobRef)
-		if !ok || strings.TrimSpace(candidate) == "" {
-			continue
-		}
+			var param sql.NullString
+			var dbChatID sql.NullInt64
+			rowErr := db.QueryRow("SELECT param, chat_id FROM msgs WHERE id = ? LIMIT 1", msgID).Scan(&param, &dbChatID)
+			if rowErr != nil {
+				rowErr = db.QueryRow("SELECT param FROM msgs WHERE id = ? LIMIT 1", msgID).Scan(&param)
+			}
+			_ = db.Close()
+			if rowErr != nil {
+				continue
+			}
+			if incomingChatID > 0 && dbChatID.Valid && dbChatID.Int64 > 0 && dbChatID.Int64 != incomingChatID {
+				continue
+			}
 
-		if ok, waitMS := deltaWaitForFile(candidate, 2*time.Second); ok {
-			result.Paths = []string{candidate}
-			result.DBPath = dbPath
-			result.BlobRef = blobRef
-			result.WaitMS = waitMS
+			raw := ""
+			if param.Valid {
+				raw = param.String
+			}
+			fields := parseDeltaParamMap(raw)
+			blobRef := strings.TrimSpace(fields["f"])
+			if blobRef == "" {
+				continue
+			}
+			candidate, ok := deltaBlobPathFromDBParam(dbPath, blobRef)
+			if !ok || strings.TrimSpace(candidate) == "" {
+				continue
+			}
+
+			remaining := time.Until(deadline)
+			if remaining < 0 {
+				remaining = 0
+			}
+			if ok, _ := deltaWaitForFile(candidate, remaining); ok {
+				result.Paths = []string{candidate}
+				result.DBPath = dbPath
+				result.BlobRef = blobRef
+				result.WaitMS = time.Since(start).Milliseconds()
+				return result
+			}
 			return result
 		}
+
+		if timeout <= 0 || time.Now().After(deadline) {
+			break
+		}
+
+		sleep := deltaInboundMediaResolvePollInterval
+		if sleep <= 0 {
+			sleep = 200 * time.Millisecond
+		}
+		if remaining := time.Until(deadline); remaining < sleep {
+			sleep = remaining
+		}
+		if sleep <= 0 {
+			break
+		}
+		time.Sleep(sleep)
 	}
 
 	return result

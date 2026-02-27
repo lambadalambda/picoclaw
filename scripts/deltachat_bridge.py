@@ -302,7 +302,7 @@ class DeltaChatBridge:
         message: Any,
         message_id: int,
         raw_candidates: list[Any],
-        timeout_seconds: float = 2.0,
+        timeout_seconds: float = 10.0,
     ) -> list[str]:
         if timeout_seconds <= 0:
             return []
@@ -401,8 +401,16 @@ class DeltaChatBridge:
             if resolved:
                 media_paths.append(resolved)
 
-        if not media_paths and raw_media_candidates and message_id > 0:
-            waited = self._wait_for_media_paths(message, message_id, raw_media_candidates, timeout_seconds=2.0)
+        should_wait = False
+        if raw_media_candidates:
+            should_wait = True
+        else:
+            lowered = str(payload.get("content") or "").lower()
+            if "[image" in lowered or "[video" in lowered or "[audio" in lowered or "[file" in lowered:
+                should_wait = True
+
+        if not media_paths and should_wait and message_id > 0:
+            waited = self._wait_for_media_paths(message, message_id, raw_media_candidates, timeout_seconds=10.0)
             for resolved in waited:
                 if resolved and resolved not in media_paths:
                     media_paths.append(resolved)
