@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/openai/openai-go/v3"
@@ -54,6 +57,52 @@ func TestBuildCodexParams_ToolCallConversation(t *testing.T) {
 	}
 	if len(params.Input.OfInputItemList) != 3 {
 		t.Errorf("len(Input items) = %d, want 3", len(params.Input.OfInputItemList))
+	}
+}
+
+func TestBuildCodexParams_EncodesInlineImagePart(t *testing.T) {
+	tmpDir := t.TempDir()
+	imagePath := filepath.Join(tmpDir, "input.png")
+	if err := os.WriteFile(imagePath, []byte("image-bytes"), 0644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	messages := []Message{
+		{
+			Role:    "user",
+			Content: "Describe this",
+			Parts: []MessagePart{
+				{Type: MessagePartTypeImage, Path: imagePath},
+			},
+		},
+	}
+
+	params := buildCodexParams(messages, nil, "gpt-4o", map[string]interface{}{})
+	if params.Input.OfInputItemList == nil || len(params.Input.OfInputItemList) != 1 {
+		t.Fatalf("input items = %#v, want 1 user message", params.Input.OfInputItemList)
+	}
+
+	first := params.Input.OfInputItemList[0]
+	if first.OfMessage == nil {
+		t.Fatalf("expected first input item to be a message, got %#v", first)
+	}
+	contentList := first.OfMessage.Content.OfInputItemContentList
+	if len(contentList) != 2 {
+		t.Fatalf("len(contentList) = %d, want 2", len(contentList))
+	}
+
+	if contentList[0].OfInputText == nil || contentList[0].OfInputText.Text != "Describe this" {
+		t.Fatalf("unexpected text content item: %#v", contentList[0])
+	}
+	if contentList[1].OfInputImage == nil {
+		t.Fatalf("expected second content item to be input_image, got %#v", contentList[1])
+	}
+	imageURL := contentList[1].OfInputImage.ImageURL.Or("")
+	if !strings.HasPrefix(imageURL, "data:image/png;base64,") {
+		t.Fatalf("input_image.image_url = %q, want data URL prefix", imageURL)
+	}
+	if string(contentList[1].OfInputImage.Detail) != "auto" {
+		t.Fatalf("input_image.detail = %q, want auto", contentList[1].OfInputImage.Detail)
 	}
 }
 

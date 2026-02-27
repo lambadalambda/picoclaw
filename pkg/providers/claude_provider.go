@@ -117,10 +117,48 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 					anthropic.NewUserMessage(anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, toolResultIsError(msg.Content))),
 				)
 			} else {
-				textBlock := anthropic.NewTextBlock(msg.Content)
-				anthropicMessages = append(anthropicMessages,
-					anthropic.NewUserMessage(textBlock),
-				)
+				if len(msg.Parts) > 0 {
+					blocks := make([]anthropic.ContentBlockParamUnion, 0, len(msg.Parts)+1)
+					if strings.TrimSpace(msg.Content) != "" {
+						blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+					}
+
+					for _, part := range msg.Parts {
+						imageData, err := inlineImageDataFromPart(part)
+						if err != nil {
+							logger.WarnCF("provider", "Skipping inline image part for Claude request", map[string]interface{}{
+								"path":  strings.TrimSpace(part.Path),
+								"error": err.Error(),
+							})
+							continue
+						}
+
+						mediaType, ok := anthropicMediaTypeForImage(imageData.MediaType)
+						if !ok {
+							logger.WarnCF("provider", "Skipping unsupported inline image media type for Claude", map[string]interface{}{
+								"path":       imageData.Path,
+								"media_type": imageData.MediaType,
+							})
+							continue
+						}
+
+						blocks = append(blocks, anthropic.NewImageBlock(anthropic.Base64ImageSourceParam{
+							Data:      imageData.Base64Data,
+							MediaType: mediaType,
+						}))
+					}
+
+					if len(blocks) == 0 {
+						blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+					}
+
+					anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(blocks...))
+				} else {
+					textBlock := anthropic.NewTextBlock(msg.Content)
+					anthropicMessages = append(anthropicMessages,
+						anthropic.NewUserMessage(textBlock),
+					)
+				}
 			}
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
@@ -263,6 +301,21 @@ func mergeAnthropicBetaHeaders(values ...string) string {
 	}
 
 	return strings.Join(merged, ",")
+}
+
+func anthropicMediaTypeForImage(mediaType string) (anthropic.Base64ImageSourceMediaType, bool) {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "image/jpeg", "image/jpg":
+		return anthropic.Base64ImageSourceMediaTypeImageJPEG, true
+	case "image/png":
+		return anthropic.Base64ImageSourceMediaTypeImagePNG, true
+	case "image/gif":
+		return anthropic.Base64ImageSourceMediaTypeImageGIF, true
+	case "image/webp":
+		return anthropic.Base64ImageSourceMediaTypeImageWebP, true
+	default:
+		return "", false
+	}
 }
 
 func translateToolsForClaude(tools []ToolDefinition) []anthropic.ToolUnionParam {

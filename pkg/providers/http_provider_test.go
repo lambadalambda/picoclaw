@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -677,6 +679,74 @@ func TestChat_CanonicalizesLegacyAssistantToolCallsInRequest(t *testing.T) {
 	}
 	if !strings.Contains(fnArgs, `"command":"pwd"`) {
 		t.Fatalf("function.arguments = %q, want JSON containing command=pwd", fnArgs)
+	}
+}
+
+func TestChat_EncodesInlineImagePartsForUserMessage(t *testing.T) {
+	tmpDir := t.TempDir()
+	imagePath := filepath.Join(tmpDir, "input.png")
+	if err := os.WriteFile(imagePath, []byte("image-bytes"), 0644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	var capturedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, validResponse("ok"))
+	}))
+	defer srv.Close()
+
+	p := newTestProvider("test-key", srv.URL)
+	messages := []Message{
+		{
+			Role:    "user",
+			Content: "Describe this image",
+			Parts: []MessagePart{
+				{Type: MessagePartTypeImage, Path: imagePath},
+			},
+		},
+	}
+
+	_, err := p.Chat(context.Background(), messages, nil, "gpt-4o", newTestOptions())
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	rawMessages, ok := capturedBody["messages"].([]interface{})
+	if !ok || len(rawMessages) != 1 {
+		t.Fatalf("unexpected messages payload: %#v", capturedBody["messages"])
+	}
+
+	user, ok := rawMessages[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("user payload has unexpected type: %T", rawMessages[0])
+	}
+	content, ok := user["content"].([]interface{})
+	if !ok {
+		t.Fatalf("user.content should be array for multimodal input, got: %T", user["content"])
+	}
+	if len(content) != 2 {
+		t.Fatalf("len(user.content) = %d, want 2", len(content))
+	}
+
+	textPart, ok := content[0].(map[string]interface{})
+	if !ok || textPart["type"] != "text" || textPart["text"] != "Describe this image" {
+		t.Fatalf("unexpected text part: %#v", content[0])
+	}
+
+	imagePart, ok := content[1].(map[string]interface{})
+	if !ok || imagePart["type"] != "image_url" {
+		t.Fatalf("unexpected image part: %#v", content[1])
+	}
+	imageURL, ok := imagePart["image_url"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("image_url shape invalid: %#v", imagePart["image_url"])
+	}
+	urlValue, _ := imageURL["url"].(string)
+	if !strings.HasPrefix(urlValue, "data:image/png;base64,") {
+		t.Fatalf("image_url.url = %q, want data URL prefix", urlValue)
 	}
 }
 

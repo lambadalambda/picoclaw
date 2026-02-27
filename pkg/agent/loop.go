@@ -60,6 +60,7 @@ type processOptions struct {
 	ChatID          string // Target chat ID for tool execution
 	TraceID         string // Correlation ID for logs across one processing flow
 	UserMessage     string // User message content (may include prefix)
+	UserMedia       []string
 	DefaultResponse string // Response when LLM returns empty
 	EnableSummary   bool   // Whether to trigger summarization
 	SendResponse    bool   // Whether to send response via bus
@@ -550,8 +551,9 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	}
 
 	userMessage := msg.Content
+	var userMedia []string
 	if len(msg.Media) > 0 {
-		userMessage = al.buildUserMessageWithMediaContext(ctx, msg.Content, msg.Media, traceID)
+		userMessage, userMedia = al.buildUserMessageWithMediaContext(ctx, msg.Content, msg.Media, traceID)
 	}
 
 	// Process as user message
@@ -561,6 +563,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		ChatID:          msg.ChatID,
 		TraceID:         traceID,
 		UserMessage:     userMessage,
+		UserMedia:       userMedia,
 		DefaultResponse: "I've completed processing but have no response to give.",
 		EnableSummary:   true,
 		SendResponse:    false,
@@ -675,7 +678,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 		history,
 		summary,
 		opts.UserMessage,
-		nil,
+		opts.UserMedia,
 		opts.Channel,
 		opts.ChatID,
 	)

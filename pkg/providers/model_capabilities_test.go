@@ -18,7 +18,27 @@ func TestModelCapabilities_GLM46V_Vision(t *testing.T) {
 		t.Fatal("glm-4.6v should advertise native vision support")
 	}
 	if caps.SupportsInlineVision {
-		t.Fatal("inline vision transport is not wired yet")
+		t.Fatal("glm-4.6v should not advertise inline vision transport by default")
+	}
+}
+
+func TestModelCapabilities_GPT4O_InlineVision(t *testing.T) {
+	caps := ModelCapabilitiesFor("gpt-4o")
+	if !caps.SupportsVision {
+		t.Fatal("gpt-4o should advertise native vision support")
+	}
+	if !caps.SupportsInlineVision {
+		t.Fatal("gpt-4o should advertise inline vision transport support")
+	}
+}
+
+func TestModelCapabilities_Claude_InlineVision(t *testing.T) {
+	caps := ModelCapabilitiesFor("claude-opus-4-1")
+	if !caps.SupportsVision {
+		t.Fatal("claude models should advertise native vision support")
+	}
+	if !caps.SupportsInlineVision {
+		t.Fatal("claude models should advertise inline vision transport support")
 	}
 }
 

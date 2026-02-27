@@ -221,10 +221,31 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 
 	messages = append(messages, sanitizedHistory...)
 
-	messages = append(messages, providers.Message{
+	userMessage := providers.Message{
 		Role:    "user",
 		Content: currentMessage,
-	})
+	}
+
+	if len(media) > 0 {
+		parts := make([]providers.MessagePart, 0, len(media))
+		seen := make(map[string]struct{}, len(media))
+		for _, raw := range media {
+			path := strings.TrimSpace(raw)
+			if path == "" {
+				continue
+			}
+			if _, exists := seen[path]; exists {
+				continue
+			}
+			seen[path] = struct{}{}
+			parts = append(parts, providers.MessagePart{Type: providers.MessagePartTypeImage, Path: path})
+		}
+		if len(parts) > 0 {
+			userMessage.Parts = parts
+		}
+	}
+
+	messages = append(messages, userMessage)
 
 	return messages
 }

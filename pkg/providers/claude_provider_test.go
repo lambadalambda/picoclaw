@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -30,6 +32,76 @@ func TestBuildClaudeParams_BasicMessage(t *testing.T) {
 	}
 	if len(params.Messages) != 1 {
 		t.Fatalf("len(Messages) = %d, want 1", len(params.Messages))
+	}
+}
+
+func TestBuildClaudeParams_EncodesInlineImagePart(t *testing.T) {
+	tmpDir := t.TempDir()
+	imagePath := filepath.Join(tmpDir, "input.png")
+	if err := os.WriteFile(imagePath, []byte("image-bytes"), 0644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	messages := []Message{
+		{
+			Role:    "user",
+			Content: "Describe this",
+			Parts: []MessagePart{
+				{Type: MessagePartTypeImage, Path: imagePath},
+			},
+		},
+	}
+
+	params, err := buildClaudeParams(messages, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("buildClaudeParams() error: %v", err)
+	}
+
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("json.Marshal(params) error: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error: %v", err)
+	}
+
+	msgs, ok := payload["messages"].([]interface{})
+	if !ok || len(msgs) != 1 {
+		t.Fatalf("payload.messages = %#v, want 1 message", payload["messages"])
+	}
+	first, ok := msgs[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("payload.messages[0] has unexpected type: %T", msgs[0])
+	}
+	content, ok := first["content"].([]interface{})
+	if !ok || len(content) != 2 {
+		t.Fatalf("payload.messages[0].content = %#v, want 2 blocks", first["content"])
+	}
+
+	textBlock, ok := content[0].(map[string]interface{})
+	if !ok || textBlock["type"] != "text" || textBlock["text"] != "Describe this" {
+		t.Fatalf("unexpected text block: %#v", content[0])
+	}
+
+	imageBlock, ok := content[1].(map[string]interface{})
+	if !ok || imageBlock["type"] != "image" {
+		t.Fatalf("unexpected image block: %#v", content[1])
+	}
+	source, ok := imageBlock["source"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("image source shape invalid: %#v", imageBlock["source"])
+	}
+	if source["type"] != "base64" {
+		t.Fatalf("image source type = %#v, want base64", source["type"])
+	}
+	if source["media_type"] != "image/png" {
+		t.Fatalf("image source media_type = %#v, want image/png", source["media_type"])
+	}
+	data, _ := source["data"].(string)
+	if data == "" || strings.HasPrefix(data, "data:") {
+		t.Fatalf("image source data should be raw base64, got: %q", data)
 	}
 }
 

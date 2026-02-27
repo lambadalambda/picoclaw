@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -14,12 +15,13 @@ type imageAnalyzer interface {
 	AnalyzeImages(ctx context.Context, prompt string, imagePaths []string) (string, error)
 }
 
-func (al *AgentLoop) buildUserMessageWithMediaContext(ctx context.Context, content string, media []string, traceID string) string {
+func (al *AgentLoop) buildUserMessageWithMediaContext(ctx context.Context, content string, media []string, traceID string) (string, []string) {
 	base := strings.TrimSpace(content)
 	if base == "" {
 		base = "[user sent attachments]"
 	}
 
+	seen := make(map[string]struct{}, len(media))
 	attachments := make([]string, 0, len(media))
 	imagePaths := make([]string, 0, len(media))
 	for _, raw := range media {
@@ -27,6 +29,10 @@ func (al *AgentLoop) buildUserMessageWithMediaContext(ctx context.Context, conte
 		if path == "" {
 			continue
 		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
 		attachments = append(attachments, path)
 		if isImagePath(path) {
 			imagePaths = append(imagePaths, path)
@@ -34,7 +40,7 @@ func (al *AgentLoop) buildUserMessageWithMediaContext(ctx context.Context, conte
 	}
 
 	if len(attachments) == 0 {
-		return base
+		return base, nil
 	}
 
 	parts := []string{base, "[Attached files]"}
@@ -43,32 +49,63 @@ func (al *AgentLoop) buildUserMessageWithMediaContext(ctx context.Context, conte
 	}
 
 	if len(imagePaths) == 0 {
-		return strings.Join(parts, "\n")
+		return strings.Join(parts, "\n"), nil
 	}
 
-	if al.modelCapabilities.SupportsVision && al.modelCapabilities.SupportsInlineVision {
-		return strings.Join(parts, "\n")
+	inlineSupported := al.modelCapabilities.SupportsVision && al.modelCapabilities.SupportsInlineVision
+	if inlineSupported && al.provider != nil {
+		inlineSupported = providers.SupportsInlineVisionTransport(al.provider, al.model)
+	}
+
+	inlineImagePaths := make([]string, 0, len(imagePaths))
+	analyzeImagePaths := imagePaths
+	if inlineSupported {
+		analyzeImagePaths = make([]string, 0, len(imagePaths))
+		for _, path := range imagePaths {
+			if providers.SupportsInlineImagePath(path) {
+				if err := providers.ValidateInlineImagePath(path); err != nil {
+					logger.WarnCF("agent", "Inline image transport unavailable for attachment; using analysis fallback", map[string]interface{}{
+						"trace_id": traceID,
+						"path":     path,
+						"error":    err.Error(),
+					})
+					analyzeImagePaths = append(analyzeImagePaths, path)
+					continue
+				}
+				inlineImagePaths = append(inlineImagePaths, path)
+				continue
+			}
+			analyzeImagePaths = append(analyzeImagePaths, path)
+		}
+
+		if len(analyzeImagePaths) == 0 && len(inlineImagePaths) > 0 {
+			return strings.Join(parts, "\n"), inlineImagePaths
+		}
+	}
+
+	if len(analyzeImagePaths) == 0 {
+		return strings.Join(parts, "\n"), inlineImagePaths
 	}
 
 	if al.visionAnalyzer == nil {
 		parts = append(parts, "", "[Automatic image analysis unavailable: no vision fallback is configured.]")
-		return strings.Join(parts, "\n")
+		return strings.Join(parts, "\n"), inlineImagePaths
 	}
 
 	prompt := buildVisionPrompt(content)
-	analysis, err := al.visionAnalyzer.AnalyzeImages(ctx, prompt, imagePaths)
+	analysis, err := al.visionAnalyzer.AnalyzeImages(ctx, prompt, analyzeImagePaths)
 	if err != nil {
 		logger.WarnCF("agent", "Automatic image analysis failed", map[string]interface{}{
 			"trace_id": traceID,
-			"images":   len(imagePaths),
+			"images":   len(analyzeImagePaths),
 			"error":    err.Error(),
 		})
 		parts = append(parts, "", fmt.Sprintf("[Automatic image analysis failed: %s]", utils.Truncate(err.Error(), 200)))
-		return strings.Join(parts, "\n")
+		return strings.Join(parts, "\n"), inlineImagePaths
 	}
 
 	parts = append(parts, "", "[Automatic image analysis]", strings.TrimSpace(analysis))
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n"), inlineImagePaths
 }
 
 func buildVisionPrompt(userContent string) string {

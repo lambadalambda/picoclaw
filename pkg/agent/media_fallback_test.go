@@ -37,10 +37,13 @@ func TestBuildUserMessageWithMediaContext_UsesFallbackForNonVisionModel(t *testi
 		visionAnalyzer:    analyzer,
 	}
 
-	got := al.buildUserMessageWithMediaContext(context.Background(), "What is this?", []string{imagePath}, "trace-test")
+	got, inline := al.buildUserMessageWithMediaContext(context.Background(), "What is this?", []string{imagePath}, "trace-test")
 
 	if analyzer.calls != 1 {
 		t.Fatalf("analyzer call count = %d, want 1", analyzer.calls)
+	}
+	if len(inline) != 0 {
+		t.Fatalf("inline media = %v, want []", inline)
 	}
 	if !strings.Contains(got, "Automatic image analysis") {
 		t.Fatalf("message should include fallback section, got: %q", got)
@@ -58,8 +61,11 @@ func TestBuildUserMessageWithMediaContext_NoAnalyzerAddsNotice(t *testing.T) {
 	}
 
 	al := &AgentLoop{modelCapabilities: providers.ModelCapabilities{SupportsVision: false}}
-	got := al.buildUserMessageWithMediaContext(context.Background(), "Please inspect", []string{imagePath}, "trace-test")
+	got, inline := al.buildUserMessageWithMediaContext(context.Background(), "Please inspect", []string{imagePath}, "trace-test")
 
+	if len(inline) != 0 {
+		t.Fatalf("inline media = %v, want []", inline)
+	}
 	if !strings.Contains(got, "image analysis unavailable") {
 		t.Fatalf("message should include unavailable notice, got: %q", got)
 	}
@@ -78,10 +84,13 @@ func TestBuildUserMessageWithMediaContext_VisionModelWithoutInlineTransportUsesF
 		visionAnalyzer:    analyzer,
 	}
 
-	got := al.buildUserMessageWithMediaContext(context.Background(), "Describe", []string{imagePath}, "trace-test")
+	got, inline := al.buildUserMessageWithMediaContext(context.Background(), "Describe", []string{imagePath}, "trace-test")
 
 	if analyzer.calls != 1 {
 		t.Fatalf("analyzer call count = %d, want 1", analyzer.calls)
+	}
+	if len(inline) != 0 {
+		t.Fatalf("inline media = %v, want []", inline)
 	}
 	if !strings.Contains(got, "Automatic image analysis") {
 		t.Fatalf("message should include fallback section, got: %q", got)
@@ -101,12 +110,64 @@ func TestBuildUserMessageWithMediaContext_VisionModelWithInlineTransportSkipsFal
 		visionAnalyzer:    analyzer,
 	}
 
-	got := al.buildUserMessageWithMediaContext(context.Background(), "Describe", []string{imagePath}, "trace-test")
+	got, inline := al.buildUserMessageWithMediaContext(context.Background(), "Describe", []string{imagePath}, "trace-test")
 
 	if analyzer.calls != 0 {
 		t.Fatalf("analyzer call count = %d, want 0", analyzer.calls)
 	}
+	if len(inline) != 1 || inline[0] != imagePath {
+		t.Fatalf("inline media = %v, want [%s]", inline, imagePath)
+	}
 	if strings.Contains(got, "Automatic image analysis") {
 		t.Fatalf("inline-vision model should skip fallback section, got: %q", got)
+	}
+}
+
+func TestBuildUserMessageWithMediaContext_InlineModelFallsBackForUnsupportedImageType(t *testing.T) {
+	tmpDir := t.TempDir()
+	imagePath := filepath.Join(tmpDir, "input.tiff")
+	if err := os.WriteFile(imagePath, []byte("tiff"), 0644); err != nil {
+		t.Fatalf("failed to write image fixture: %v", err)
+	}
+
+	analyzer := &stubVisionAnalyzer{result: "Detected a printed stack trace."}
+	al := &AgentLoop{
+		modelCapabilities: providers.ModelCapabilities{SupportsVision: true, SupportsInlineVision: true},
+		visionAnalyzer:    analyzer,
+	}
+
+	got, inline := al.buildUserMessageWithMediaContext(context.Background(), "Describe", []string{imagePath}, "trace-test")
+
+	if analyzer.calls != 1 {
+		t.Fatalf("analyzer call count = %d, want 1", analyzer.calls)
+	}
+	if len(inline) != 0 {
+		t.Fatalf("inline media = %v, want []", inline)
+	}
+	if !strings.Contains(got, "Automatic image analysis") {
+		t.Fatalf("message should include fallback section, got: %q", got)
+	}
+}
+
+func TestBuildUserMessageWithMediaContext_InlineModelFallsBackWhenInlineValidationFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	imagePath := filepath.Join(tmpDir, "missing.png")
+
+	analyzer := &stubVisionAnalyzer{result: "Detected an exception stack trace."}
+	al := &AgentLoop{
+		modelCapabilities: providers.ModelCapabilities{SupportsVision: true, SupportsInlineVision: true},
+		visionAnalyzer:    analyzer,
+	}
+
+	got, inline := al.buildUserMessageWithMediaContext(context.Background(), "Describe", []string{imagePath}, "trace-test")
+
+	if analyzer.calls != 1 {
+		t.Fatalf("analyzer call count = %d, want 1", analyzer.calls)
+	}
+	if len(inline) != 0 {
+		t.Fatalf("inline media = %v, want []", inline)
+	}
+	if !strings.Contains(got, "Automatic image analysis") {
+		t.Fatalf("message should include fallback section, got: %q", got)
 	}
 }

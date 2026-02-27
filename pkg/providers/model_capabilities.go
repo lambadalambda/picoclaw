@@ -19,9 +19,9 @@ func ModelCapabilitiesFor(model string) ModelCapabilities {
 	case strings.Contains(normalized, "glm-4.6v"):
 		return ModelCapabilities{SupportsVision: true, SupportsInlineVision: false}
 	case strings.Contains(normalized, "gpt-4o"):
-		return ModelCapabilities{SupportsVision: true, SupportsInlineVision: false}
-	case strings.Contains(normalized, "claude-3"):
-		return ModelCapabilities{SupportsVision: true, SupportsInlineVision: false}
+		return ModelCapabilities{SupportsVision: true, SupportsInlineVision: true}
+	case strings.Contains(normalized, "claude"):
+		return ModelCapabilities{SupportsVision: true, SupportsInlineVision: true}
 	case strings.Contains(normalized, "gemini"):
 		return ModelCapabilities{SupportsVision: true, SupportsInlineVision: false}
 	default:

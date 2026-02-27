@@ -48,9 +48,19 @@ type HTTPProvider struct {
 
 type chatCompletionMessage struct {
 	Role       string                   `json:"role"`
-	Content    string                   `json:"content"`
+	Content    interface{}              `json:"content"`
 	ToolCalls  []chatCompletionToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string                   `json:"tool_call_id,omitempty"`
+}
+
+type chatCompletionContentPart struct {
+	Type     string                  `json:"type"`
+	Text     string                  `json:"text,omitempty"`
+	ImageURL *chatCompletionImageURL `json:"image_url,omitempty"`
+}
+
+type chatCompletionImageURL struct {
+	URL string `json:"url"`
 }
 
 type chatCompletionToolCall struct {
@@ -217,6 +227,35 @@ func toChatCompletionMessages(messages []Message) []chatCompletionMessage {
 			Role:       msg.Role,
 			Content:    msg.Content,
 			ToolCallID: msg.ToolCallID,
+		}
+
+		if msg.Role == "user" && len(msg.Parts) > 0 {
+			contentParts := make([]chatCompletionContentPart, 0, len(msg.Parts)+1)
+			if strings.TrimSpace(msg.Content) != "" {
+				contentParts = append(contentParts, chatCompletionContentPart{Type: "text", Text: msg.Content})
+			}
+
+			for _, part := range msg.Parts {
+				imageData, err := inlineImageDataFromPart(part)
+				if err != nil {
+					logger.WarnCF("provider", "Skipping inline image part for OpenAI-compatible request", map[string]interface{}{
+						"path":  strings.TrimSpace(part.Path),
+						"error": err.Error(),
+					})
+					continue
+				}
+
+				contentParts = append(contentParts, chatCompletionContentPart{
+					Type: "image_url",
+					ImageURL: &chatCompletionImageURL{
+						URL: imageData.DataURL,
+					},
+				})
+			}
+
+			if len(contentParts) > 0 {
+				wireMsg.Content = contentParts
+			}
 		}
 
 		if len(msg.ToolCalls) > 0 {

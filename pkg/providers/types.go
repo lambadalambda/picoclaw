@@ -30,10 +30,23 @@ type UsageInfo struct {
 }
 
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role       string        `json:"role"`
+	Content    string        `json:"content"`
+	Parts      []MessagePart `json:"-"`
+	ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+}
+
+type MessagePartType string
+
+const (
+	MessagePartTypeImage MessagePartType = "image"
+)
+
+type MessagePart struct {
+	Type      MessagePartType `json:"type,omitempty"`
+	Path      string          `json:"path,omitempty"`
+	MediaType string          `json:"media_type,omitempty"`
 }
 
 type LLMProvider interface {
