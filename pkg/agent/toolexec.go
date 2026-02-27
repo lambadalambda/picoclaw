@@ -38,6 +38,7 @@ var toolsToEcho = map[string]bool{
 	"list_dir":      true,
 	"web_search":    true,
 	"web_fetch":     true,
+	"image_inspect": true,
 	"spawn":         true,
 	"memory_store":  true,
 	"memory_search": true,
@@ -111,6 +112,15 @@ func extractKeyParam(toolName string, args map[string]interface{}) string {
 				return url[:57] + "..."
 			}
 			return url
+		}
+	case "image_inspect":
+		if sources, ok := args["sources"].([]interface{}); ok && len(sources) > 0 {
+			if src, ok := sources[0].(string); ok {
+				if len(src) > 60 {
+					return src[:57] + "..."
+				}
+				return src
+			}
 		}
 	case "spawn":
 		if task, ok := args["task"].(string); ok {

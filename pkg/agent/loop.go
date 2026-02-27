@@ -159,6 +159,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	modelCaps := providers.ModelCapabilitiesFor(cfg.Agents.Defaults.Model)
 
 	var visionAnalyzer imageAnalyzer
+	visionAnalyzerModel := ""
 	visionCfg := cfg.Tools.Vision
 	if visionCfg.Enabled {
 		visionAPIKey := strings.TrimSpace(visionCfg.APIKey)
@@ -172,13 +173,13 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 				visionAPIBase = "https://open.bigmodel.cn/api/paas/v4"
 			}
 		}
-		visionModel := strings.TrimSpace(visionCfg.Model)
-		if visionModel == "" {
-			visionModel = "glm-4.6v"
+		visionAnalyzerModel = strings.TrimSpace(visionCfg.Model)
+		if visionAnalyzerModel == "" {
+			visionAnalyzerModel = "glm-4.6v"
 		}
 
 		if visionAPIKey != "" {
-			visionClient := vision.NewClient(visionAPIKey, visionAPIBase, visionModel)
+			visionClient := vision.NewClient(visionAPIKey, visionAPIBase, visionAnalyzerModel)
 			if visionCfg.TimeoutSeconds > 0 {
 				visionClient.Timeout = time.Duration(visionCfg.TimeoutSeconds) * time.Second
 			}
@@ -187,6 +188,17 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 			}
 			visionAnalyzer = visionClient
 		}
+	}
+
+	primaryVisionAnalyzer, primaryVisionModel := resolvePrimaryVisionAnalyzer(cfg)
+	if primaryVisionAnalyzer != nil || visionAnalyzer != nil {
+		toolsRegistry.Register(tools.NewImageInspectTool(
+			workspace,
+			primaryVisionAnalyzer,
+			primaryVisionModel,
+			visionAnalyzer,
+			visionAnalyzerModel,
+		))
 	}
 
 	return &AgentLoop{
@@ -238,6 +250,97 @@ func resolveZAISearchCredentials(webCfg config.WebSearchConfig, providersCfg con
 	}
 
 	return zaiSearchKey, zaiSearchBase
+}
+
+func resolvePrimaryVisionAnalyzer(cfg *config.Config) (*vision.Client, string) {
+	model := strings.TrimSpace(cfg.Agents.Defaults.Model)
+	if model == "" {
+		return nil, ""
+	}
+
+	apiKey, apiBase, ok := resolveOpenAICompatibleProviderForModel(cfg, model)
+	if !ok || strings.TrimSpace(apiKey) == "" || strings.TrimSpace(apiBase) == "" {
+		return nil, ""
+	}
+
+	visionClient := vision.NewClient(apiKey, apiBase, model)
+	visionCfg := cfg.Tools.Vision
+	if visionCfg.TimeoutSeconds > 0 {
+		visionClient.Timeout = time.Duration(visionCfg.TimeoutSeconds) * time.Second
+	}
+	if visionCfg.MaxImages > 0 {
+		visionClient.MaxImages = visionCfg.MaxImages
+	}
+
+	return visionClient, model
+}
+
+func resolveOpenAICompatibleProviderForModel(cfg *config.Config, model string) (apiKey, apiBase string, ok bool) {
+	lowerModel := strings.ToLower(strings.TrimSpace(model))
+
+	switch {
+	case strings.HasPrefix(model, "openrouter/") || strings.HasPrefix(model, "anthropic/") || strings.HasPrefix(model, "openai/") || strings.HasPrefix(model, "meta-llama/") || strings.HasPrefix(model, "deepseek/") || strings.HasPrefix(model, "google/"):
+		apiKey = strings.TrimSpace(cfg.Providers.OpenRouter.APIKey)
+		apiBase = strings.TrimSpace(cfg.Providers.OpenRouter.APIBase)
+		if apiBase == "" {
+			apiBase = "https://openrouter.ai/api/v1"
+		}
+		return apiKey, apiBase, apiKey != ""
+
+	case (strings.Contains(lowerModel, "claude") || strings.HasPrefix(model, "anthropic/")) && (cfg.Providers.Anthropic.APIKey != "" || cfg.Providers.Anthropic.AuthMethod != ""):
+		return "", "", false
+
+	case (strings.Contains(lowerModel, "gpt") || strings.HasPrefix(model, "openai/")) && (cfg.Providers.OpenAI.APIKey != "" || cfg.Providers.OpenAI.AuthMethod != ""):
+		apiKey = strings.TrimSpace(cfg.Providers.OpenAI.APIKey)
+		apiBase = strings.TrimSpace(cfg.Providers.OpenAI.APIBase)
+		if apiBase == "" {
+			apiBase = "https://api.openai.com/v1"
+		}
+		return apiKey, apiBase, apiKey != ""
+
+	case (strings.Contains(lowerModel, "gemini") || strings.HasPrefix(model, "google/")) && cfg.Providers.Gemini.APIKey != "":
+		return "", "", false
+
+	case (strings.Contains(lowerModel, "glm") || strings.Contains(lowerModel, "zhipu") || strings.Contains(lowerModel, "zai")) && cfg.Providers.Zhipu.APIKey != "":
+		apiKey = strings.TrimSpace(cfg.Providers.Zhipu.APIKey)
+		apiBase = strings.TrimSpace(cfg.Providers.Zhipu.APIBase)
+		if apiBase == "" {
+			apiBase = "https://open.bigmodel.cn/api/paas/v4"
+		}
+		return apiKey, apiBase, apiKey != ""
+
+	case (strings.Contains(lowerModel, "groq") || strings.HasPrefix(model, "groq/")) && cfg.Providers.Groq.APIKey != "":
+		apiKey = strings.TrimSpace(cfg.Providers.Groq.APIKey)
+		apiBase = strings.TrimSpace(cfg.Providers.Groq.APIBase)
+		if apiBase == "" {
+			apiBase = "https://api.groq.com/openai/v1"
+		}
+		return apiKey, apiBase, apiKey != ""
+
+	case (strings.Contains(lowerModel, "glm-5") || strings.HasPrefix(lowerModel, "zai-org/")) && cfg.Providers.Modal.APIKey != "":
+		apiKey = strings.TrimSpace(cfg.Providers.Modal.APIKey)
+		apiBase = strings.TrimSpace(cfg.Providers.Modal.APIBase)
+		if apiBase == "" {
+			apiBase = "https://api.us-west-2.modal.direct/v1"
+		}
+		return apiKey, apiBase, apiKey != ""
+
+	case strings.TrimSpace(cfg.Providers.VLLM.APIBase) != "":
+		apiKey = strings.TrimSpace(cfg.Providers.VLLM.APIKey)
+		apiBase = strings.TrimSpace(cfg.Providers.VLLM.APIBase)
+		return apiKey, apiBase, true
+
+	default:
+		if cfg.Providers.OpenRouter.APIKey != "" {
+			apiKey = strings.TrimSpace(cfg.Providers.OpenRouter.APIKey)
+			apiBase = strings.TrimSpace(cfg.Providers.OpenRouter.APIBase)
+			if apiBase == "" {
+				apiBase = "https://openrouter.ai/api/v1"
+			}
+			return apiKey, apiBase, true
+		}
+		return "", "", false
+	}
 }
 
 func (al *AgentLoop) Run(ctx context.Context) error {
