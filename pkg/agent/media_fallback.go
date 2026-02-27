@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -62,7 +64,7 @@ func (al *AgentLoop) buildUserMessageWithMediaContext(ctx context.Context, conte
 	if inlineSupported {
 		analyzeImagePaths = make([]string, 0, len(imagePaths))
 		for _, path := range imagePaths {
-			if providers.SupportsInlineImagePath(path) {
+			if isInlineTransportImage(path) {
 				if err := providers.ValidateInlineImagePath(path); err != nil {
 					logger.WarnCF("agent", "Inline image transport unavailable for attachment; using analysis fallback", map[string]interface{}{
 						"trace_id": traceID,
@@ -123,6 +125,49 @@ func isImagePath(path string) bool {
 	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic", ".heif":
 		return true
 	default:
+		return strings.HasPrefix(sniffFileContentType(path), "image/")
+	}
+}
+
+func isInlineTransportImage(path string) bool {
+	if providers.SupportsInlineImagePath(path) {
+		return true
+	}
+	// For files without a helpful extension (e.g. DeltaChat paste blobs), sniff
+	// the content type and allow common inline formats.
+	switch sniffFileContentType(path) {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return true
+	default:
 		return false
 	}
+}
+
+func sniffFileContentType(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		return ""
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	buf := make([]byte, 512)
+	n, err := f.Read(buf)
+	if err != nil || n <= 0 {
+		return ""
+	}
+
+	mimeType := http.DetectContentType(buf[:n])
+	if semi := strings.Index(mimeType, ";"); semi > 0 {
+		mimeType = mimeType[:semi]
+	}
+	return strings.ToLower(strings.TrimSpace(mimeType))
 }
