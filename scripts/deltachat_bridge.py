@@ -218,6 +218,16 @@ class DeltaChatBridge:
         if path.is_absolute():
             return str(path)
 
+        path_str = str(path)
+        blob_marker = "$BLOBDIR/"
+        if blob_marker in path_str:
+            blob_rel = path_str.split(blob_marker, 1)[1].lstrip("/\\")
+            if blob_rel:
+                matches = list(Path(accounts_dir).glob(f"*/dc.db-blobs/{blob_rel}"))
+                for match in matches:
+                    if match.exists():
+                        return str(match.resolve())
+
         root_relative = (Path("/") / path).resolve()
         if root_relative.exists():
             return str(root_relative)
@@ -227,6 +237,38 @@ class DeltaChatBridge:
             return str(account_relative)
 
         return str(path)
+
+    @staticmethod
+    def _parse_snapshot_param_map(raw: Any) -> dict[str, str]:
+        if raw is None:
+            return {}
+
+        if not isinstance(raw, str):
+            raw = str(raw)
+
+        fields: dict[str, str] = {}
+        for line in raw.splitlines():
+            line = line.strip()
+            if line == "" or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key == "":
+                continue
+            fields[key] = value.strip()
+
+        return fields
+
+    def _resolve_snapshot_media_path(self, raw_path: Any) -> str:
+        normalized = self._normalize_media_path(raw_path, self.settings.accounts_dir)
+        if normalized == "":
+            return ""
+
+        path = Path(normalized)
+        if path.exists():
+            return str(path)
+
+        return ""
 
     def _message_to_bridge_payload(self, message: Any) -> dict[str, Any] | None:
         snapshot = message.get_snapshot()
@@ -264,9 +306,23 @@ class DeltaChatBridge:
         if timestamp_rcvd_ms > 0:
             payload["dc_timestamp_rcvd_ms"] = timestamp_rcvd_ms
 
+        media_paths: list[str] = []
+
         media = snapshot.get("file")
         if media:
-            payload["media"] = [self._normalize_media_path(media, self.settings.accounts_dir)]
+            resolved = self._resolve_snapshot_media_path(media)
+            if resolved:
+                media_paths.append(resolved)
+
+        params = self._parse_snapshot_param_map(snapshot.get("param"))
+        blob_file = params.get("f")
+        if blob_file:
+            resolved = self._resolve_snapshot_media_path(blob_file)
+            if resolved and resolved not in media_paths:
+                media_paths.append(resolved)
+
+        if media_paths:
+            payload["media"] = media_paths
 
         return payload
 
