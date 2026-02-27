@@ -99,13 +99,15 @@ func (r *ToolRegistry) ExecuteToolCalls(
 				toolCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
 			}
 			execArgs := withExecutionSessionKey(tc.Arguments, opts.SessionKey)
-			result, err := r.ExecuteWithContext(toolCtx, tc.Name, execArgs, opts.Channel, opts.ChatID)
+			toolResult, err := r.ExecuteResultWithContext(toolCtx, tc.Name, execArgs, opts.Channel, opts.ChatID)
 			cancel()
 			if err != nil {
-				result = fmt.Sprintf("Error: %v", err)
+				toolResult.Content = fmt.Sprintf("Error: %v", err)
 			}
 
-			results[idx] = providers.ToolResultMessage(tc.ID, result)
+			msg := providers.ToolResultMessage(tc.ID, toolResult.Content)
+			msg.Parts = toolResult.Parts
+			results[idx] = msg
 		}(i, tc)
 	}
 

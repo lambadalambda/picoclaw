@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -20,6 +21,7 @@ const (
 	defaultImageInspectMaxImages       = 3
 	defaultImageInspectMaxBytes        = 8 * 1024 * 1024
 	defaultImageInspectDownloadTimeout = 20 * time.Second
+	defaultImageInspectInlineRetention = 15 * time.Minute
 	imageInspectRedirectLimit          = 4
 )
 
@@ -36,6 +38,7 @@ type ImageInspectTool struct {
 	maxImages         int
 	maxBytes          int64
 	downloadTimeout   time.Duration
+	inlineRetention   time.Duration
 	allowPrivateHosts bool
 	httpClient        *http.Client
 }
@@ -63,6 +66,7 @@ func NewImageInspectTool(workspace string, primaryAnalyzer ImageAnalyzer, primar
 		maxImages:        defaultImageInspectMaxImages,
 		maxBytes:         defaultImageInspectMaxBytes,
 		downloadTimeout:  defaultImageInspectDownloadTimeout,
+		inlineRetention:  defaultImageInspectInlineRetention,
 	}
 }
 
@@ -71,7 +75,7 @@ func (t *ImageInspectTool) Name() string {
 }
 
 func (t *ImageInspectTool) Description() string {
-	return "Inspect image URLs or local image files and return a detailed visual analysis"
+	return "Inspect image URLs or local image files. For multimodal models, attaches the image(s) so the model can analyze directly; otherwise returns a textual analysis"
 }
 
 func (t *ImageInspectTool) Parameters() map[string]interface{} {
@@ -98,15 +102,30 @@ func (t *ImageInspectTool) Parameters() map[string]interface{} {
 				"type":        "integer",
 				"description": "Optional max number of images to inspect from sources (default 3)",
 			},
+			"transport": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional transport override: auto (default), inline (attach images for a multimodal model), or analyze (force backend analyzer)",
+				"enum":        []string{"auto", "inline", "analyze"},
+			},
 		},
 		"required": []string{"sources"},
 	}
 }
 
 func (t *ImageInspectTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+	res, err := t.ExecuteResult(ctx, args)
+	return res.Content, err
+}
+
+func (t *ImageInspectTool) ExecuteResult(ctx context.Context, args map[string]interface{}) (ToolResult, error) {
 	sources, err := t.parseSources(args)
 	if err != nil {
-		return "", err
+		return ToolResult{}, err
+	}
+
+	inlineTransport, err := t.shouldUseInlineTransport(args)
+	if err != nil {
+		return ToolResult{}, err
 	}
 
 	mode := "auto"
@@ -117,7 +136,7 @@ func (t *ImageInspectTool) Execute(ctx context.Context, args map[string]interfac
 		mode = "auto"
 	}
 	if mode != "auto" && mode != "primary" && mode != "fallback" {
-		return "", fmt.Errorf("mode must be one of: auto, primary, fallback")
+		return ToolResult{}, fmt.Errorf("mode must be one of: auto, primary, fallback")
 	}
 
 	maxImages := t.maxImages
@@ -127,10 +146,10 @@ func (t *ImageInspectTool) Execute(ctx context.Context, args map[string]interfac
 	if rawMaxImages, exists := args["max_images"]; exists && rawMaxImages != nil {
 		parsedMaxImages, parseErr := parseOptionalIntArg(args, "max_images", maxImages)
 		if parseErr != nil {
-			return "", parseErr
+			return ToolResult{}, parseErr
 		}
 		if parsedMaxImages <= 0 {
-			return "", fmt.Errorf("max_images must be >= 1")
+			return ToolResult{}, fmt.Errorf("max_images must be >= 1")
 		}
 		maxImages = parsedMaxImages
 	}
@@ -141,15 +160,19 @@ func (t *ImageInspectTool) Execute(ctx context.Context, args map[string]interfac
 
 	prepared, warnings, cleanup, err := t.prepareSources(ctx, sources)
 	if err != nil {
-		return "", err
+		return ToolResult{}, err
 	}
-	defer cleanup()
+	if !inlineTransport {
+		defer cleanup()
+	}
 
 	if len(prepared) == 0 {
 		if len(warnings) == 0 {
-			return "", fmt.Errorf("no valid image sources found")
+			cleanup()
+			return ToolResult{}, fmt.Errorf("no valid image sources found")
 		}
-		return "", fmt.Errorf("no valid image sources found: %s", strings.Join(warnings, "; "))
+		cleanup()
+		return ToolResult{}, fmt.Errorf("no valid image sources found: %s", strings.Join(warnings, "; "))
 	}
 
 	prompt := t.buildPrompt(args)
@@ -158,16 +181,57 @@ func (t *ImageInspectTool) Execute(ctx context.Context, args map[string]interfac
 		imagePaths = append(imagePaths, item.Path)
 	}
 
+	if inlineTransport {
+		if t.inlineRetention > 0 {
+			time.AfterFunc(t.inlineRetention, cleanup)
+		}
+
+		parts := make([]providers.MessagePart, 0, len(prepared))
+		for _, item := range prepared {
+			parts = append(parts, providers.MessagePart{
+				Type:      providers.MessagePartTypeImage,
+				Path:      item.Path,
+				MediaType: item.MIME,
+			})
+		}
+		return ToolResult{
+			Content: formatImageInspectInlineResult(prepared, prompt, warnings),
+			Parts:   parts,
+		}, nil
+	}
+
 	analysis, backendName, backendErr := t.runAnalysis(ctx, mode, prompt, imagePaths)
 	if backendErr != nil {
-		return "", backendErr
+		return ToolResult{}, backendErr
 	}
 
 	if strings.TrimSpace(analysis) == "" {
-		return "", fmt.Errorf("image analysis returned empty output")
+		return ToolResult{}, fmt.Errorf("image analysis returned empty output")
 	}
 
-	return formatImageInspectResult(backendName, prepared, analysis, warnings), nil
+	return ToolResult{Content: formatImageInspectResult(backendName, prepared, analysis, warnings)}, nil
+}
+
+func (t *ImageInspectTool) shouldUseInlineTransport(args map[string]interface{}) (bool, error) {
+	transport := "auto"
+	if rawTransport, ok := args["transport"].(string); ok {
+		transport = strings.ToLower(strings.TrimSpace(rawTransport))
+	}
+	if transport == "" {
+		transport = "auto"
+	}
+	if transport != "auto" && transport != "inline" && transport != "analyze" {
+		return false, fmt.Errorf("transport must be one of: auto, inline, analyze")
+	}
+	if transport == "analyze" {
+		return false, nil
+	}
+	if transport == "inline" {
+		return true, nil
+	}
+
+	inlineCtx, _ := args["__context_inline_vision"].(bool)
+	return inlineCtx, nil
 }
 
 func (t *ImageInspectTool) parseSources(args map[string]interface{}) ([]string, error) {
@@ -580,6 +644,33 @@ func formatImageInspectResult(backendName string, sources []imageInspectSource, 
 	}
 
 	lines = append(lines, "", "Analysis:", strings.TrimSpace(analysis))
+
+	if len(warnings) > 0 {
+		lines = append(lines, "", "Warnings:")
+		for _, warning := range warnings {
+			lines = append(lines, "- "+warning)
+		}
+	}
+
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func formatImageInspectInlineResult(sources []imageInspectSource, prompt string, warnings []string) string {
+	lines := []string{
+		"Image(s) attached for inline inspection.",
+		fmt.Sprintf("Images attached: %d", len(sources)),
+	}
+
+	for index, source := range sources {
+		lines = append(lines,
+			fmt.Sprintf("%d. %s", index+1, source.Input),
+			fmt.Sprintf("   kind=%s mime=%s bytes=%d", source.Kind, source.MIME, source.Bytes),
+		)
+	}
+
+	if strings.TrimSpace(prompt) != "" {
+		lines = append(lines, "", "Request:", strings.TrimSpace(prompt))
+	}
 
 	if len(warnings) > 0 {
 		lines = append(lines, "", "Warnings:")

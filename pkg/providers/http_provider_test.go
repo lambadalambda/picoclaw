@@ -750,6 +750,75 @@ func TestChat_EncodesInlineImagePartsForUserMessage(t *testing.T) {
 	}
 }
 
+func TestChat_ToolResultWithImagePartsAddsSyntheticUserMessage(t *testing.T) {
+	tmpDir := t.TempDir()
+	imagePath := filepath.Join(tmpDir, "input.png")
+	if err := os.WriteFile(imagePath, []byte("image-bytes"), 0644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	var capturedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, validResponse("ok"))
+	}))
+	defer srv.Close()
+
+	p := newTestProvider("test-key", srv.URL)
+	messages := []Message{
+		{Role: "user", Content: "hi"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_1", Name: "image_inspect", Arguments: map[string]interface{}{"sources": []interface{}{"x"}}},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_1",
+			Content:    "Image(s) attached for inline inspection.",
+			Parts:      []MessagePart{{Type: MessagePartTypeImage, Path: imagePath}},
+		},
+	}
+
+	_, err := p.Chat(context.Background(), messages, nil, "gpt-4o", newTestOptions())
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	rawMessages, ok := capturedBody["messages"].([]interface{})
+	if !ok || len(rawMessages) != 4 {
+		t.Fatalf("expected 4 wire messages (tool + synthetic user), got: %#v", capturedBody["messages"])
+	}
+
+	toolMsg, ok := rawMessages[2].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool payload has unexpected type: %T", rawMessages[2])
+	}
+	if toolMsg["role"] != "tool" {
+		t.Fatalf("wire role[2] = %#v, want tool", toolMsg["role"])
+	}
+
+	synthetic, ok := rawMessages[3].(map[string]interface{})
+	if !ok {
+		t.Fatalf("synthetic user payload has unexpected type: %T", rawMessages[3])
+	}
+	if synthetic["role"] != "user" {
+		t.Fatalf("wire role[3] = %#v, want user", synthetic["role"])
+	}
+	content, ok := synthetic["content"].([]interface{})
+	if !ok || len(content) < 2 {
+		t.Fatalf("synthetic user content should be multimodal array, got: %#v", synthetic["content"])
+	}
+	imagePart, ok := content[len(content)-1].(map[string]interface{})
+	if !ok || imagePart["type"] != "image_url" {
+		t.Fatalf("unexpected synthetic image part: %#v", content[len(content)-1])
+	}
+}
+
 func TestParseRetryAfterHeader_DeltaSeconds(t *testing.T) {
 	d, ok := parseRetryAfterHeader("3")
 	if !ok {

@@ -24,6 +24,10 @@ type contextProbeTool struct {
 	name string
 }
 
+type richResultTool struct {
+	name string
+}
+
 func (t *contextProbeTool) Name() string        { return t.name }
 func (t *contextProbeTool) Description() string { return "context probe tool" }
 func (t *contextProbeTool) Parameters() map[string]interface{} {
@@ -31,6 +35,23 @@ func (t *contextProbeTool) Parameters() map[string]interface{} {
 }
 func (t *contextProbeTool) Execute(_ context.Context, args map[string]interface{}) (string, error) {
 	return getExecutionSessionKey(args), nil
+}
+
+func (t *richResultTool) Name() string        { return t.name }
+func (t *richResultTool) Description() string { return "rich result tool" }
+func (t *richResultTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+}
+func (t *richResultTool) Execute(_ context.Context, _ map[string]interface{}) (string, error) {
+	return "legacy", nil
+}
+func (t *richResultTool) ExecuteResult(_ context.Context, _ map[string]interface{}) (ToolResult, error) {
+	return ToolResult{
+		Content: "ok",
+		Parts: []providers.MessagePart{
+			{Type: providers.MessagePartTypeImage, Path: "/tmp/input.png", MediaType: "image/png"},
+		},
+	}, nil
 }
 
 func (t *execTestTool) Name() string        { return t.name }
@@ -145,5 +166,27 @@ func TestExecuteToolCalls_PassesExecutionSessionKey(t *testing.T) {
 	}
 	if results[0].Content != "telegram:chat-42" {
 		t.Fatalf("tool received session key %q, want %q", results[0].Content, "telegram:chat-42")
+	}
+}
+
+func TestExecuteToolCalls_AttachesRichToolParts(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&richResultTool{name: "rich"})
+
+	results := registry.ExecuteToolCalls(context.Background(), []providers.ToolCall{
+		{ID: "tc1", Name: "rich", Arguments: map[string]interface{}{}},
+	}, ExecuteToolCallsOptions{})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Content != "ok" {
+		t.Fatalf("Content = %q, want ok", results[0].Content)
+	}
+	if len(results[0].Parts) != 1 {
+		t.Fatalf("len(Parts) = %d, want 1", len(results[0].Parts))
+	}
+	if results[0].Parts[0].Type != providers.MessagePartTypeImage {
+		t.Fatalf("Parts[0].Type = %q, want %q", results[0].Parts[0].Type, providers.MessagePartTypeImage)
 	}
 }

@@ -192,7 +192,11 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	}
 
 	primaryVisionAnalyzer, primaryVisionModel := resolvePrimaryVisionAnalyzer(cfg)
-	if primaryVisionAnalyzer != nil || visionAnalyzer != nil {
+	inlineVision := modelCaps.SupportsVision && modelCaps.SupportsInlineVision
+	if inlineVision {
+		inlineVision = providers.SupportsInlineVisionTransport(provider, cfg.Agents.Defaults.Model)
+	}
+	if primaryVisionAnalyzer != nil || visionAnalyzer != nil || inlineVision {
 		toolsRegistry.Register(tools.NewImageInspectTool(
 			workspace,
 			primaryVisionAnalyzer,

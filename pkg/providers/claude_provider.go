@@ -105,6 +105,56 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 		lower := strings.ToLower(content)
 		return strings.HasPrefix(lower, "error:")
 	}
+	buildToolResultBlock := func(msg Message) anthropic.ContentBlockParamUnion {
+		if msg.ToolCallID == "" {
+			return anthropic.NewToolResultBlock("", msg.Content, toolResultIsError(msg.Content))
+		}
+
+		if len(msg.Parts) == 0 {
+			return anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, toolResultIsError(msg.Content))
+		}
+
+		content := make([]anthropic.ToolResultBlockParamContentUnion, 0, len(msg.Parts)+1)
+		if strings.TrimSpace(msg.Content) != "" {
+			content = append(content, anthropic.ToolResultBlockParamContentUnion{OfText: &anthropic.TextBlockParam{Text: msg.Content}})
+		}
+		for _, part := range msg.Parts {
+			imageData, err := inlineImageDataFromPart(part)
+			if err != nil {
+				logger.WarnCF("provider", "Skipping inline image part for Claude tool output", map[string]interface{}{
+					"path":  strings.TrimSpace(part.Path),
+					"error": err.Error(),
+				})
+				continue
+			}
+
+			mediaType, ok := anthropicMediaTypeForImage(imageData.MediaType)
+			if !ok {
+				logger.WarnCF("provider", "Skipping unsupported inline image media type for Claude tool output", map[string]interface{}{
+					"path":       imageData.Path,
+					"media_type": imageData.MediaType,
+				})
+				continue
+			}
+
+			source := anthropic.ImageBlockParamSourceUnion{OfBase64: &anthropic.Base64ImageSourceParam{
+				Data:      imageData.Base64Data,
+				MediaType: mediaType,
+			}}
+			img := anthropic.ImageBlockParam{Source: source}
+			content = append(content, anthropic.ToolResultBlockParamContentUnion{OfImage: &img})
+		}
+
+		if len(content) == 0 {
+			return anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, toolResultIsError(msg.Content))
+		}
+
+		toolRes := anthropic.ToolResultBlockParam{ToolUseID: msg.ToolCallID, Content: content}
+		if toolResultIsError(msg.Content) {
+			toolRes.IsError = anthropic.Bool(true)
+		}
+		return anthropic.ContentBlockParamUnion{OfToolResult: &toolRes}
+	}
 
 	for _, msg := range messages {
 		switch msg.Role {
@@ -113,9 +163,7 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 			system = append(system, tb)
 		case "user":
 			if msg.ToolCallID != "" {
-				anthropicMessages = append(anthropicMessages,
-					anthropic.NewUserMessage(anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, toolResultIsError(msg.Content))),
-				)
+				anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(buildToolResultBlock(msg)))
 			} else {
 				if len(msg.Parts) > 0 {
 					blocks := make([]anthropic.ContentBlockParamUnion, 0, len(msg.Parts)+1)
@@ -178,9 +226,7 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 				)
 			}
 		case "tool":
-			anthropicMessages = append(anthropicMessages,
-				anthropic.NewUserMessage(anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, toolResultIsError(msg.Content))),
-			)
+			anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(buildToolResultBlock(msg)))
 		}
 	}
 

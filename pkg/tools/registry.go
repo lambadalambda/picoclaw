@@ -48,6 +48,15 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, args map[string
 }
 
 func (r *ToolRegistry) ExecuteWithContext(ctx context.Context, name string, args map[string]interface{}, channel, chatID string) (string, error) {
+	res, err := r.ExecuteResultWithContext(ctx, name, args, channel, chatID)
+	return res.Content, err
+}
+
+func (r *ToolRegistry) ExecuteResult(ctx context.Context, name string, args map[string]interface{}) (ToolResult, error) {
+	return r.ExecuteResultWithContext(ctx, name, args, "", "")
+}
+
+func (r *ToolRegistry) ExecuteResultWithContext(ctx context.Context, name string, args map[string]interface{}, channel, chatID string) (ToolResult, error) {
 	traceID := TraceIDFromContext(ctx)
 	logger.InfoCF("tool", "Tool execution started",
 		map[string]interface{}{
@@ -62,7 +71,7 @@ func (r *ToolRegistry) ExecuteWithContext(ctx context.Context, name string, args
 			map[string]interface{}{
 				"tool": name,
 			})
-		return "", fmt.Errorf("tool '%s' not found", name)
+		return ToolResult{}, fmt.Errorf("tool '%s' not found", name)
 	}
 
 	if err := r.checkPolicy(name); err != nil {
@@ -72,7 +81,7 @@ func (r *ToolRegistry) ExecuteWithContext(ctx context.Context, name string, args
 				"error":    err.Error(),
 				"trace_id": traceID,
 			})
-		return "", err
+		return ToolResult{}, err
 	}
 
 	normalizedArgs, err := normalizeAndValidateToolArgs(tool, args)
@@ -83,13 +92,18 @@ func (r *ToolRegistry) ExecuteWithContext(ctx context.Context, name string, args
 				"error":    err.Error(),
 				"trace_id": traceID,
 			})
-		return "", err
+		return ToolResult{}, err
 	}
 
 	execArgs := withExecutionContext(normalizedArgs, channel, chatID, traceID)
 
 	start := time.Now()
-	result, err := tool.Execute(ctx, execArgs)
+	var result ToolResult
+	if richTool, ok := tool.(ToolWithResult); ok {
+		result, err = richTool.ExecuteResult(ctx, execArgs)
+	} else {
+		result.Content, err = tool.Execute(ctx, execArgs)
+	}
 	duration := time.Since(start)
 
 	if err != nil {
@@ -105,7 +119,8 @@ func (r *ToolRegistry) ExecuteWithContext(ctx context.Context, name string, args
 			map[string]interface{}{
 				"tool":          name,
 				"duration_ms":   duration.Milliseconds(),
-				"result_length": len(result),
+				"result_length": len(result.Content),
+				"parts_count":   len(result.Parts),
 				"trace_id":      traceID,
 			})
 	}

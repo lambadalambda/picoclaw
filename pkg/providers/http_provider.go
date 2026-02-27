@@ -229,6 +229,38 @@ func toChatCompletionMessages(messages []Message) []chatCompletionMessage {
 			ToolCallID: msg.ToolCallID,
 		}
 
+		// The OpenAI chat-completions tool message format does not support multimodal
+		// content parts. If a tool produced image parts, append a synthetic user
+		// message so multimodal models can ingest the image.
+		if msg.Role == "tool" && len(msg.Parts) > 0 {
+			out = append(out, wireMsg)
+
+			synthetic := chatCompletionMessage{Role: "user"}
+			contentParts := make([]chatCompletionContentPart, 0, len(msg.Parts)+1)
+			contentParts = append(contentParts, chatCompletionContentPart{Type: "text", Text: "[Tool-provided images attached]"})
+			for _, part := range msg.Parts {
+				imageData, err := inlineImageDataFromPart(part)
+				if err != nil {
+					logger.WarnCF("provider", "Skipping inline image part for OpenAI-compatible tool output", map[string]interface{}{
+						"path":  strings.TrimSpace(part.Path),
+						"error": err.Error(),
+					})
+					continue
+				}
+				contentParts = append(contentParts, chatCompletionContentPart{
+					Type: "image_url",
+					ImageURL: &chatCompletionImageURL{
+						URL: imageData.DataURL,
+					},
+				})
+			}
+			if len(contentParts) > 0 {
+				synthetic.Content = contentParts
+			}
+			out = append(out, synthetic)
+			continue
+		}
+
 		if msg.Role == "user" && len(msg.Parts) > 0 {
 			contentParts := make([]chatCompletionContentPart, 0, len(msg.Parts)+1)
 			if strings.TrimSpace(msg.Content) != "" {

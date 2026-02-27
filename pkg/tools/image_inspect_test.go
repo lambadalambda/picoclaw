@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 type recordingImageAnalyzer struct {
@@ -182,5 +184,42 @@ func TestImageInspectTool_ReturnsWarningsForSkippedSources(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(out), "did not return image content") {
 		t.Fatalf("output missing non-image warning: %q", out)
+	}
+}
+
+func TestImageInspectTool_InlineModeReturnsPartsWithoutAnalyzer(t *testing.T) {
+	workspace := t.TempDir()
+	imgPath := writeTempImage(t, workspace, "shot.png")
+
+	primary := &recordingImageAnalyzer{result: "Primary analysis"}
+	tool := NewImageInspectTool(workspace, primary, "primary-model", nil, "")
+
+	rich, ok := interface{}(tool).(ToolWithResult)
+	if !ok {
+		t.Fatalf("ImageInspectTool should implement ToolWithResult")
+	}
+
+	res, err := rich.ExecuteResult(context.Background(), map[string]interface{}{
+		"sources":                 []interface{}{imgPath},
+		"__context_inline_vision": true,
+		"question":                "what is shown?",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteResult failed: %v", err)
+	}
+	if primary.calls != 0 {
+		t.Fatalf("primary calls = %d, want 0", primary.calls)
+	}
+	if len(res.Parts) != 1 {
+		t.Fatalf("len(res.Parts) = %d, want 1", len(res.Parts))
+	}
+	if res.Parts[0].Type != providers.MessagePartTypeImage {
+		t.Fatalf("Parts[0].Type = %q, want %q", res.Parts[0].Type, providers.MessagePartTypeImage)
+	}
+	if res.Parts[0].Path != imgPath {
+		t.Fatalf("Parts[0].Path = %q, want %q", res.Parts[0].Path, imgPath)
+	}
+	if !strings.Contains(strings.ToLower(res.Content), "attached") {
+		t.Fatalf("content should mention attached images, got: %q", res.Content)
 	}
 }

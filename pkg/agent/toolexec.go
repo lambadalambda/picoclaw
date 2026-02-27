@@ -211,6 +211,21 @@ func (al *AgentLoop) executeToolsConcurrently(
 		}
 	}
 
+	inlineVision := al.modelCapabilities.SupportsVision && al.modelCapabilities.SupportsInlineVision
+	if inlineVision {
+		inlineVision = providers.SupportsInlineVisionTransport(al.provider, al.model)
+	}
+	for i := range toolCalls {
+		if strings.EqualFold(strings.TrimSpace(toolCalls[i].Name), "image_inspect") {
+			if toolCalls[i].Arguments == nil {
+				toolCalls[i].Arguments = map[string]interface{}{}
+			}
+			if _, exists := toolCalls[i].Arguments["__context_inline_vision"]; !exists {
+				toolCalls[i].Arguments["__context_inline_vision"] = inlineVision
+			}
+		}
+	}
+
 	if shouldEchoToolCallsForSession(opts.SessionKey) {
 		al.maybeEchoToolCalls(toolCalls, opts.Channel, opts.ChatID)
 	}

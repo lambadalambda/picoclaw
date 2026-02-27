@@ -105,6 +105,50 @@ func TestBuildClaudeParams_EncodesInlineImagePart(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeParams_ToolResultWithImagePartsEmbedsInlineImage(t *testing.T) {
+	tmpDir := t.TempDir()
+	imagePath := filepath.Join(tmpDir, "input.png")
+	if err := os.WriteFile(imagePath, []byte("image-bytes"), 0644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	messages := []Message{
+		{Role: "user", Content: "hi"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_1", Name: "image_inspect", Arguments: map[string]interface{}{}},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_1",
+			Content:    "Image(s) attached.",
+			Parts:      []MessagePart{{Type: MessagePartTypeImage, Path: imagePath}},
+		},
+	}
+
+	params, err := buildClaudeParams(messages, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("buildClaudeParams() error: %v", err)
+	}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("json.Marshal(params) error: %v", err)
+	}
+	payload := string(encoded)
+	if !strings.Contains(payload, `"type":"tool_result"`) {
+		t.Fatalf("expected tool_result block, got: %s", payload)
+	}
+	if !strings.Contains(payload, `"type":"image"`) {
+		t.Fatalf("expected inline image in tool_result content, got: %s", payload)
+	}
+	if !strings.Contains(payload, `"media_type":"image/png"`) {
+		t.Fatalf("expected image/png media_type, got: %s", payload)
+	}
+}
+
 func TestBuildClaudeParams_SystemMessage(t *testing.T) {
 	messages := []Message{
 		{Role: "system", Content: "You are helpful"},

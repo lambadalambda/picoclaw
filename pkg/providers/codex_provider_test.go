@@ -106,6 +106,60 @@ func TestBuildCodexParams_EncodesInlineImagePart(t *testing.T) {
 	}
 }
 
+func TestBuildCodexParams_ToolResultWithImagePartsEmbedsInlineImage(t *testing.T) {
+	tmpDir := t.TempDir()
+	imagePath := filepath.Join(tmpDir, "input.png")
+	if err := os.WriteFile(imagePath, []byte("image-bytes"), 0644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	messages := []Message{
+		{Role: "user", Content: "hi"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_1", Name: "image_inspect", Arguments: map[string]interface{}{}},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_1",
+			Content:    "Image(s) attached.",
+			Parts:      []MessagePart{{Type: MessagePartTypeImage, Path: imagePath}},
+		},
+	}
+
+	params := buildCodexParams(messages, nil, "gpt-4o", map[string]interface{}{})
+	items := params.Input.OfInputItemList
+	if items == nil || len(items) != 3 {
+		t.Fatalf("input items = %#v, want 3", items)
+	}
+
+	toolOut := items[2]
+	if toolOut.OfFunctionCallOutput == nil {
+		t.Fatalf("expected third item to be function_call_output, got %#v", toolOut)
+	}
+	output := toolOut.OfFunctionCallOutput.Output
+	if output.OfString.Valid() {
+		t.Fatalf("expected structured output items, got string %q", output.OfString.Or(""))
+	}
+	if len(output.OfResponseFunctionCallOutputItemArray) != 2 {
+		t.Fatalf("len(output items) = %d, want 2", len(output.OfResponseFunctionCallOutputItemArray))
+	}
+	imageItem := output.OfResponseFunctionCallOutputItemArray[1]
+	if imageItem.OfInputImage == nil {
+		t.Fatalf("expected output item[1] to be input_image, got %#v", imageItem)
+	}
+	url := imageItem.OfInputImage.ImageURL.Or("")
+	if !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("output input_image.image_url = %q, want data URL prefix", url)
+	}
+	if string(imageItem.OfInputImage.Detail) != "auto" {
+		t.Fatalf("output input_image.detail = %q, want auto", imageItem.OfInputImage.Detail)
+	}
+}
+
 func TestBuildCodexParams_WithTools(t *testing.T) {
 	tools := []ToolDefinition{
 		{

@@ -154,10 +154,37 @@ func buildCodexParams(messages []Message, tools []ToolDefinition, model string, 
 				})
 			}
 		case "tool":
+			output := responses.ResponseInputItemFunctionCallOutputOutputUnionParam{OfString: openai.Opt(msg.Content)}
+			if len(msg.Parts) > 0 {
+				items := make(responses.ResponseFunctionCallOutputItemListParam, 0, len(msg.Parts)+1)
+				if strings.TrimSpace(msg.Content) != "" {
+					items = append(items, responses.ResponseFunctionCallOutputItemParamOfInputText(msg.Content))
+				}
+				for _, part := range msg.Parts {
+					imageData, err := inlineImageDataFromPart(part)
+					if err != nil {
+						logger.WarnCF("provider", "Skipping inline image part for Codex tool output", map[string]interface{}{
+							"path":  strings.TrimSpace(part.Path),
+							"error": err.Error(),
+						})
+						continue
+					}
+					items = append(items, responses.ResponseFunctionCallOutputItemUnionParam{
+						OfInputImage: &responses.ResponseInputImageContentParam{
+							ImageURL: openai.Opt(imageData.DataURL),
+							Detail:   responses.ResponseInputImageContentDetailAuto,
+						},
+					})
+				}
+				if len(items) > 0 {
+					output = responses.ResponseInputItemFunctionCallOutputOutputUnionParam{OfResponseFunctionCallOutputItemArray: items}
+				}
+			}
+
 			inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
 				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 					CallID: msg.ToolCallID,
-					Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{OfString: openai.Opt(msg.Content)},
+					Output: output,
 				},
 			})
 		}
