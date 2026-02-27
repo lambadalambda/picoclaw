@@ -2,6 +2,7 @@ package llmloop
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -48,6 +49,54 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		Exhausted: true,
 	}
 
+	messagesHaveParts := func(messages []providers.Message) bool {
+		for _, msg := range messages {
+			if len(msg.Parts) > 0 {
+				return true
+			}
+		}
+		return false
+	}
+
+	stripParts := func(messages []providers.Message) []providers.Message {
+		out := make([]providers.Message, len(messages))
+		copy(out, messages)
+		for i := range out {
+			out[i].Parts = nil
+		}
+		return out
+	}
+
+	isLikelyPolicyRefusal := func(err error) bool {
+		if err == nil {
+			return false
+		}
+		msg := strings.ToLower(err.Error())
+		patterns := []string{
+			"content policy",
+			"content_policy",
+			"policy violation",
+			"safety",
+			"unsafe",
+			"moderation",
+			"nsfw",
+			"nudity",
+			"sexual",
+			"explicit",
+			"prohibited",
+			"disallowed",
+			"blocked",
+			"rejected",
+			"violat",
+		}
+		for _, pattern := range patterns {
+			if strings.Contains(msg, pattern) {
+				return true
+			}
+		}
+		return false
+	}
+
 	if opts.MaxIterations <= 0 {
 		return result, nil
 	}
@@ -82,10 +131,29 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			opts.ChatOptions,
 		)
 		if err != nil {
-			if opts.Hooks.LLMCallFailed != nil {
-				opts.Hooks.LLMCallFailed(iteration, err)
+			if messagesHaveParts(requestMessages) && isLikelyPolicyRefusal(err) {
+				retryMessages := stripParts(requestMessages)
+				retryMessages = append(retryMessages, providers.Message{
+					Role:    "system",
+					Content: "NOTE: The previous request included image(s), but the provider refused to process them. Retrying without images. Do not guess what is in the image; proceed using text only and ask the user for a description if needed.",
+				})
+				resp, err = providers.ChatWithTimeout(
+					ctx,
+					opts.LLMTimeout,
+					opts.Provider,
+					retryMessages,
+					toolDefs,
+					opts.Model,
+					opts.ChatOptions,
+				)
 			}
-			return result, err
+
+			if err != nil {
+				if opts.Hooks.LLMCallFailed != nil {
+					opts.Hooks.LLMCallFailed(iteration, err)
+				}
+				return result, err
+			}
 		}
 
 		if len(resp.ToolCalls) == 0 {

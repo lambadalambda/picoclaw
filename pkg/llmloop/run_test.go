@@ -34,6 +34,28 @@ func (m *mockProvider) Chat(_ context.Context, messages []providers.Message, _ [
 
 func (m *mockProvider) GetDefaultModel() string { return "test-model" }
 
+type policyRefusalProvider struct {
+	calls    int
+	seenMsgs [][]providers.Message
+}
+
+func (p *policyRefusalProvider) Chat(_ context.Context, messages []providers.Message, _ []providers.ToolDefinition, _ string, _ map[string]interface{}) (*providers.LLMResponse, error) {
+	p.calls++
+	cloned := make([]providers.Message, len(messages))
+	copy(cloned, messages)
+	p.seenMsgs = append(p.seenMsgs, cloned)
+
+	for _, m := range messages {
+		if len(m.Parts) > 0 {
+			return nil, errors.New("claude API call: 400 Bad Request {\"error\":{\"type\":\"invalid_request_error\",\"message\":\"content policy violation\"}}")
+		}
+	}
+
+	return &providers.LLMResponse{Content: "ok"}, nil
+}
+
+func (p *policyRefusalProvider) GetDefaultModel() string { return "test-model" }
+
 func TestRun_DirectResponse(t *testing.T) {
 	p := &mockProvider{responses: []*providers.LLMResponse{{Content: "hello"}}}
 
@@ -211,5 +233,54 @@ func TestRun_AppliesMessageBudget_MaxTotalChars(t *testing.T) {
 	}
 	if !strings.Contains(call[1].Content, "b") {
 		t.Fatalf("expected latest user message to be kept, got %q", call[1].Content)
+	}
+}
+
+func TestRun_RetriesWithoutImagesOnPolicyError(t *testing.T) {
+	anyParts := func(messages []providers.Message) bool {
+		for _, m := range messages {
+			if len(m.Parts) > 0 {
+				return true
+			}
+		}
+		return false
+	}
+
+	p := &policyRefusalProvider{}
+	failedCalled := false
+	res, err := Run(context.Background(), RunOptions{
+		Provider:      p,
+		Model:         "claude-opus-4-6",
+		MaxIterations: 1,
+		Messages: []providers.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "describe", Parts: []providers.MessagePart{{Type: providers.MessagePartTypeImage, Path: "/tmp/input.png"}}},
+		},
+		Hooks: Hooks{
+			LLMCallFailed: func(iteration int, err error) {
+				failedCalled = true
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.FinalContent != "ok" {
+		t.Fatalf("FinalContent = %q, want ok", res.FinalContent)
+	}
+	if failedCalled {
+		t.Fatal("expected failure hook to not be called for recovered policy error")
+	}
+	if p.calls != 2 {
+		t.Fatalf("provider calls = %d, want 2", p.calls)
+	}
+	if len(p.seenMsgs) != 2 {
+		t.Fatalf("seenMsgs len = %d, want 2", len(p.seenMsgs))
+	}
+	if !anyParts(p.seenMsgs[0]) {
+		t.Fatal("expected first attempt to include image parts")
+	}
+	if anyParts(p.seenMsgs[1]) {
+		t.Fatal("expected retry attempt to strip image parts")
 	}
 }
