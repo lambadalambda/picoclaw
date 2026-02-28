@@ -27,6 +27,7 @@ type AgentDefaults struct {
 	Model                       string   `json:"model" env:"PICOCLAW_AGENTS_DEFAULTS_MODEL"`
 	FallbackModels              []string `json:"fallback_models" env:"PICOCLAW_AGENTS_DEFAULTS_FALLBACK_MODELS"`
 	MaxTokens                   int      `json:"max_tokens" env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOKENS"`
+	ContextWindowTokens         int      `json:"context_window_tokens" env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_WINDOW_TOKENS"`
 	Temperature                 float64  `json:"temperature" env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
 	AnthropicCache              bool     `json:"anthropic_cache" env:"PICOCLAW_AGENTS_DEFAULTS_ANTHROPIC_CACHE"`
 	AnthropicCacheTTL           string   `json:"anthropic_cache_ttl" env:"PICOCLAW_AGENTS_DEFAULTS_ANTHROPIC_CACHE_TTL"`
@@ -190,6 +191,7 @@ func DefaultConfig() *Config {
 				Model:                       "glm-4.7",
 				FallbackModels:              []string{},
 				MaxTokens:                   8192,
+				ContextWindowTokens:         0,
 				Temperature:                 0.7,
 				AnthropicCache:              false,
 				AnthropicCacheTTL:           "",

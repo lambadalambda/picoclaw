@@ -155,6 +155,8 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	if chatTemperature == 0 {
 		chatTemperature = 0.7
 	}
+
+	outputMaxTokens, contextWindow := resolveTokenLimits(cfg.Agents.Defaults)
 	anthropicCacheTTL := strings.TrimSpace(cfg.Agents.Defaults.AnthropicCacheTTL)
 	subagentManager.ConfigureCache(cfg.Agents.Defaults.AnthropicCache, anthropicCacheTTL)
 
@@ -212,9 +214,9 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		provider:      provider,
 		workspace:     workspace,
 		model:         cfg.Agents.Defaults.Model,
-		contextWindow: cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
+		contextWindow: contextWindow,
 		chatOptions: providers.ChatOptions{
-			MaxTokens:         8192,
+			MaxTokens:         outputMaxTokens,
 			Temperature:       chatTemperature,
 			AnthropicCache:    cfg.Agents.Defaults.AnthropicCache,
 			AnthropicCacheTTL: anthropicCacheTTL,
@@ -256,6 +258,41 @@ func resolveZAISearchCredentials(webCfg config.WebSearchConfig, providersCfg con
 	}
 
 	return zaiSearchKey, zaiSearchBase
+}
+
+func resolveTokenLimits(d config.AgentDefaults) (outputMaxTokens int, contextWindow int) {
+	const defaultOutputMaxTokens = 8192
+	const largeMaxTokensAssumeContextWindow = 32768
+
+	outputMaxTokens = d.MaxTokens
+	if outputMaxTokens <= 0 {
+		outputMaxTokens = defaultOutputMaxTokens
+	}
+
+	contextWindow = d.ContextWindowTokens
+	if contextWindow <= 0 {
+		contextWindow = d.MaxTokens
+	}
+	if contextWindow <= 0 {
+		contextWindow = outputMaxTokens
+	}
+
+	// Backwards compatibility: historically agents.defaults.max_tokens was used
+	// as a context window estimate. If context_window_tokens is unset and
+	// max_tokens looks like a large context window, keep output tokens conservative.
+	if d.ContextWindowTokens <= 0 && d.MaxTokens > largeMaxTokensAssumeContextWindow {
+		contextWindow = d.MaxTokens
+		outputMaxTokens = defaultOutputMaxTokens
+	}
+
+	if outputMaxTokens <= 0 {
+		outputMaxTokens = defaultOutputMaxTokens
+	}
+	if contextWindow <= 0 {
+		contextWindow = outputMaxTokens
+	}
+
+	return outputMaxTokens, contextWindow
 }
 
 func resolvePrimaryVisionAnalyzer(cfg *config.Config) (*vision.Client, string) {
