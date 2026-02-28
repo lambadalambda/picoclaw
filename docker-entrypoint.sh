@@ -183,6 +183,7 @@ if [ ! -f "$CONFIG" ]; then
       "workspace": "/root/.picoclaw/workspace",
       "model": "anthropic/claude-sonnet-4-20250514",
       "max_tokens": 8192,
+      "context_window_tokens": 200000,
       "temperature": 0.7,
       "max_tool_iterations": 20,
       "llm_timeout_seconds": 120,

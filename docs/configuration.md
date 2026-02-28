@@ -15,7 +15,8 @@ Base template:
 |---|---|
 | `agents.defaults.model` | LLM model name |
 | `agents.defaults.fallback_models` | Optional ordered fallback model list used when the primary model is unavailable/rate-limited |
-| `agents.defaults.max_tokens` | Context window estimate used for compaction heuristics |
+| `agents.defaults.max_tokens` | Max output tokens per response (provider `max_tokens`) |
+| `agents.defaults.context_window_tokens` | Context window size used for compaction heuristics (75% threshold) |
 | `agents.defaults.max_tool_iterations` | Tool loop cap per turn |
 | `agents.defaults.llm_timeout_seconds` | Per-LLM-call timeout |
 | `agents.defaults.tool_timeout_seconds` | Per-tool-call timeout |
