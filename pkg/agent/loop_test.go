@@ -34,6 +34,7 @@ type mockProviderCall struct {
 type mockResponse struct {
 	Content   string
 	ToolCalls []providers.ToolCall
+	Usage     *providers.UsageInfo
 	Err       error
 }
 
@@ -122,6 +123,7 @@ func (m *mockProvider) Chat(_ context.Context, messages []providers.Message, tde
 	return &providers.LLMResponse{
 		Content:   resp.Content,
 		ToolCalls: resp.ToolCalls,
+		Usage:     resp.Usage,
 	}, nil
 }
 
@@ -272,7 +274,7 @@ func TestRunLLMIteration_FinalSummaryOnMaxIterations(t *testing.T) {
 		ChatID:     "chat1",
 	}
 
-	content, iterations, err := al.runLLMIteration(context.Background(), messages, opts)
+	content, iterations, _, err := al.runLLMIteration(context.Background(), messages, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -327,7 +329,7 @@ func TestRunLLMIteration_NoSummaryCallWhenNotExhausted(t *testing.T) {
 		ChatID:     "chat1",
 	}
 
-	content, iterations, err := al.runLLMIteration(context.Background(), messages, opts)
+	content, iterations, _, err := al.runLLMIteration(context.Background(), messages, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -373,7 +375,7 @@ func TestRunLLMIteration_SummaryCallIncludesHint(t *testing.T) {
 		ChatID:     "chat1",
 	}
 
-	_, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	_, _, _, err := al.runLLMIteration(context.Background(), messages, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -391,6 +393,54 @@ func TestRunLLMIteration_SummaryCallIncludesHint(t *testing.T) {
 	// Should mention iteration limit / summarize
 	if !containsStr(lastMsg.Content, "limit") && !containsStr(lastMsg.Content, "summar") {
 		t.Errorf("summary hint message %q should mention limit or summarize", lastMsg.Content)
+	}
+}
+
+func TestRunAgentLoop_SummarizesBasedOnReportedPromptTokens(t *testing.T) {
+	// The session history is short (so the char/4 heuristic would NOT trigger
+	// compaction), but the provider reports a high prompt token count.
+	prov := &mockProvider{responses: []mockResponse{
+		{Content: "ok", Usage: &providers.UsageInfo{PromptTokens: 80}},
+		{Content: "summary"},
+	}}
+
+	al := newTestAgentLoop(t, prov, 1, nil)
+	al.contextWindow = 100 // threshold = 75
+	defer al.bus.Close()
+
+	sessionKey := "test"
+	// Seed with 4 small messages so summary has something to compact.
+	al.sessions.AddMessage(sessionKey, "user", "a")
+	al.sessions.AddMessage(sessionKey, "assistant", "b")
+	al.sessions.AddMessage(sessionKey, "user", "c")
+	al.sessions.AddMessage(sessionKey, "assistant", "d")
+
+	_, err := al.runAgentLoop(context.Background(), processOptions{
+		SessionKey:      sessionKey,
+		Channel:         "telegram",
+		ChatID:          "chat1",
+		UserMessage:     "next",
+		DefaultResponse: "default",
+		EnableSummary:   true,
+		SendResponse:    false,
+	})
+	if err != nil {
+		t.Fatalf("runAgentLoop() error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if al.sessions.GetSummary(sessionKey) != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if got := al.sessions.GetSummary(sessionKey); got != "summary" {
+		t.Fatalf("summary = %q, want %q", got, "summary")
+	}
+	if got := len(al.sessions.GetHistory(sessionKey)); got != 4 {
+		t.Fatalf("history len = %d, want 4 after compaction", got)
 	}
 }
 
@@ -694,7 +744,7 @@ func TestRunLLMIteration_ParallelToolExecution(t *testing.T) {
 	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
 
 	start := time.Now()
-	content, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	content, _, _, err := al.runLLMIteration(context.Background(), messages, opts)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -741,7 +791,7 @@ func TestRunLLMIteration_ParallelToolResults_CorrectOrder(t *testing.T) {
 	}
 	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
 
-	_, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	_, _, _, err := al.runLLMIteration(context.Background(), messages, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -804,7 +854,7 @@ func TestRunLLMIteration_ParallelToolNoLeakedToolNames(t *testing.T) {
 	}
 	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
 
-	_, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	_, _, _, err := al.runLLMIteration(context.Background(), messages, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -851,7 +901,7 @@ func TestRunLLMIteration_ParallelToolPanic_Recovered(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	content, _, err := al.runLLMIteration(ctx, messages, opts)
+	content, _, _, err := al.runLLMIteration(ctx, messages, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -890,7 +940,7 @@ func TestRunLLMIteration_LLMCallTimeout(t *testing.T) {
 	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
 
 	start := time.Now()
-	_, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	_, _, _, err := al.runLLMIteration(context.Background(), messages, opts)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -924,7 +974,7 @@ func TestRunLLMIteration_ToolTimeoutProducesErrorResult(t *testing.T) {
 	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
 
 	start := time.Now()
-	content, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	content, _, _, err := al.runLLMIteration(context.Background(), messages, opts)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -985,7 +1035,7 @@ func TestRunLLMIteration_RespectsMaxParallelTools(t *testing.T) {
 	}
 	opts := processOptions{SessionKey: "test", Channel: "telegram", ChatID: "chat1"}
 
-	content, _, err := al.runLLMIteration(context.Background(), messages, opts)
+	content, _, _, err := al.runLLMIteration(context.Background(), messages, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

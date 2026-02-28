@@ -700,7 +700,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	_ = al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
 
 	// 3. Run LLM iteration loop
-	finalContent, iteration, err := al.runLLMIteration(ctx, messages, opts)
+	finalContent, iteration, promptTokens, err := al.runLLMIteration(ctx, messages, opts)
 	if err != nil {
 		return "", err
 	}
@@ -716,7 +716,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 
 	// 6. Optional: summarization
 	if opts.EnableSummary {
-		al.maybeSummarize(opts.SessionKey)
+		al.maybeSummarize(opts.SessionKey, promptTokens)
 	}
 
 	// 7. Optional: send response via bus
@@ -741,13 +741,34 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	return finalContent, nil
 }
 
+type tokenUsageTrackingProvider struct {
+	inner           providers.LLMProvider
+	maxPromptTokens int
+}
+
+func (p *tokenUsageTrackingProvider) Chat(ctx context.Context, messages []providers.Message, tools []providers.ToolDefinition, model string, options map[string]interface{}) (*providers.LLMResponse, error) {
+	resp, err := p.inner.Chat(ctx, messages, tools, model, options)
+	if err != nil {
+		return nil, err
+	}
+	if resp != nil && resp.Usage != nil && resp.Usage.PromptTokens > p.maxPromptTokens {
+		p.maxPromptTokens = resp.Usage.PromptTokens
+	}
+	return resp, nil
+}
+
+func (p *tokenUsageTrackingProvider) GetDefaultModel() string {
+	return p.inner.GetDefaultModel()
+}
+
 // runLLMIteration executes the LLM call loop with tool handling.
 // Returns the final content, iteration count, and any error.
-func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.Message, opts processOptions) (string, int, error) {
+func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.Message, opts processOptions) (string, int, int, error) {
 	chatOptions := al.chatOptions.ToMap()
+	trackingProvider := &tokenUsageTrackingProvider{inner: al.provider}
 
 	loopRes, err := llmloop.Run(ctx, llmloop.RunOptions{
-		Provider:      al.provider,
+		Provider:      trackingProvider,
 		Model:         al.model,
 		MaxIterations: al.maxIterations,
 		LLMTimeout:    al.llmTimeout,
@@ -856,7 +877,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		},
 	})
 	if err != nil {
-		return "", loopRes.Iterations, fmt.Errorf("LLM call failed: %w", err)
+		return "", loopRes.Iterations, trackingProvider.maxPromptTokens, fmt.Errorf("LLM call failed: %w", err)
 	}
 
 	iteration := loopRes.Iterations
@@ -901,10 +922,13 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			finalContent = fmt.Sprintf("I reached my tool call limit (%d iterations) before finishing. Ask me to continue and I'll pick up where I left off.", al.maxIterations)
 		} else {
 			finalContent = response.Content
+			if response.Usage != nil && response.Usage.PromptTokens > trackingProvider.maxPromptTokens {
+				trackingProvider.maxPromptTokens = response.Usage.PromptTokens
+			}
 		}
 	}
 
-	return finalContent, iteration, nil
+	return finalContent, iteration, trackingProvider.maxPromptTokens, nil
 }
 
 func messageBudgetFromDefaults(d config.AgentDefaults) providers.MessageBudget {
@@ -927,12 +951,15 @@ func messageBudgetFromDefaults(d config.AgentDefaults) providers.MessageBudget {
 // maybeSummarize triggers summarization if the session history exceeds thresholds.
 // When contextWindow is configured, compaction triggers at 75% token usage.
 // Otherwise, falls back to a message count heuristic.
-func (al *AgentLoop) maybeSummarize(sessionKey string) {
+func (al *AgentLoop) maybeSummarize(sessionKey string, promptTokens int) {
 	newHistory := al.sessions.GetHistory(sessionKey)
 
 	var shouldSummarize bool
 	if al.contextWindow > 0 {
-		tokenEstimate := al.estimateTokens(newHistory)
+		tokenEstimate := promptTokens
+		if tokenEstimate <= 0 {
+			tokenEstimate = al.estimateTokens(newHistory)
+		}
 		threshold := al.contextWindow * 75 / 100
 		shouldSummarize = tokenEstimate > threshold
 	} else {
