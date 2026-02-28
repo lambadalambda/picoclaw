@@ -737,19 +737,28 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	_ = al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
 
 	// 3. Run LLM iteration loop
-	finalContent, iteration, promptTokens, err := al.runLLMIteration(ctx, messages, opts)
+	finalContent, iteration, promptTokens, deliveredViaMessageTool, err := al.runLLMIteration(ctx, messages, opts)
 	if err != nil {
 		return "", err
 	}
 
 	// 4. Handle empty response
-	if finalContent == "" {
-		finalContent = opts.DefaultResponse
+	finalContent = strings.TrimSpace(finalContent)
+	if finalContent == "" || (opts.DefaultResponse != "" && finalContent == opts.DefaultResponse) {
+		if deliveredViaMessageTool {
+			// A message was already delivered via the message tool. Avoid sending a
+			// redundant filler response.
+			finalContent = ""
+		} else {
+			finalContent = opts.DefaultResponse
+		}
 	}
 
 	// 5. Save final assistant message to session
-	al.sessions.AddMessage(opts.SessionKey, "assistant", finalContent)
-	al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
+	if finalContent != "" {
+		al.sessions.AddMessage(opts.SessionKey, "assistant", finalContent)
+		al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
+	}
 
 	// 6. Optional: summarization
 	if opts.EnableSummary {
@@ -766,14 +775,25 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	}
 
 	// 8. Log response
-	responsePreview := utils.Truncate(finalContent, 120)
-	logger.InfoCF("agent", fmt.Sprintf("Response: %s", responsePreview),
-		map[string]interface{}{
-			"session_key":  opts.SessionKey,
-			"trace_id":     opts.TraceID,
-			"iterations":   iteration,
-			"final_length": len(finalContent),
-		})
+	if finalContent != "" {
+		responsePreview := utils.Truncate(finalContent, 120)
+		logger.InfoCF("agent", fmt.Sprintf("Response: %s", responsePreview),
+			map[string]interface{}{
+				"session_key":  opts.SessionKey,
+				"trace_id":     opts.TraceID,
+				"iterations":   iteration,
+				"final_length": len(finalContent),
+			})
+	} else {
+		logger.InfoCF("agent", "No final response to send",
+			map[string]interface{}{
+				"session_key":             opts.SessionKey,
+				"trace_id":                opts.TraceID,
+				"iterations":              iteration,
+				"delivered_via_message":   deliveredViaMessageTool,
+				"default_response_config": strings.TrimSpace(opts.DefaultResponse) != "",
+			})
+	}
 
 	return finalContent, nil
 }
@@ -798,11 +818,39 @@ func (p *tokenUsageTrackingProvider) GetDefaultModel() string {
 	return p.inner.GetDefaultModel()
 }
 
+func deliveredMessageToolToTarget(channel, chatID string, toolCalls []providers.ToolCall, results []providers.Message) bool {
+	channel = strings.TrimSpace(channel)
+	chatID = strings.TrimSpace(chatID)
+	if channel == "" || chatID == "" {
+		return false
+	}
+
+	target := channel + ":" + chatID
+	for i, tc := range toolCalls {
+		if !strings.EqualFold(strings.TrimSpace(tc.Name), "message") {
+			continue
+		}
+		if i >= len(results) {
+			continue
+		}
+		content := strings.TrimSpace(results[i].Content)
+		if !strings.HasPrefix(content, "Message sent to ") {
+			continue
+		}
+		dest := strings.TrimSpace(strings.TrimPrefix(content, "Message sent to "))
+		if strings.EqualFold(dest, target) {
+			return true
+		}
+	}
+	return false
+}
+
 // runLLMIteration executes the LLM call loop with tool handling.
 // Returns the final content, iteration count, and any error.
-func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.Message, opts processOptions) (string, int, int, error) {
+func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.Message, opts processOptions) (string, int, int, bool, error) {
 	chatOptions := al.chatOptions.ToMap()
 	trackingProvider := &tokenUsageTrackingProvider{inner: al.provider}
+	deliveredViaMessageTool := false
 
 	loopRes, err := llmloop.Run(ctx, llmloop.RunOptions{
 		Provider:      trackingProvider,
@@ -816,7 +864,11 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			return al.tools.GetProviderDefinitions()
 		},
 		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
-			return al.executeToolsConcurrently(ctx, toolCalls, iteration, opts)
+			results := al.executeToolsConcurrently(ctx, toolCalls, iteration, opts)
+			if !deliveredViaMessageTool {
+				deliveredViaMessageTool = deliveredMessageToolToTarget(opts.Channel, opts.ChatID, toolCalls, results)
+			}
+			return results
 		},
 		Hooks: llmloop.Hooks{
 			MessagesBudgeted: func(iteration int, stats providers.MessageBudgetStats) {
@@ -914,7 +966,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		},
 	})
 	if err != nil {
-		return "", loopRes.Iterations, trackingProvider.maxPromptTokens, fmt.Errorf("LLM call failed: %w", err)
+		return "", loopRes.Iterations, trackingProvider.maxPromptTokens, deliveredViaMessageTool, fmt.Errorf("LLM call failed: %w", err)
 	}
 
 	iteration := loopRes.Iterations
@@ -965,7 +1017,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		}
 	}
 
-	return finalContent, iteration, trackingProvider.maxPromptTokens, nil
+	return finalContent, iteration, trackingProvider.maxPromptTokens, deliveredViaMessageTool, nil
 }
 
 func messageBudgetFromDefaults(d config.AgentDefaults) providers.MessageBudget {
