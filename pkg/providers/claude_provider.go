@@ -449,16 +449,46 @@ func parseClaudeResponse(resp *anthropic.Message) *LLMResponse {
 
 	logClaudeCacheUsage(resp)
 
+	promptTokens := effectiveClaudePromptTokens(resp.Usage)
+	completionTokens := int(resp.Usage.OutputTokens)
+	totalTokens := promptTokens + completionTokens
+
 	return &LLMResponse{
 		Content:      content,
 		ToolCalls:    toolCalls,
 		FinishReason: finishReason,
 		Usage: &UsageInfo{
-			PromptTokens:     int(resp.Usage.InputTokens),
-			CompletionTokens: int(resp.Usage.OutputTokens),
-			TotalTokens:      int(resp.Usage.InputTokens + resp.Usage.OutputTokens),
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      totalTokens,
 		},
 	}
+}
+
+// effectiveClaudePromptTokens returns an estimate of the true prompt size for
+// Anthropic requests.
+//
+// When prompt caching is enabled, Anthropic reports cached portions separately
+// (cache_read_input_tokens / cache_creation_input_tokens). For agent compaction
+// and payload safety we want the combined value.
+func effectiveClaudePromptTokens(usage anthropic.Usage) int {
+	total := usage.InputTokens
+	if usage.CacheReadInputTokens > 0 {
+		total += usage.CacheReadInputTokens
+	}
+
+	creation := usage.CacheCreationInputTokens
+	if creation <= 0 {
+		creation = usage.CacheCreation.Ephemeral5mInputTokens + usage.CacheCreation.Ephemeral1hInputTokens
+	}
+	if creation > 0 {
+		total += creation
+	}
+
+	if total < 0 {
+		return 0
+	}
+	return int(total)
 }
 
 func logClaudeCacheUsage(resp *anthropic.Message) {

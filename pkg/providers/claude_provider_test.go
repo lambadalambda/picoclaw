@@ -441,6 +441,28 @@ func TestParseClaudeResponse_TextOnly(t *testing.T) {
 	}
 }
 
+func TestParseClaudeResponse_PromptCachingCountsTowardPromptTokens(t *testing.T) {
+	resp := &anthropic.Message{
+		Content: []anthropic.ContentBlockUnion{},
+		Usage: anthropic.Usage{
+			InputTokens:            3,
+			OutputTokens:           4,
+			CacheReadInputTokens:   100,
+			CacheCreationInputTokens: 50,
+		},
+	}
+	result := parseClaudeResponse(resp)
+	if result.Usage.PromptTokens != 153 {
+		t.Fatalf("PromptTokens = %d, want 153", result.Usage.PromptTokens)
+	}
+	if result.Usage.CompletionTokens != 4 {
+		t.Fatalf("CompletionTokens = %d, want 4", result.Usage.CompletionTokens)
+	}
+	if result.Usage.TotalTokens != 157 {
+		t.Fatalf("TotalTokens = %d, want 157", result.Usage.TotalTokens)
+	}
+}
+
 func TestParseClaudeResponse_StopReasons(t *testing.T) {
 	tests := []struct {
 		stopReason anthropic.StopReason
