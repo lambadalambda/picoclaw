@@ -103,6 +103,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 			"exec",
 			"write_file",
 			"edit_file",
+			"unsafe_exec",
 			"unsafe_read_file",
 			"unsafe_write_file",
 			"unsafe_list_dir",

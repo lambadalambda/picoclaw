@@ -172,6 +172,17 @@ func TestGuardCommand_RestrictToWorkspace(t *testing.T) {
 			t.Errorf("expected workspace-local command to be allowed, got: %s", result)
 		}
 	})
+
+	t.Run("working_dir outside workspace", func(t *testing.T) {
+		outside := t.TempDir()
+		result := tool.guardCommand("ls -la", outside)
+		if result == "" {
+			t.Fatalf("expected command to be blocked for cwd outside workspace")
+		}
+		if !strings.Contains(strings.ToLower(result), "working_dir") {
+			t.Fatalf("expected working_dir guidance, got %q", result)
+		}
+	})
 }
 
 func TestExecTool_Execute(t *testing.T) {
@@ -265,6 +276,44 @@ func TestExecTool_Execute(t *testing.T) {
 		time.Sleep(2500 * time.Millisecond)
 		if _, statErr := os.Stat(marker); statErr == nil {
 			t.Fatalf("expected timed-out command descendants to be killed, but %s was created", marker)
+		}
+	})
+}
+
+func TestExecTool_Execute_RestrictToWorkspaceWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewExecTool(dir)
+	tool.SetRestrictToWorkspace(true)
+
+	t.Run("relative working_dir allowed", func(t *testing.T) {
+		sub := filepath.Join(dir, "sub")
+		if err := os.MkdirAll(sub, 0755); err != nil {
+			t.Fatalf("mkdir failed: %v", err)
+		}
+
+		result, err := tool.Execute(context.Background(), map[string]interface{}{
+			"command":      "pwd",
+			"working_dir":  "sub",
+			"timeout_seconds": 2,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, "sub") {
+			t.Fatalf("expected pwd output to include sub, got %q", result)
+		}
+	})
+
+	t.Run("working_dir escape blocked", func(t *testing.T) {
+		result, err := tool.Execute(context.Background(), map[string]interface{}{
+			"command":     "pwd",
+			"working_dir": "..",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, "Error:") {
+			t.Fatalf("expected Error: result, got %q", result)
 		}
 	})
 }

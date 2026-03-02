@@ -31,6 +31,9 @@ var toolSpecificArgAliases = map[string]map[string]string{
 	"exec": {
 		"cwd": "working_dir",
 	},
+	"unsafe_exec": {
+		"cwd": "working_dir",
+	},
 	"web_fetch": {
 		"max_chars_to_extract": "maxChars",
 	},

@@ -16,6 +16,7 @@ import (
 )
 
 type ExecTool struct {
+	name                string
 	workingDir          string
 	timeout             time.Duration
 	denyPatterns        []*regexp.Regexp
@@ -36,6 +37,7 @@ func NewExecTool(workingDir string) *ExecTool {
 	}
 
 	return &ExecTool{
+		name:                "",
 		workingDir:          workingDir,
 		timeout:             60 * time.Second,
 		denyPatterns:        denyPatterns,
@@ -44,12 +46,25 @@ func NewExecTool(workingDir string) *ExecTool {
 	}
 }
 
+func NewUnsafeExecTool(workingDir string) *ExecTool {
+	t := NewExecTool(workingDir)
+	t.name = "unsafe_exec"
+	return t
+}
+
 func (t *ExecTool) Name() string {
+	if t != nil && t.name != "" {
+		return t.name
+	}
 	return "exec"
 }
 
 func (t *ExecTool) Description() string {
-	return "Execute a shell command and return its output. Use with caution. " +
+	if t != nil && strings.HasPrefix(strings.ToLower(t.Name()), "unsafe_") {
+		return "Execute a shell command and return its output (unsafe: can run outside the workspace). " +
+			"Do not use this for chat slash commands (for example /react or /set_profile_picture); use the message tool for those."
+	}
+	return "Execute a shell command and return its output (workspace-scoped). Use with caution. " +
 		"Do not use this for chat slash commands (for example /react or /set_profile_picture); use the message tool for those."
 }
 
@@ -81,8 +96,16 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]interface{}) (st
 	}
 
 	cwd := t.workingDir
-	if wd, ok := args["working_dir"].(string); ok && wd != "" {
+	if wd, ok := args["working_dir"].(string); ok && strings.TrimSpace(wd) != "" {
 		cwd = wd
+	}
+
+	if t.restrictToWorkspace {
+		resolvedCwd, err := resolvePathWithOptionalRoot(cwd, t.workingDir, "workspace")
+		if err != nil {
+			return fmt.Sprintf("Error: %s", err.Error()), nil
+		}
+		cwd = resolvedCwd
 	}
 
 	if cwd == "" {
@@ -174,6 +197,16 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 	}
 
 	if t.restrictToWorkspace {
+		workspaceRoot := strings.TrimSpace(t.workingDir)
+		if workspaceRoot == "" {
+			workspaceRoot = cwd
+		}
+
+		workspaceAbs, err := filepath.Abs(workspaceRoot)
+		if err == nil {
+			workspaceAbs = filepath.Clean(workspaceAbs)
+		}
+
 		if strings.Contains(cmd, "..\\") || strings.Contains(cmd, "../") {
 			return "Command blocked by safety guard (path traversal detected)"
 		}
@@ -182,22 +215,51 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 		if err != nil {
 			return ""
 		}
+		cwdPath = filepath.Clean(cwdPath)
+
+		if workspaceAbs != "" {
+			relCwd, err := filepath.Rel(workspaceAbs, cwdPath)
+			if err != nil {
+				return ""
+			}
+			if relCwd == ".." || strings.HasPrefix(relCwd, ".."+string(os.PathSeparator)) {
+				return "Command blocked by safety guard (working_dir outside workspace)"
+			}
+		}
 
 		pathPattern := regexp.MustCompile(`[A-Za-z]:\\[^\\\"']+|/[^\s\"']+`)
-		matches := pathPattern.FindAllString(cmd, -1)
+		indices := pathPattern.FindAllStringIndex(cmd, -1)
 
-		for _, raw := range matches {
+		for _, idx := range indices {
+			raw := cmd[idx[0]:idx[1]]
+			if idx[0] == 0 {
+				// Allow absolute executable paths like /bin/ls.
+				continue
+			}
+			if raw == "/dev/null" || strings.EqualFold(raw, "NUL") {
+				continue
+			}
+
 			p, err := filepath.Abs(raw)
 			if err != nil {
 				continue
 			}
+			p = filepath.Clean(p)
 
-			rel, err := filepath.Rel(cwdPath, p)
+			base := cwdPath
+			if workspaceAbs != "" {
+				base = workspaceAbs
+			}
+
+			rel, err := filepath.Rel(base, p)
 			if err != nil {
 				continue
 			}
 
 			if strings.HasPrefix(rel, "..") {
+				if workspaceAbs != "" {
+					return "Command blocked by safety guard (path outside workspace)"
+				}
 				return "Command blocked by safety guard (path outside working dir)"
 			}
 		}
