@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 type ToolRegistry struct {
 	tools  map[string]Tool
 	policy ToolExecutionPolicy
+	unsafe *UnsafeToolGate
 	mu     sync.RWMutex
 }
 
@@ -28,6 +30,15 @@ func (r *ToolRegistry) SetExecutionPolicy(policy ToolExecutionPolicy) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.policy = policy
+}
+
+// SetUnsafeToolGate attaches an unsafe tool approval gate. When configured,
+// tools whose names start with "unsafe_" are blocked unless explicitly approved
+// for the current session.
+func (r *ToolRegistry) SetUnsafeToolGate(gate *UnsafeToolGate) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.unsafe = gate
 }
 
 func (r *ToolRegistry) Register(tool Tool) {
@@ -76,6 +87,16 @@ func (r *ToolRegistry) ExecuteResultWithContext(ctx context.Context, name string
 
 	if err := r.checkPolicy(name); err != nil {
 		logger.WarnCF("tool", "Tool execution blocked by policy",
+			map[string]interface{}{
+				"tool":     name,
+				"error":    err.Error(),
+				"trace_id": traceID,
+			})
+		return ToolResult{}, err
+	}
+
+	if err := r.checkUnsafeGate(name, args); err != nil {
+		logger.WarnCF("tool", "Tool execution blocked (unsafe tool requires approval)",
 			map[string]interface{}{
 				"tool":     name,
 				"error":    err.Error(),
@@ -187,12 +208,18 @@ func (r *ToolRegistry) Count() int {
 // RegisterCoreTools registers the standard set of tools shared between the
 // main agent and subagents: filesystem ops, exec, edit, web search, and web fetch.
 func RegisterCoreTools(r *ToolRegistry, workspace string, webSearchCfg WebSearchToolConfig) {
-	r.Register(&ReadFileTool{})
-	r.Register(&WriteFileTool{})
-	r.Register(&ListDirTool{})
+	// Safe (workspace-scoped) filesystem tools.
+	r.Register(NewReadFileTool(workspace))
+	r.Register(NewWriteFileTool(workspace))
+	r.Register(NewListDirTool(workspace))
+	// Unsafe filesystem tools (require explicit user approval).
+	r.Register(NewUnsafeReadFileTool())
+	r.Register(NewUnsafeWriteFileTool())
+	r.Register(NewUnsafeListDirTool())
 	r.Register(NewSessionHistoryTool(workspace))
 	r.Register(NewExecTool(workspace))
 	r.Register(NewEditFileTool(workspace))
+	r.Register(NewUnsafeEditFileTool())
 	r.Register(NewWebFetchTool(50000))
 	r.Register(NewWebSearchTool(webSearchCfg))
 }
@@ -225,4 +252,26 @@ func (r *ToolRegistry) checkPolicy(name string) error {
 	policy := r.policy
 	r.mu.RUnlock()
 	return policy.check(name)
+}
+
+func (r *ToolRegistry) checkUnsafeGate(name string, args map[string]interface{}) error {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if !strings.HasPrefix(name, "unsafe_") {
+		return nil
+	}
+
+	r.mu.RLock()
+	gate := r.unsafe
+	r.mu.RUnlock()
+	if gate == nil {
+		// No gate configured => allow.
+		return nil
+	}
+
+	sessionKey := strings.TrimSpace(getExecutionSessionKey(args))
+	if gate.IsApproved(sessionKey) {
+		return nil
+	}
+
+	return fmt.Errorf("tool %s requires explicit user approval. Ask the user to reply with UNSAFE_OK (optionally UNSAFE_OK 10m) to enable unsafe tools for this chat", name)
 }

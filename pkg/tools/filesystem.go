@@ -10,14 +10,31 @@ import (
 	"strings"
 )
 
-type ReadFileTool struct{}
+type ReadFileTool struct {
+	name       string
+	allowedDir string
+}
+
+func NewReadFileTool(allowedDir string) *ReadFileTool {
+	return &ReadFileTool{name: "read_file", allowedDir: allowedDir}
+}
+
+func NewUnsafeReadFileTool() *ReadFileTool {
+	return &ReadFileTool{name: "unsafe_read_file"}
+}
 
 func (t *ReadFileTool) Name() string {
+	if t != nil && t.name != "" {
+		return t.name
+	}
 	return "read_file"
 }
 
 func (t *ReadFileTool) Description() string {
-	return "Read file contents. Optional line ranges: start_line + max_lines"
+	if t != nil && strings.HasPrefix(strings.ToLower(t.Name()), "unsafe_") {
+		return "Read file contents from any path (unsafe). Optional line ranges: start_line + max_lines"
+	}
+	return "Read file contents from the workspace. Optional line ranges: start_line + max_lines"
 }
 
 func (t *ReadFileTool) Parameters() map[string]interface{} {
@@ -95,6 +112,11 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]interface{})
 		return "", fmt.Errorf("path is required")
 	}
 
+	resolvedPath, err := resolvePathWithOptionalRoot(path, t.allowedDir, "workspace")
+	if err != nil {
+		return "", err
+	}
+
 	startLine, err := parseOptionalIntArg(args, "start_line", 1)
 	if err != nil {
 		return "", err
@@ -110,7 +132,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]interface{})
 		return "", fmt.Errorf("max_lines must be >= 0")
 	}
 
-	content, err := os.ReadFile(path)
+	content, err := os.ReadFile(resolvedPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
@@ -144,14 +166,31 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]interface{})
 	return strings.Join(lines[start:end], ""), nil
 }
 
-type WriteFileTool struct{}
+type WriteFileTool struct {
+	name       string
+	allowedDir string
+}
+
+func NewWriteFileTool(allowedDir string) *WriteFileTool {
+	return &WriteFileTool{name: "write_file", allowedDir: allowedDir}
+}
+
+func NewUnsafeWriteFileTool() *WriteFileTool {
+	return &WriteFileTool{name: "unsafe_write_file"}
+}
 
 func (t *WriteFileTool) Name() string {
+	if t != nil && t.name != "" {
+		return t.name
+	}
 	return "write_file"
 }
 
 func (t *WriteFileTool) Description() string {
-	return "Write content to a file"
+	if t != nil && strings.HasPrefix(strings.ToLower(t.Name()), "unsafe_") {
+		return "Write content to a file at any path (unsafe)"
+	}
+	return "Write content to a file under the workspace"
 }
 
 func (t *WriteFileTool) Parameters() map[string]interface{} {
@@ -182,26 +221,48 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]interface{}
 		return "", fmt.Errorf("content is required")
 	}
 
-	dir := filepath.Dir(path)
+	resolvedPath, err := resolvePathWithOptionalRoot(path, t.allowedDir, "workspace")
+	if err != nil {
+		return "", err
+	}
+
+	dir := filepath.Dir(resolvedPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(resolvedPath, []byte(content), 0644); err != nil {
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 
 	return "File written successfully", nil
 }
 
-type ListDirTool struct{}
+type ListDirTool struct {
+	name       string
+	allowedDir string
+}
+
+func NewListDirTool(allowedDir string) *ListDirTool {
+	return &ListDirTool{name: "list_dir", allowedDir: allowedDir}
+}
+
+func NewUnsafeListDirTool() *ListDirTool {
+	return &ListDirTool{name: "unsafe_list_dir"}
+}
 
 func (t *ListDirTool) Name() string {
+	if t != nil && t.name != "" {
+		return t.name
+	}
 	return "list_dir"
 }
 
 func (t *ListDirTool) Description() string {
-	return "List files and directories in a path"
+	if t != nil && strings.HasPrefix(strings.ToLower(t.Name()), "unsafe_") {
+		return "List files and directories in any path (unsafe)"
+	}
+	return "List files and directories under the workspace"
 }
 
 func (t *ListDirTool) Parameters() map[string]interface{} {
@@ -223,7 +284,12 @@ func (t *ListDirTool) Execute(ctx context.Context, args map[string]interface{}) 
 		path = "."
 	}
 
-	entries, err := os.ReadDir(path)
+	resolvedPath, err := resolvePathWithOptionalRoot(path, t.allowedDir, "workspace")
+	if err != nil {
+		return "", err
+	}
+
+	entries, err := os.ReadDir(resolvedPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read directory: %w", err)
 	}
@@ -238,4 +304,43 @@ func (t *ListDirTool) Execute(ctx context.Context, args map[string]interface{}) 
 	}
 
 	return result, nil
+}
+
+func resolvePathWithOptionalRoot(rawPath string, allowedDir string, allowedLabel string) (string, error) {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		return "", fmt.Errorf("path is required")
+	}
+
+	// No root restriction: preserve existing semantics.
+	if strings.TrimSpace(allowedDir) == "" {
+		return rawPath, nil
+	}
+
+	allowedAbs, err := filepath.Abs(allowedDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve %s root: %w", allowedLabel, err)
+	}
+	allowedAbs = filepath.Clean(allowedAbs)
+
+	resolved := ""
+	if filepath.IsAbs(rawPath) {
+		resolved = filepath.Clean(rawPath)
+	} else {
+		resolved = filepath.Clean(filepath.Join(allowedAbs, rawPath))
+	}
+
+	rel, err := filepath.Rel(allowedAbs, resolved)
+	if err != nil {
+		return "", fmt.Errorf("failed to validate path: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		label := allowedLabel
+		if label == "" {
+			label = "allowed directory"
+		}
+		return "", fmt.Errorf("path %s is outside %s", rawPath, label)
+	}
+
+	return resolved, nil
 }

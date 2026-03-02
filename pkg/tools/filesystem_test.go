@@ -2,22 +2,24 @@ package tools
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestReadFileTool_ExecuteReadsFile(t *testing.T) {
-	tool := &ReadFileTool{}
+	root := t.TempDir()
+	tool := NewReadFileTool(root)
 	content := "hello from test file"
 
-	path := filepath.Join(t.TempDir(), "notes.txt")
-	if err := ensureWriteFile(path, content); err != nil {
+	path := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to setup test file: %v", err)
 	}
 
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
-		"path": path,
+		"path": "notes.txt",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -28,7 +30,7 @@ func TestReadFileTool_ExecuteReadsFile(t *testing.T) {
 }
 
 func TestReadFileTool_ExecuteMissingPath(t *testing.T) {
-	tool := &ReadFileTool{}
+	tool := NewReadFileTool(t.TempDir())
 
 	_, err := tool.Execute(context.Background(), map[string]interface{}{})
 	if err == nil {
@@ -37,16 +39,17 @@ func TestReadFileTool_ExecuteMissingPath(t *testing.T) {
 }
 
 func TestReadFileTool_ExecuteWithLineRange(t *testing.T) {
-	tool := &ReadFileTool{}
+	root := t.TempDir()
+	tool := NewReadFileTool(root)
 	content := "line 1\nline 2\nline 3\nline 4\n"
 
-	path := filepath.Join(t.TempDir(), "book.txt")
-	if err := ensureWriteFile(path, content); err != nil {
+	path := filepath.Join(root, "book.txt")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to setup test file: %v", err)
 	}
 
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
-		"path":       path,
+		"path":       "book.txt",
 		"start_line": 2,
 		"max_lines":  2,
 	})
@@ -59,16 +62,17 @@ func TestReadFileTool_ExecuteWithLineRange(t *testing.T) {
 }
 
 func TestReadFileTool_ExecuteWithLineRangeUntilEnd(t *testing.T) {
-	tool := &ReadFileTool{}
+	root := t.TempDir()
+	tool := NewReadFileTool(root)
 	content := "line 1\nline 2\nline 3\nline 4\n"
 
-	path := filepath.Join(t.TempDir(), "book.txt")
-	if err := ensureWriteFile(path, content); err != nil {
+	path := filepath.Join(root, "book.txt")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to setup test file: %v", err)
 	}
 
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
-		"path":       path,
+		"path":       "book.txt",
 		"start_line": 3,
 	})
 	if err != nil {
@@ -80,16 +84,17 @@ func TestReadFileTool_ExecuteWithLineRangeUntilEnd(t *testing.T) {
 }
 
 func TestReadFileTool_ExecuteLineRangeValidation(t *testing.T) {
-	tool := &ReadFileTool{}
+	root := t.TempDir()
+	tool := NewReadFileTool(root)
 	content := "line 1\nline 2\n"
 
-	path := filepath.Join(t.TempDir(), "book.txt")
-	if err := ensureWriteFile(path, content); err != nil {
+	path := filepath.Join(root, "book.txt")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to setup test file: %v", err)
 	}
 
 	_, err := tool.Execute(context.Background(), map[string]interface{}{
-		"path":       path,
+		"path":       "book.txt",
 		"start_line": 0,
 	})
 	if err == nil || !strings.Contains(err.Error(), "start_line") {
@@ -97,7 +102,7 @@ func TestReadFileTool_ExecuteLineRangeValidation(t *testing.T) {
 	}
 
 	_, err = tool.Execute(context.Background(), map[string]interface{}{
-		"path":       path,
+		"path":       "book.txt",
 		"start_line": 1,
 		"max_lines":  -1,
 	})
@@ -106,7 +111,7 @@ func TestReadFileTool_ExecuteLineRangeValidation(t *testing.T) {
 	}
 
 	_, err = tool.Execute(context.Background(), map[string]interface{}{
-		"path":       path,
+		"path":       "book.txt",
 		"start_line": 99,
 	})
 	if err == nil || !strings.Contains(err.Error(), "exceeds total lines") {
@@ -115,9 +120,10 @@ func TestReadFileTool_ExecuteLineRangeValidation(t *testing.T) {
 }
 
 func TestWriteFileTool_ExecuteCreatesDirectories(t *testing.T) {
-	tool := &WriteFileTool{}
+	root := t.TempDir()
+	tool := NewWriteFileTool(root)
 
-	file := filepath.Join(t.TempDir(), "nested", "dir", "output.txt")
+	file := filepath.Join("nested", "dir", "output.txt")
 	content := "generated output"
 
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
@@ -131,13 +137,11 @@ func TestWriteFileTool_ExecuteCreatesDirectories(t *testing.T) {
 		t.Fatalf("unexpected result: %q", result)
 	}
 
-	if _, err := tool.Execute(context.Background(), map[string]interface{}{
-		"path": file,
-	}); err == nil {
+	if _, err := tool.Execute(context.Background(), map[string]interface{}{"path": file}); err == nil {
 		t.Fatalf("expected error when writing args are incomplete, got nil")
 	}
 
-	readTool := &ReadFileTool{}
+	readTool := NewReadFileTool(root)
 	raw, err := readTool.Execute(context.Background(), map[string]interface{}{
 		"path": file,
 	})
@@ -150,10 +154,11 @@ func TestWriteFileTool_ExecuteCreatesDirectories(t *testing.T) {
 }
 
 func TestWriteFileTool_ExecuteRequiresContent(t *testing.T) {
-	tool := &WriteFileTool{}
+	root := t.TempDir()
+	tool := NewWriteFileTool(root)
 
 	_, err := tool.Execute(context.Background(), map[string]interface{}{
-		"path": filepath.Join(t.TempDir(), "out.txt"),
+		"path": "out.txt",
 	})
 	if err == nil {
 		t.Fatal("expected error for missing content")
@@ -162,22 +167,19 @@ func TestWriteFileTool_ExecuteRequiresContent(t *testing.T) {
 
 func TestListDirTool_Execute(t *testing.T) {
 	root := t.TempDir()
-	if _, err := (&WriteFileTool{}).Execute(context.Background(), map[string]interface{}{
-		"path":    filepath.Join(root, "file.txt"),
-		"content": "data",
-	}); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("data"), 0644); err != nil {
 		t.Fatalf("failed to prepare file: %v", err)
 	}
-	if _, err := (&WriteFileTool{}).Execute(context.Background(), map[string]interface{}{
-		"path":    filepath.Join(root, "nested", "more.txt"),
-		"content": "deeper",
-	}); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "nested"), 0755); err != nil {
+		t.Fatalf("failed to prepare nested dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "nested", "more.txt"), []byte("deeper"), 0644); err != nil {
 		t.Fatalf("failed to prepare nested file: %v", err)
 	}
 
-	tool := &ListDirTool{}
+	tool := NewListDirTool(root)
 	got, err := tool.Execute(context.Background(), map[string]interface{}{
-		"path": root,
+		"path": ".",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -191,14 +193,20 @@ func TestListDirTool_Execute(t *testing.T) {
 	}
 }
 
-// ensureWriteFile mirrors os.WriteFile usage to keep test setup concise and explicit.
-func ensureWriteFile(path, content string) error {
-	if _, err := (&WriteFileTool{}).Execute(context.Background(), map[string]interface{}{
-		"path":    path,
-		"content": content,
-	}); err != nil {
-		return err
+func TestReadFileTool_ExecuteRejectsPathOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	file := filepath.Join(outside, "secrets.txt")
+	if err := os.WriteFile(file, []byte("nope"), 0644); err != nil {
+		t.Fatalf("failed to setup outside file: %v", err)
 	}
 
-	return nil
+	tool := NewReadFileTool(root)
+	_, err := tool.Execute(context.Background(), map[string]interface{}{"path": file})
+	if err == nil {
+		t.Fatalf("expected error for outside path")
+	}
+	if !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }

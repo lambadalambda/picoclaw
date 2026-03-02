@@ -64,6 +64,7 @@ type SubagentManager struct {
 	bus              *bus.MessageBus
 	workspace        string
 	nextID           int
+	unsafeGate       *UnsafeToolGate
 }
 
 func toolCallSignature(toolCalls []providers.ToolCall) string {
@@ -138,6 +139,12 @@ func (sm *SubagentManager) ConfigureMessageBudget(budget providers.MessageBudget
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.messageBudget = budget
+}
+
+func (sm *SubagentManager) ConfigureUnsafeToolGate(gate *UnsafeToolGate) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.unsafeGate = gate
 }
 
 func (sm *SubagentManager) ConfigureRetention(maxStoredTasks int, completedTTL time.Duration) {
@@ -245,6 +252,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 	llmTimeout := sm.llmTimeout
 	toolTimeout := sm.toolTimeout
 	maxParallelTools := sm.maxParallelTools
+	unsafeGate := sm.unsafeGate
 	sm.mu.RUnlock()
 
 	if initial.Options.Model != "" {
@@ -266,6 +274,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 
 	// Build a subagent-only tool registry.
 	registry := NewToolRegistry()
+	registry.SetUnsafeToolGate(unsafeGate)
 	RegisterCoreTools(registry, sm.workspace, WebSearchToolConfig{MaxResults: 5}) // web search will self-report if key missing
 	registry.Register(NewSubagentReportTool(sm.bus, initial.ID, initial.Label, initial.OriginChannel, initial.OriginChatID))
 

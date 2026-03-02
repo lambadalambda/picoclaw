@@ -66,7 +66,7 @@ func TestEditFileTool_AllowedDirPrefixBypassRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rejection for path outside allowed directory")
 	}
-	if !strings.Contains(err.Error(), "outside allowed directory") {
+	if !strings.Contains(err.Error(), "outside") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

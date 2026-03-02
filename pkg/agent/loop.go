@@ -44,6 +44,7 @@ type AgentLoop struct {
 	sessions          *session.SessionManager
 	contextBuilder    *ContextBuilder
 	tools             *tools.ToolRegistry
+	unsafeGate        *tools.UnsafeToolGate
 	traceSeq          atomic.Uint64
 	running           atomic.Bool
 	summarizing       sync.Map            // Tracks which sessions are currently being summarized
@@ -82,6 +83,8 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	zaiSearchKey, zaiSearchBase := resolveZAISearchCredentials(webSearchCfg, cfg.Providers)
 
 	toolsRegistry := tools.NewToolRegistry()
+	unsafeGate := tools.NewUnsafeToolGate(10 * time.Minute)
+	toolsRegistry.SetUnsafeToolGate(unsafeGate)
 	tools.RegisterCoreTools(toolsRegistry, workspace, tools.WebSearchToolConfig{
 		BraveAPIKey:     webSearchCfg.APIKey,
 		MaxResults:      webSearchCfg.MaxResults,
@@ -96,7 +99,15 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	policyEnabled := cfg.Tools.Policy.Enabled || cfg.Tools.Policy.SafeMode || len(cfg.Tools.Policy.Allow) > 0 || len(cfg.Tools.Policy.Deny) > 0
 	denyTools := append([]string{}, cfg.Tools.Policy.Deny...)
 	if cfg.Tools.Policy.SafeMode {
-		denyTools = append(denyTools, "exec", "write_file", "edit_file")
+		denyTools = append(denyTools,
+			"exec",
+			"write_file",
+			"edit_file",
+			"unsafe_read_file",
+			"unsafe_write_file",
+			"unsafe_list_dir",
+			"unsafe_edit_file",
+		)
 	}
 	toolsRegistry.SetExecutionPolicy(tools.NewToolExecutionPolicy(policyEnabled, cfg.Tools.Policy.Allow, denyTools))
 
@@ -128,6 +139,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	)
 	spawnTool := tools.NewSpawnTool(subagentManager)
 	toolsRegistry.Register(spawnTool)
+	subagentManager.ConfigureUnsafeToolGate(unsafeGate)
 
 	// Register memory tools (graceful degradation if SQLite init fails)
 	memoryDBPath := filepath.Join(workspace, "memory", "memory.db")
@@ -235,6 +247,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		sessions:          sessionsManager,
 		contextBuilder:    contextBuilder,
 		tools:             toolsRegistry,
+		unsafeGate:        unsafeGate,
 		summarizing:       sync.Map{},
 		memoryStore:       memoryDB,
 		modelCapabilities: modelCaps,
@@ -599,6 +612,27 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		return al.processSystemMessage(ctx, msg, traceID)
 	}
 
+	// Unsafe tool approvals are session-scoped and are granted via an explicit user
+	// message token. This lets the agent ask before using unsafe_* tools.
+	if al.unsafeGate != nil {
+		if approve, revoke, ttl := parseUnsafeApprovalToken(msg.Content); approve {
+			effective := al.unsafeGate.Approve(msg.SessionKey, ttl)
+			logger.InfoCF("agent", "Unsafe tool approval granted",
+				map[string]interface{}{
+					"session_key": msg.SessionKey,
+					"ttl":         effective.String(),
+					"trace_id":    traceID,
+				})
+		} else if revoke {
+			al.unsafeGate.Revoke(msg.SessionKey)
+			logger.InfoCF("agent", "Unsafe tool approval revoked",
+				map[string]interface{}{
+					"session_key": msg.SessionKey,
+					"trace_id":    traceID,
+				})
+		}
+	}
+
 	userMessage := msg.Content
 	var userMedia []string
 	if len(msg.Media) > 0 {
@@ -617,6 +651,32 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		EnableSummary:   true,
 		SendResponse:    false,
 	})
+}
+
+func parseUnsafeApprovalToken(content string) (approve bool, revoke bool, ttl time.Duration) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return false, false, 0
+	}
+
+	upper := strings.ToUpper(content)
+	if strings.HasPrefix(upper, "UNSAFE_OFF") || strings.HasPrefix(upper, "UNSAFE_NO") {
+		return false, true, 0
+	}
+
+	if !strings.HasPrefix(upper, "UNSAFE_OK") {
+		return false, false, 0
+	}
+
+	// Optional duration: "UNSAFE_OK 10m".
+	parts := strings.Fields(content)
+	if len(parts) >= 2 {
+		if d, err := time.ParseDuration(parts[1]); err == nil {
+			return true, false, d
+		}
+	}
+
+	return true, false, 0
 }
 
 func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMessage, traceID string) (string, error) {

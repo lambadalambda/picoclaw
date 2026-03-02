@@ -11,22 +11,37 @@ import (
 // EditFileTool edits a file by replacing old_text with new_text.
 // The old_text must exist exactly in the file.
 type EditFileTool struct {
+	name       string
 	allowedDir string // Optional directory restriction for security
 }
 
 // NewEditFileTool creates a new EditFileTool with optional directory restriction.
 func NewEditFileTool(allowedDir string) *EditFileTool {
 	return &EditFileTool{
+		name:       "edit_file",
 		allowedDir: allowedDir,
 	}
 }
 
+func NewUnsafeEditFileTool() *EditFileTool {
+	return &EditFileTool{
+		name:       "unsafe_edit_file",
+		allowedDir: "",
+	}
+}
+
 func (t *EditFileTool) Name() string {
+	if t != nil && t.name != "" {
+		return t.name
+	}
 	return "edit_file"
 }
 
 func (t *EditFileTool) Description() string {
-	return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file."
+	if t != nil && strings.HasPrefix(strings.ToLower(t.Name()), "unsafe_") {
+		return "Edit a file by replacing old_text with new_text at any path (unsafe). The old_text must exist exactly in the file."
+	}
+	return "Edit a file by replacing old_text with new_text under the workspace. The old_text must exist exactly in the file."
 }
 
 func (t *EditFileTool) Parameters() map[string]interface{} {
@@ -66,32 +81,9 @@ func (t *EditFileTool) Execute(ctx context.Context, args map[string]interface{})
 		return "", fmt.Errorf("new_text is required")
 	}
 
-	// Resolve path and enforce directory restriction if configured
-	resolvedPath := path
-	if filepath.IsAbs(path) {
-		resolvedPath = filepath.Clean(path)
-	} else {
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve path: %w", err)
-		}
-		resolvedPath = abs
-	}
-
-	// Check directory restriction
-	if t.allowedDir != "" {
-		allowedAbs, err := filepath.Abs(t.allowedDir)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve allowed directory: %w", err)
-		}
-		allowedAbs = filepath.Clean(allowedAbs)
-		rel, err := filepath.Rel(allowedAbs, resolvedPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to validate allowed directory: %w", err)
-		}
-		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			return "", fmt.Errorf("path %s is outside allowed directory %s", path, t.allowedDir)
-		}
+	resolvedPath, err := resolvePathWithOptionalRoot(path, t.allowedDir, "workspace")
+	if err != nil {
+		return "", err
 	}
 
 	if _, err := os.Stat(resolvedPath); os.IsNotExist(err) {
