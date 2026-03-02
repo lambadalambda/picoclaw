@@ -13,7 +13,6 @@ type Config struct {
 	Agents    AgentsConfig    `json:"agents"`
 	Channels  ChannelsConfig  `json:"channels"`
 	Providers ProvidersConfig `json:"providers"`
-	Gateway   GatewayConfig   `json:"gateway"`
 	Tools     ToolsConfig     `json:"tools"`
 	mu        sync.RWMutex
 }
@@ -50,7 +49,6 @@ type ChannelsConfig struct {
 	Telegram  TelegramConfig  `json:"telegram"`
 	Feishu    FeishuConfig    `json:"feishu"`
 	Discord   DiscordConfig   `json:"discord"`
-	MaixCam   MaixCamConfig   `json:"maixcam"`
 	QQ        QQConfig        `json:"qq"`
 	DingTalk  DingTalkConfig  `json:"dingtalk"`
 	Slack     SlackConfig     `json:"slack"`
@@ -95,13 +93,6 @@ type DiscordConfig struct {
 	AllowFrom []string `json:"allow_from" env:"PICOCLAW_CHANNELS_DISCORD_ALLOW_FROM"`
 }
 
-type MaixCamConfig struct {
-	Enabled   bool     `json:"enabled" env:"PICOCLAW_CHANNELS_MAIXCAM_ENABLED"`
-	Host      string   `json:"host" env:"PICOCLAW_CHANNELS_MAIXCAM_HOST"`
-	Port      int      `json:"port" env:"PICOCLAW_CHANNELS_MAIXCAM_PORT"`
-	AllowFrom []string `json:"allow_from" env:"PICOCLAW_CHANNELS_MAIXCAM_ALLOW_FROM"`
-}
-
 type QQConfig struct {
 	Enabled   bool     `json:"enabled" env:"PICOCLAW_CHANNELS_QQ_ENABLED"`
 	AppID     string   `json:"app_id" env:"PICOCLAW_CHANNELS_QQ_APP_ID"`
@@ -139,11 +130,6 @@ type ProviderConfig struct {
 	APIBase    string                 `json:"api_base" env:"PICOCLAW_PROVIDERS_{{.Name}}_API_BASE"`
 	AuthMethod string                 `json:"auth_method,omitempty" env:"PICOCLAW_PROVIDERS_{{.Name}}_AUTH_METHOD"`
 	Routing    map[string]interface{} `json:"routing,omitempty"`
-}
-
-type GatewayConfig struct {
-	Host string `json:"host" env:"PICOCLAW_GATEWAY_HOST"`
-	Port int    `json:"port" env:"PICOCLAW_GATEWAY_PORT"`
 }
 
 type WebSearchConfig struct {
@@ -241,12 +227,6 @@ func DefaultConfig() *Config {
 				Token:     "",
 				AllowFrom: []string{},
 			},
-			MaixCam: MaixCamConfig{
-				Enabled:   false,
-				Host:      "0.0.0.0",
-				Port:      18790,
-				AllowFrom: []string{},
-			},
 			QQ: QQConfig{
 				Enabled:   false,
 				AppID:     "",
@@ -275,10 +255,6 @@ func DefaultConfig() *Config {
 			Zhipu:      ProviderConfig{},
 			VLLM:       ProviderConfig{},
 			Gemini:     ProviderConfig{},
-		},
-		Gateway: GatewayConfig{
-			Host: "0.0.0.0",
-			Port: 18790,
 		},
 		Tools: ToolsConfig{
 			Web: WebToolsConfig{

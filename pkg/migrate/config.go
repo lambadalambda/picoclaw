@@ -29,7 +29,6 @@ var supportedChannels = map[string]bool{
 	"feishu":    true,
 	"qq":        true,
 	"dingtalk":  true,
-	"maixcam":   true,
 }
 
 func findOpenClawConfig(openclawHome string) (string, error) {
@@ -195,25 +194,7 @@ func ConvertConfig(data map[string]interface{}) (*config.Config, []string, error
 				if v, ok := getString(cMap, "client_secret"); ok {
 					cfg.Channels.DingTalk.ClientSecret = v
 				}
-			case "maixcam":
-				cfg.Channels.MaixCam.Enabled = enabled
-				cfg.Channels.MaixCam.AllowFrom = allowFrom
-				if v, ok := getString(cMap, "host"); ok {
-					cfg.Channels.MaixCam.Host = v
-				}
-				if v, ok := getFloat(cMap, "port"); ok {
-					cfg.Channels.MaixCam.Port = int(v)
-				}
 			}
-		}
-	}
-
-	if gateway, ok := getMap(data, "gateway"); ok {
-		if v, ok := getString(gateway, "host"); ok {
-			cfg.Gateway.Host = v
-		}
-		if v, ok := getFloat(gateway, "port"); ok {
-			cfg.Gateway.Port = int(v)
 		}
 	}
 
@@ -277,10 +258,6 @@ func MergeConfig(existing, incoming *config.Config) *config.Config {
 	if !existing.Channels.DingTalk.Enabled && incoming.Channels.DingTalk.Enabled {
 		existing.Channels.DingTalk = incoming.Channels.DingTalk
 	}
-	if !existing.Channels.MaixCam.Enabled && incoming.Channels.MaixCam.Enabled {
-		existing.Channels.MaixCam = incoming.Channels.MaixCam
-	}
-
 	if existing.Tools.Web.Search.APIKey == "" {
 		existing.Tools.Web.Search = incoming.Tools.Web.Search
 	}

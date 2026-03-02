@@ -22,9 +22,9 @@ docker compose exec picoclaw picoclaw status
 
 ### Gateway mode (default)
 
-`docker compose up -d` starts the gateway daemon on port 18790. Connect
-messaging channels (Telegram, Discord, Slack, etc.) by setting the
-appropriate variables in `.env` or editing the config directly.
+`docker compose up -d` starts the gateway daemon. It does not expose an HTTP
+port; it connects out to messaging providers (Telegram, Discord, Slack, etc.)
+based on your config.
 
 ### DeltaChat bridge mode (optional)
 

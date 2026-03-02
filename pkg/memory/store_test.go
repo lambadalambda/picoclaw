@@ -220,7 +220,7 @@ func TestSearch(t *testing.T) {
 	s := newTestStore(t)
 
 	s.Store("user prefers dark mode and vim keybindings", "preference", "chat", nil)
-	s.Store("user works at Sipeed on MaixCam hardware", "fact", "chat", nil)
+	s.Store("user works at Sipeed on camera hardware", "fact", "chat", nil)
 	s.Store("deployed version 3.0 to production", "event", "chat", nil)
 
 	results, err := s.Search("vim keybindings", 5, "")

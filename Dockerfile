@@ -54,8 +54,5 @@ RUN chmod +x /opt/picoclaw/docker-entrypoint.sh
 # The assistant's workspace and config live here
 VOLUME ["/root/.picoclaw"]
 
-# Gateway port
-EXPOSE 18790
-
 ENTRYPOINT ["/opt/picoclaw/docker-entrypoint.sh"]
 CMD ["gateway"]

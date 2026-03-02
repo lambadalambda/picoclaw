@@ -9,8 +9,6 @@ services:
       deltachat-bridge:
         condition: service_healthy
         required: false
-    ports:
-      - "${PICOCLAW_HOST_PORT:-18790}:18790"
     volumes:
       # Picoclaw config, workspace, skills, and session data.
       # Lives in ./picoclaw-home so you can edit config.json directly.

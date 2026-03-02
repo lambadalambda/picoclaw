@@ -198,11 +198,7 @@ if [ ! -f "$CONFIG" ]; then
     }
   },
   "providers": {},
-  "channels": {},
-  "gateway": {
-    "host": "0.0.0.0",
-    "port": 18790
-  }
+  "channels": {}
 }
 EOF
 fi

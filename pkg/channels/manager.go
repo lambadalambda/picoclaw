@@ -110,19 +110,6 @@ func (m *Manager) initChannels() error {
 		}
 	}
 
-	if m.config.Channels.MaixCam.Enabled {
-		logger.DebugC("channels", "Attempting to initialize MaixCam channel")
-		maixcam, err := NewMaixCamChannel(m.config.Channels.MaixCam, m.bus)
-		if err != nil {
-			logger.ErrorCF("channels", "Failed to initialize MaixCam channel", map[string]interface{}{
-				"error": err.Error(),
-			})
-		} else {
-			m.channels["maixcam"] = maixcam
-			logger.InfoC("channels", "MaixCam channel enabled successfully")
-		}
-	}
-
 	if m.config.Channels.QQ.Enabled {
 		logger.DebugC("channels", "Attempting to initialize QQ channel")
 		qq, err := NewQQChannel(m.config.Channels.QQ, m.bus)
