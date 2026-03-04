@@ -1,14 +1,24 @@
 package tools
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+const (
+	filesystemReadFileMaxBytes  = 50000
+	filesystemWriteFileMaxBytes = 200000
+	filesystemListDirMaxEntries = 500
+)
+
+const filesystemTruncationNotice = "\n... (truncated)"
 
 type ReadFileTool struct {
 	name       string
@@ -132,21 +142,27 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]interface{})
 		return "", fmt.Errorf("max_lines must be >= 0")
 	}
 
-	content, err := os.ReadFile(resolvedPath)
+	f, err := os.Open(resolvedPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
+	defer f.Close()
 
-	text := string(content)
 	if startLine == 1 && maxLines == 0 {
-		return text, nil
+		data, truncated, err := readBytesWithCap(f, filesystemReadFileMaxBytes)
+		if err != nil {
+			return "", fmt.Errorf("failed to read file: %w", err)
+		}
+		if truncated {
+			return string(data) + filesystemTruncationNotice, nil
+		}
+		return string(data), nil
 	}
 
-	lines := strings.SplitAfter(text, "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		lines = []string{}
+	data, truncated, totalLines, err := readLineRangeWithCap(f, startLine, maxLines, filesystemReadFileMaxBytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file: %w", err)
 	}
-	totalLines := len(lines)
 	if totalLines == 0 {
 		if startLine == 1 {
 			return "", nil
@@ -157,13 +173,10 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]interface{})
 		return "", fmt.Errorf("start_line %d exceeds total lines %d", startLine, totalLines)
 	}
 
-	start := startLine - 1
-	end := totalLines
-	if maxLines > 0 && start+maxLines < end {
-		end = start + maxLines
+	if truncated {
+		return string(data) + filesystemTruncationNotice, nil
 	}
-
-	return strings.Join(lines[start:end], ""), nil
+	return string(data), nil
 }
 
 type WriteFileTool struct {
@@ -205,6 +218,10 @@ func (t *WriteFileTool) Parameters() map[string]interface{} {
 				"type":        "string",
 				"description": "Content to write to the file",
 			},
+			"append": map[string]interface{}{
+				"type":        "boolean",
+				"description": "If true, append content to the file instead of overwriting it (default false)",
+			},
 		},
 		"required": []string{"path", "content"},
 	}
@@ -220,6 +237,9 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]interface{}
 	if !ok {
 		return "", fmt.Errorf("content is required")
 	}
+	if len(content) > filesystemWriteFileMaxBytes {
+		return "", fmt.Errorf("content too large (max %d bytes)", filesystemWriteFileMaxBytes)
+	}
 
 	resolvedPath, err := resolvePathWithOptionalRoot(path, t.allowedDir, "workspace")
 	if err != nil {
@@ -229,6 +249,21 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]interface{}
 	dir := filepath.Dir(resolvedPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	appendMode, _ := args["append"].(bool)
+	if appendMode {
+		f, err := os.OpenFile(resolvedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return "", fmt.Errorf("failed to open file: %w", err)
+		}
+		defer f.Close()
+
+		if _, err := f.WriteString(content); err != nil {
+			return "", fmt.Errorf("failed to append to file: %w", err)
+		}
+
+		return "File appended successfully", nil
 	}
 
 	if err := os.WriteFile(resolvedPath, []byte(content), 0644); err != nil {
@@ -273,6 +308,14 @@ func (t *ListDirTool) Parameters() map[string]interface{} {
 				"type":        "string",
 				"description": "Path to list",
 			},
+			"offset": map[string]interface{}{
+				"type":        "integer",
+				"description": "Optional: 0-based offset into the sorted entries (default: 0)",
+			},
+			"limit": map[string]interface{}{
+				"type":        "integer",
+				"description": "Optional: max entries to return (default: capped)",
+			},
 		},
 		"required": []string{"path"},
 	}
@@ -293,17 +336,159 @@ func (t *ListDirTool) Execute(ctx context.Context, args map[string]interface{}) 
 	if err != nil {
 		return "", fmt.Errorf("failed to read directory: %w", err)
 	}
+	total := len(entries)
 
-	result := ""
+	offset, err := parseOptionalIntArg(args, "offset", 0)
+	if err != nil {
+		return "", err
+	}
+	if offset < 0 {
+		return "", fmt.Errorf("offset must be >= 0")
+	}
+	limit, err := parseOptionalIntArg(args, "limit", 0)
+	if err != nil {
+		return "", err
+	}
+	if limit < 0 {
+		return "", fmt.Errorf("limit must be >= 0")
+	}
+
+	maxEntries := filesystemListDirMaxEntries
+	if maxEntries <= 0 {
+		maxEntries = 500
+	}
+	if limit <= 0 || limit > maxEntries {
+		limit = maxEntries
+	}
+
+	start := offset
+	if start > len(entries) {
+		start = len(entries)
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	partial := offset > 0 || end < total
+
+	entries = entries[start:end]
+
+	var sb strings.Builder
 	for _, entry := range entries {
 		if entry.IsDir() {
-			result += "DIR:  " + entry.Name() + "\n"
+			sb.WriteString("DIR:  ")
+			sb.WriteString(entry.Name())
+			sb.WriteString("\n")
 		} else {
-			result += "FILE: " + entry.Name() + "\n"
+			sb.WriteString("FILE: ")
+			sb.WriteString(entry.Name())
+			sb.WriteString("\n")
+		}
+	}
+	result := sb.String()
+	if partial {
+		result += filesystemTruncationNotice
+	}
+	return result, nil
+}
+
+func readBytesWithCap(r io.Reader, maxBytes int) ([]byte, bool, error) {
+	if maxBytes <= 0 {
+		maxBytes = 50000
+	}
+	limited := &io.LimitedReader{R: r, N: int64(maxBytes + 1)}
+	b, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(b) > maxBytes {
+		return b[:maxBytes], true, nil
+	}
+	return b, false, nil
+}
+
+func readLineRangeWithCap(r io.Reader, startLine, maxLines, maxBytes int) ([]byte, bool, int, error) {
+	if startLine < 1 {
+		return nil, false, 0, fmt.Errorf("start_line must be >= 1")
+	}
+	if maxLines < 0 {
+		return nil, false, 0, fmt.Errorf("max_lines must be >= 0")
+	}
+	if maxBytes <= 0 {
+		maxBytes = 50000
+	}
+
+	var buf strings.Builder
+	buf.Grow(minInt(maxBytes, 4096))
+
+	br := bufio.NewReaderSize(r, 64*1024)
+	newlineCount := 0
+	sawAny := false
+	truncated := false
+
+	endLineExclusive := 0
+	lastLineWanted := 0
+	if maxLines > 0 {
+		endLineExclusive = startLine + maxLines
+		lastLineWanted = endLineExclusive - 1
+	}
+
+	for {
+		currentLine := newlineCount + 1
+		seg, err := br.ReadSlice('\n')
+		if len(seg) > 0 {
+			sawAny = true
+		}
+
+		collect := currentLine >= startLine
+		if collect && maxLines > 0 {
+			collect = currentLine < endLineExclusive
+		}
+		if collect && len(seg) > 0 {
+			remaining := maxBytes - buf.Len()
+			if remaining <= 0 {
+				truncated = true
+				break
+			}
+			if len(seg) > remaining {
+				buf.WriteString(string(seg[:remaining]))
+				truncated = true
+				break
+			}
+			buf.WriteString(string(seg))
+		}
+
+		if len(seg) > 0 && seg[len(seg)-1] == '\n' {
+			newlineCount++
+			if maxLines > 0 && newlineCount >= lastLineWanted {
+				break
+			}
+		}
+
+		if err != nil {
+			if err == bufio.ErrBufferFull {
+				continue
+			}
+			if err == io.EOF {
+				break
+			}
+			return nil, false, 0, err
 		}
 	}
 
-	return result, nil
+	totalLines := 0
+	if sawAny {
+		totalLines = newlineCount + 1
+	}
+
+	return []byte(buf.String()), truncated, totalLines, nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func resolvePathWithOptionalRoot(rawPath string, allowedDir string, allowedLabel string) (string, error) {

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,5 +209,126 @@ func TestReadFileTool_ExecuteRejectsPathOutsideWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "outside") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestReadFileTool_ExecuteTruncatesLargeFile(t *testing.T) {
+	root := t.TempDir()
+	tool := NewReadFileTool(root)
+
+	// Big file should be truncated by a tool-level size cap.
+	big := strings.Repeat("a", 2*1024*1024)
+	path := filepath.Join(root, "big.txt")
+	if err := os.WriteFile(path, []byte(big), 0644); err != nil {
+		t.Fatalf("failed to setup big file: %v", err)
+	}
+
+	got, err := tool.Execute(context.Background(), map[string]interface{}{"path": "big.txt"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) >= len(big) {
+		t.Fatalf("expected truncated output, got len=%d (input len=%d)", len(got), len(big))
+	}
+	if !strings.Contains(strings.ToLower(got), "truncated") {
+		t.Fatalf("expected truncation notice, got len=%d", len(got))
+	}
+}
+
+func TestWriteFileTool_ExecuteRejectsTooLargeContent(t *testing.T) {
+	root := t.TempDir()
+	tool := NewWriteFileTool(root)
+
+	big := strings.Repeat("b", 2*1024*1024)
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"path":    "big.txt",
+		"content": big,
+	})
+	if err == nil {
+		t.Fatalf("expected error for oversized content")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "too large") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestListDirTool_ExecuteTruncatesLargeDirectory(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 1200; i++ {
+		name := fmt.Sprintf("f%04d.txt", i)
+		if err := os.WriteFile(filepath.Join(root, name), []byte("x"), 0644); err != nil {
+			t.Fatalf("failed to write %s: %v", name, err)
+		}
+	}
+
+	tool := NewListDirTool(root)
+	got, err := tool.Execute(context.Background(), map[string]interface{}{"path": "."})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(got), "truncated") {
+		t.Fatalf("expected truncation notice, got len=%d", len(got))
+	}
+	if strings.Contains(got, "f1199.txt") {
+		t.Fatalf("expected listing to be truncated before last entry")
+	}
+}
+
+func TestListDirTool_Execute_OffsetLimit(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt", "d.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("x"), 0644); err != nil {
+			t.Fatalf("failed to write %s: %v", name, err)
+		}
+	}
+
+	tool := NewListDirTool(root)
+	got, err := tool.Execute(context.Background(), map[string]interface{}{
+		"path":   ".",
+		"offset": 1,
+		"limit":  2,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(got, "a.txt") {
+		t.Fatalf("expected offset to skip a.txt, got %q", got)
+	}
+	if !strings.Contains(got, "b.txt") || !strings.Contains(got, "c.txt") {
+		t.Fatalf("expected window to include b.txt and c.txt, got %q", got)
+	}
+	if strings.Contains(got, "d.txt") {
+		t.Fatalf("expected limit to exclude d.txt, got %q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "truncated") {
+		t.Fatalf("expected truncation notice for partial window, got %q", got)
+	}
+}
+
+func TestWriteFileTool_ExecuteAppend(t *testing.T) {
+	root := t.TempDir()
+	tool := NewWriteFileTool(root)
+
+	if _, err := tool.Execute(context.Background(), map[string]interface{}{
+		"path":    "log.txt",
+		"content": "hello\n",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := tool.Execute(context.Background(), map[string]interface{}{
+		"path":    "log.txt",
+		"content": "world\n",
+		"append":  true,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(root, "log.txt"))
+	if err != nil {
+		t.Fatalf("readback failed: %v", err)
+	}
+	if string(got) != "hello\nworld\n" {
+		t.Fatalf("unexpected content: %q", string(got))
 	}
 }

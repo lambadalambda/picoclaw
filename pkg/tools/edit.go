@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -113,61 +112,4 @@ func (t *EditFileTool) Execute(ctx context.Context, args map[string]interface{})
 	}
 
 	return fmt.Sprintf("Successfully edited %s", path), nil
-}
-
-type AppendFileTool struct{}
-
-func NewAppendFileTool() *AppendFileTool {
-	return &AppendFileTool{}
-}
-
-func (t *AppendFileTool) Name() string {
-	return "append_file"
-}
-
-func (t *AppendFileTool) Description() string {
-	return "Append content to the end of a file"
-}
-
-func (t *AppendFileTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"path": map[string]interface{}{
-				"type":        "string",
-				"description": "The file path to append to",
-			},
-			"content": map[string]interface{}{
-				"type":        "string",
-				"description": "The content to append",
-			},
-		},
-		"required": []string{"path", "content"},
-	}
-}
-
-func (t *AppendFileTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
-	path, ok := args["path"].(string)
-	if !ok {
-		return "", fmt.Errorf("path is required")
-	}
-
-	content, ok := args["content"].(string)
-	if !ok {
-		return "", fmt.Errorf("content is required")
-	}
-
-	filePath := filepath.Clean(path)
-
-	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return "", fmt.Errorf("failed to open file: %w", err)
-	}
-	defer f.Close()
-
-	if _, err := f.WriteString(content); err != nil {
-		return "", fmt.Errorf("failed to append to file: %w", err)
-	}
-
-	return fmt.Sprintf("Successfully appended to %s", path), nil
 }
