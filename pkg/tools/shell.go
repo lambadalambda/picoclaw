@@ -227,12 +227,45 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 			}
 		}
 
-		pathPattern := regexp.MustCompile(`[A-Za-z]:\\[^\\\"']+|/[^\s\"']+`)
-		indices := pathPattern.FindAllStringIndex(cmd, -1)
+		// NOTE: We only want to treat *actual* absolute filesystem paths as candidates.
+		// The previous implementation matched any "/..." substring anywhere in the command,
+		// which caused false positives for relative paths like "workflows/alice.json" (matched
+		// the "/alice.json" substring). We now require a boundary that indicates the path is
+		// starting (whitespace, quotes, or '='), plus a special-case for single-letter short
+		// flags like "-C/tmp".
+		absolutePathPattern := regexp.MustCompile(`(^|[\s"'=])([A-Za-z]:\\[^\s\"']+|/[^\s\"']+)`)
+		shortFlagPathPattern := regexp.MustCompile(`(^|[\s"'=])-[A-Za-z]([A-Za-z]:\\[^\s\"']+|/[^\s\"']+)`)
 
-		for _, idx := range indices {
-			raw := cmd[idx[0]:idx[1]]
-			if idx[0] == 0 {
+		type pathCandidate struct {
+			raw   string
+			start int
+		}
+
+		candidates := make([]pathCandidate, 0, 8)
+		for _, m := range absolutePathPattern.FindAllStringSubmatchIndex(cmd, -1) {
+			if len(m) < 6 {
+				continue
+			}
+			start, end := m[4], m[5]
+			if start < 0 || end < 0 || start >= end {
+				continue
+			}
+			candidates = append(candidates, pathCandidate{raw: cmd[start:end], start: start})
+		}
+		for _, m := range shortFlagPathPattern.FindAllStringSubmatchIndex(cmd, -1) {
+			if len(m) < 6 {
+				continue
+			}
+			start, end := m[4], m[5]
+			if start < 0 || end < 0 || start >= end {
+				continue
+			}
+			candidates = append(candidates, pathCandidate{raw: cmd[start:end], start: start})
+		}
+
+		for _, c := range candidates {
+			raw := c.raw
+			if c.start == 0 {
 				// Allow absolute executable paths like /bin/ls.
 				continue
 			}
