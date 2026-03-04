@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 type Session struct {
@@ -221,7 +222,7 @@ func (sm *SessionManager) Save(session *Session) error {
 		return err
 	}
 
-	return os.WriteFile(sessionPath, data, 0644)
+	return utils.AtomicWriteFile(sessionPath, data, 0644)
 }
 
 func (sm *SessionManager) loadSessions() error {

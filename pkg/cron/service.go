@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/adhocore/gronx"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 type CronSchedule struct {
@@ -363,17 +363,12 @@ func (cs *CronService) loadStore() error {
 }
 
 func (cs *CronService) saveStoreUnsafe() error {
-	dir := filepath.Dir(cs.storePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
 	data, err := json.MarshalIndent(cs.store, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(cs.storePath, data, 0644)
+	return utils.AtomicWriteFile(cs.storePath, data, 0644)
 }
 
 func (cs *CronService) AddJob(name string, schedule CronSchedule, message string, deliver bool, channel, to string) (*CronJob, error) {
