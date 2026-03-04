@@ -114,6 +114,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 
 	// Register message tool
 	messageTool := tools.NewMessageTool()
+	messageTool.SetWorkspaceRoot(workspace)
 	messageTool.SetSendCallback(func(channel, chatID, content string, media []string) error {
 		msgBus.PublishOutbound(bus.OutboundMessage{
 			Channel: channel,

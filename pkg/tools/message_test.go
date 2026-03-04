@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -118,6 +120,73 @@ func TestMessageTool_Execute_WithMedia(t *testing.T) {
 	}
 	if result == "" {
 		t.Error("result should not be empty")
+	}
+}
+
+func TestMessageTool_Execute_ResolvesRelativeMediaAgainstWorkspaceRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "generated"), 0755); err != nil {
+		t.Fatalf("failed to create generated dir: %v", err)
+	}
+
+	rel := filepath.Join("generated", "showcase.png")
+	abs := filepath.Join(root, rel)
+	if err := os.WriteFile(abs, []byte("x"), 0644); err != nil {
+		t.Fatalf("failed to write media file: %v", err)
+	}
+
+	tool := NewMessageTool()
+	tool.SetWorkspaceRoot(root)
+
+	var gotMedia []string
+	tool.SetSendCallback(func(channel, chatID, content string, media []string) error {
+		gotMedia = media
+		return nil
+	})
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"content": "test",
+		"channel": "telegram",
+		"chat_id": "456",
+		"media":   []interface{}{rel},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(gotMedia) != 1 {
+		t.Fatalf("media length = %d, want 1", len(gotMedia))
+	}
+	if gotMedia[0] != abs {
+		t.Fatalf("media[0] = %q, want %q", gotMedia[0], abs)
+	}
+}
+
+func TestMessageTool_Execute_BlocksRelativeMediaOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	tool := NewMessageTool()
+	tool.SetWorkspaceRoot(root)
+
+	called := false
+	tool.SetSendCallback(func(channel, chatID, content string, media []string) error {
+		called = true
+		return nil
+	})
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"content": "test",
+		"channel": "telegram",
+		"chat_id": "456",
+		"media":   []interface{}{filepath.Join("..", "secret.txt")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called {
+		t.Fatalf("expected callback not to be called")
+	}
+	if result == "" || result[:6] != "Error:" {
+		t.Fatalf("expected error result, got %q", result)
 	}
 }
 

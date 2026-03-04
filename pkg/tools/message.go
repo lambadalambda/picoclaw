@@ -3,14 +3,17 @@ package tools
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 )
 
 type SendCallback func(channel, chatID, content string, media []string) error
 
 type MessageTool struct {
-	mu           sync.RWMutex
-	sendCallback SendCallback
+	mu            sync.RWMutex
+	sendCallback  SendCallback
+	workspaceRoot string
 }
 
 func NewMessageTool() *MessageTool {
@@ -60,6 +63,15 @@ func (t *MessageTool) SetSendCallback(callback SendCallback) {
 	t.sendCallback = callback
 }
 
+// SetWorkspaceRoot configures the root directory used to resolve relative media
+// paths. When set, relative paths like "generated/foo.png" are interpreted as
+// workspace-relative and will be converted to absolute paths.
+func (t *MessageTool) SetWorkspaceRoot(root string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.workspaceRoot = strings.TrimSpace(root)
+}
+
 func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
 	content, ok := args["content"].(string)
 	if !ok {
@@ -78,6 +90,7 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 
 	t.mu.RLock()
 	callback := t.sendCallback
+	workspaceRoot := t.workspaceRoot
 	t.mu.RUnlock()
 
 	if channel == "" || chatID == "" {
@@ -101,6 +114,32 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 	}
 	if media == nil {
 		media = []string{}
+	}
+
+	// Resolve relative media paths against the workspace root (if configured).
+	if len(media) > 0 {
+		workspaceRoot = strings.TrimSpace(workspaceRoot)
+		resolved := make([]string, 0, len(media))
+		for _, p := range media {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if filepath.IsAbs(p) {
+				resolved = append(resolved, filepath.Clean(p))
+				continue
+			}
+			if workspaceRoot != "" {
+				abs, err := resolvePathWithOptionalRoot(p, workspaceRoot, "workspace")
+				if err != nil {
+					return fmt.Sprintf("Error: invalid media path %q: %v", p, err), nil
+				}
+				resolved = append(resolved, abs)
+				continue
+			}
+			resolved = append(resolved, filepath.Clean(p))
+		}
+		media = resolved
 	}
 
 	if err := callback(channel, chatID, content, media); err != nil {
