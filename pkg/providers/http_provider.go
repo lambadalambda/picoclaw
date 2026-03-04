@@ -31,7 +31,7 @@ const (
 	defaultRetryBaseWait = 1 * time.Second  // base wait before first retry
 	defaultRetryMaxWait  = 60 * time.Second // cap on backoff duration
 	defaultRetryJitter   = 0.2              // +/-20% jitter for non-Retry-After waits
-	defaultHTTPTimeout   = 2 * time.Minute  // safety net; ctx controls cancellation per call
+	defaultHTTPTimeout   = 2 * time.Minute  // safety net when caller didn't set a deadline
 )
 
 type HTTPProvider struct {
@@ -83,9 +83,9 @@ func NewHTTPProvider(apiKey, apiBase string) *HTTPProvider {
 		retryMaxWait:  defaultRetryMaxWait,
 		retryJitter:   defaultRetryJitter,
 		randFloat:     rand.Float64,
-		httpClient: &http.Client{
-			Timeout: defaultHTTPTimeout,
-		},
+		// NOTE: We rely on request contexts (ChatWithTimeout) for per-call deadlines.
+		// http.Client.Timeout is a hard cap and can conflict with longer contexts.
+		httpClient: &http.Client{},
 	}
 }
 
@@ -98,6 +98,15 @@ func (p *HTTPProvider) SetRouting(routing map[string]interface{}) {
 func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]interface{}) (*LLMResponse, error) {
 	if p.apiBase == "" {
 		return nil, fmt.Errorf("API base not configured")
+	}
+
+	// Ensure there's always some deadline so we don't hang forever if callers pass
+	// context.Background() directly. In normal agent operation, ChatWithTimeout
+	// sets a per-call deadline already.
+	if _, ok := ctx.Deadline(); !ok {
+		callCtx, cancel := context.WithTimeout(ctx, defaultHTTPTimeout)
+		defer cancel()
+		ctx = callCtx
 	}
 
 	requestMessages := canonicalizeMessages(messages)

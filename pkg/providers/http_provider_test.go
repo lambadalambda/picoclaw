@@ -260,13 +260,13 @@ func TestChat_RetryOnErrorFinishReason_WithContent(t *testing.T) {
 	}
 }
 
-func TestNewHTTPProvider_DefaultTimeoutIsSet(t *testing.T) {
+func TestNewHTTPProvider_DefaultClientTimeoutIsZero(t *testing.T) {
 	p := NewHTTPProvider("test-key", "https://example.com")
 	if p.httpClient == nil {
 		t.Fatal("expected httpClient to be non-nil")
 	}
-	if p.httpClient.Timeout <= 0 {
-		t.Fatalf("expected non-zero default http client timeout, got: %s", p.httpClient.Timeout)
+	if p.httpClient.Timeout != 0 {
+		t.Fatalf("expected http client Timeout=0 (rely on context), got: %s", p.httpClient.Timeout)
 	}
 }
 
