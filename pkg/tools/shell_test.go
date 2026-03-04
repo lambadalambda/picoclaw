@@ -173,6 +173,26 @@ func TestGuardCommand_RestrictToWorkspace(t *testing.T) {
 		}
 	})
 
+	t.Run("relative path args with slashes allowed", func(t *testing.T) {
+		cmd := "bash skills/comfyui/bin/generate-image.sh --workflow workflows/alice.json test generated/test.png"
+		result := tool.guardCommand(cmd, dir)
+		if result != "" {
+			t.Fatalf("expected relative path args to be allowed, got: %s", result)
+		}
+	})
+
+	t.Run("absolute path outside workspace blocked", func(t *testing.T) {
+		outside := t.TempDir()
+		outsideFile := filepath.Join(outside, "file.txt")
+		result := tool.guardCommand(fmt.Sprintf("cat %q", outsideFile), dir)
+		if result == "" {
+			t.Fatalf("expected absolute path outside workspace to be blocked")
+		}
+		if !strings.Contains(strings.ToLower(result), "path outside") {
+			t.Fatalf("expected path-outside message, got %q", result)
+		}
+	})
+
 	t.Run("working_dir outside workspace", func(t *testing.T) {
 		outside := t.TempDir()
 		result := tool.guardCommand("ls -la", outside)
@@ -292,8 +312,8 @@ func TestExecTool_Execute_RestrictToWorkspaceWorkingDir(t *testing.T) {
 		}
 
 		result, err := tool.Execute(context.Background(), map[string]interface{}{
-			"command":      "pwd",
-			"working_dir":  "sub",
+			"command":         "pwd",
+			"working_dir":     "sub",
 			"timeout_seconds": 2,
 		})
 		if err != nil {
