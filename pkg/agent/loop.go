@@ -30,29 +30,30 @@ import (
 )
 
 type AgentLoop struct {
-	bus               *bus.MessageBus
-	provider          providers.LLMProvider
-	workspace         string
-	model             string
-	contextWindow     int                   // Maximum context window size in tokens
-	chatOptions       providers.ChatOptions // Standard chat response options
-	compactOptions    providers.ChatOptions // Summarization/extraction options
-	messageBudget     providers.MessageBudget
-	maxIterations     int
-	llmTimeout        time.Duration // Per-LLM-call timeout (0 = disabled)
-	toolTimeout       time.Duration // Per-tool-call timeout (0 = disabled)
-	maxParallelTools  int           // Max concurrent tools per iteration (<=0 = unlimited)
-	sessions          *session.SessionManager
-	contextBuilder    *ContextBuilder
-	tools             *tools.ToolRegistry
-	unsafeGate        *tools.UnsafeToolGate
-	traceSeq          atomic.Uint64
-	running           atomic.Bool
-	summarizing       sync.Map            // Tracks which sessions are currently being summarized
-	memoryStore       *memory.MemoryStore // Searchable memory DB (nil = disabled)
-	modelCapabilities providers.ModelCapabilities
-	visionAnalyzer    imageAnalyzer
-	echoToolCalls     bool // Echo tool calls to chat channel
+	bus                *bus.MessageBus
+	provider           providers.LLMProvider
+	workspace          string
+	model              string
+	contextWindow      int                   // Maximum context window size in tokens
+	chatOptions        providers.ChatOptions // Standard chat response options
+	compactOptions     providers.ChatOptions // Summarization/extraction options
+	messageBudget      providers.MessageBudget
+	maxIterations      int
+	llmTimeout         time.Duration // Per-LLM-call timeout (0 = disabled)
+	toolTimeout        time.Duration // Per-tool-call timeout (0 = disabled)
+	maxParallelTools   int           // Max concurrent tools per iteration (<=0 = unlimited)
+	sessions           *session.SessionManager
+	contextBuilder     *ContextBuilder
+	tools              *tools.ToolRegistry
+	unsafeGate         *tools.UnsafeToolGate
+	traceSeq           atomic.Uint64
+	running            atomic.Bool
+	summarizing        sync.Map            // Tracks which sessions are currently being summarized
+	memoryStore        *memory.MemoryStore // Searchable memory DB (nil = disabled)
+	modelCapabilities  providers.ModelCapabilities
+	visionAnalyzer     imageAnalyzer
+	echoToolCalls      bool // Echo tool calls to chat channel
+	safeguardsDisabled bool // Global tool safeguards disabled by config
 }
 
 // processOptions configures how a message is processed
@@ -161,6 +162,11 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	contextBuilder.SetToolsRegistry(toolsRegistry)
 	contextBuilder.SetUnsafeApprovalRequired(!safeguardsDisabled)
 
+	if safeguardsDisabled {
+		logger.WarnCF("agent", "Tool safeguards are DISABLED by configuration",
+			map[string]interface{}{"config_key": "tools.safeguards.disabled"})
+	}
+
 	chatTemperature := cfg.Agents.Defaults.Temperature
 	if chatTemperature == 0 {
 		chatTemperature = 0.7
@@ -237,20 +243,21 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 			AnthropicCache:    cfg.Agents.Defaults.AnthropicCache,
 			AnthropicCacheTTL: anthropicCacheTTL,
 		},
-		messageBudget:     messageBudget,
-		maxIterations:     cfg.Agents.Defaults.MaxToolIterations,
-		llmTimeout:        time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds) * time.Second,
-		toolTimeout:       time.Duration(cfg.Agents.Defaults.ToolTimeoutSeconds) * time.Second,
-		maxParallelTools:  cfg.Agents.Defaults.MaxParallelToolCalls,
-		sessions:          sessionsManager,
-		contextBuilder:    contextBuilder,
-		tools:             toolsRegistry,
-		unsafeGate:        unsafeGate,
-		summarizing:       sync.Map{},
-		memoryStore:       memoryDB,
-		modelCapabilities: modelCaps,
-		visionAnalyzer:    visionAnalyzer,
-		echoToolCalls:     cfg.Agents.Defaults.EchoToolCalls,
+		messageBudget:      messageBudget,
+		maxIterations:      cfg.Agents.Defaults.MaxToolIterations,
+		llmTimeout:         time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds) * time.Second,
+		toolTimeout:        time.Duration(cfg.Agents.Defaults.ToolTimeoutSeconds) * time.Second,
+		maxParallelTools:   cfg.Agents.Defaults.MaxParallelToolCalls,
+		sessions:           sessionsManager,
+		contextBuilder:     contextBuilder,
+		tools:              toolsRegistry,
+		unsafeGate:         unsafeGate,
+		summarizing:        sync.Map{},
+		memoryStore:        memoryDB,
+		modelCapabilities:  modelCaps,
+		visionAnalyzer:     visionAnalyzer,
+		echoToolCalls:      cfg.Agents.Defaults.EchoToolCalls,
+		safeguardsDisabled: safeguardsDisabled,
 	}
 }
 
@@ -1126,8 +1133,9 @@ func (al *AgentLoop) GetStartupInfo() map[string]interface{} {
 	// Tools info
 	tools := al.tools.List()
 	info["tools"] = map[string]interface{}{
-		"count": len(tools),
-		"names": tools,
+		"count":               len(tools),
+		"names":               tools,
+		"safeguards_disabled": al.safeguardsDisabled,
 	}
 
 	// Skills info

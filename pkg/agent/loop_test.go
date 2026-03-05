@@ -1326,4 +1326,17 @@ func TestNewAgentLoop_ToolSafeguardsDisabled_DisablesPolicyAndGuards(t *testing.
 	if !strings.Contains(execResult, "rm -rf /") {
 		t.Fatalf("expected command output, got %q", execResult)
 	}
+
+	startup := al.GetStartupInfo()
+	toolsInfo, ok := startup["tools"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected tools info map in startup info")
+	}
+	disabled, ok := toolsInfo["safeguards_disabled"].(bool)
+	if !ok {
+		t.Fatalf("expected safeguards_disabled bool in startup info")
+	}
+	if !disabled {
+		t.Fatalf("expected safeguards_disabled=true in startup info")
+	}
 }
