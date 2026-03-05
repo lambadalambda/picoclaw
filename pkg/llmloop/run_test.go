@@ -343,3 +343,71 @@ func TestRun_TruncatedToolCall(t *testing.T) {
 		t.Errorf("expected truncation error in message[2], got: %q", res.Messages[2].Content)
 	}
 }
+
+func TestRun_TruncatedMultipleToolCalls(t *testing.T) {
+	p := &mockProvider{responses: []*providers.LLMResponse{
+		{
+			ToolCalls: []providers.ToolCall{
+				{ID: "tc1", Name: "write_file", Arguments: map[string]interface{}{"path": "/tmp/a.txt"}},
+				{ID: "tc2", Name: "write_file", Arguments: map[string]interface{}{"path": "/tmp/b.txt"}},
+			},
+			FinishReason: "length",
+		},
+		{Content: "recovered"},
+	}}
+
+	toolResultsSeen := 0
+	res, err := Run(context.Background(), RunOptions{
+		Provider:      p,
+		Model:         "test-model",
+		MaxIterations: 3,
+		Messages:      []providers.Message{{Role: "user", Content: "write large files"}},
+		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
+			t.Fatal("ExecuteTools should not be called for truncated tool calls")
+			return nil
+		},
+		Hooks: Hooks{
+			ToolResultMessage: func(iteration int, msg providers.Message) {
+				if iteration == 1 {
+					toolResultsSeen++
+					if !strings.Contains(msg.Content, "truncated") {
+						t.Errorf("expected truncation error message, got: %q", msg.Content)
+					}
+				}
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.FinalContent != "recovered" {
+		t.Fatalf("FinalContent = %q, want %q", res.FinalContent, "recovered")
+	}
+	if res.Iterations != 2 {
+		t.Fatalf("Iterations = %d, want 2", res.Iterations)
+	}
+	if toolResultsSeen != 2 {
+		t.Fatalf("expected 2 tool result messages for 2 truncated tool calls, got %d", toolResultsSeen)
+	}
+	if len(res.Messages) != 4 {
+		t.Fatalf("Messages len = %d, want 4 (user, assistant with 2 tool calls, 2 tool errors)", len(res.Messages))
+	}
+	if res.Messages[1].Role != "assistant" {
+		t.Fatalf("message[1].Role = %q, want assistant", res.Messages[1].Role)
+	}
+	if len(res.Messages[1].ToolCalls) != 2 {
+		t.Fatalf("message[1] should have 2 tool calls, got %d", len(res.Messages[1].ToolCalls))
+	}
+	if res.Messages[2].Role != "tool" {
+		t.Fatalf("message[2].Role = %q, want tool", res.Messages[2].Role)
+	}
+	if res.Messages[2].ToolCallID != "tc1" {
+		t.Fatalf("message[2].ToolCallID = %q, want tc1", res.Messages[2].ToolCallID)
+	}
+	if res.Messages[3].Role != "tool" {
+		t.Fatalf("message[3].Role = %q, want tool", res.Messages[3].Role)
+	}
+	if res.Messages[3].ToolCallID != "tc2" {
+		t.Fatalf("message[3].ToolCallID = %q, want tc2", res.Messages[3].ToolCallID)
+	}
+}
