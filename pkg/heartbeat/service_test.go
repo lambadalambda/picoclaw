@@ -98,3 +98,52 @@ func TestHeartbeatService_BuildPromptDoesNotReadMemoryHeartbeatFile(t *testing.T
 		t.Fatalf("did not expect prompt to include memory/HEARTBEAT.md content, got: %q", prompt)
 	}
 }
+
+func TestHeartbeatService_BuildPromptIncludesActivity(t *testing.T) {
+	workspace := t.TempDir()
+	cronDir := filepath.Join(workspace, "cron")
+	if err := os.MkdirAll(cronDir, 0755); err != nil {
+		t.Fatalf("mkdir cron dir: %v", err)
+	}
+
+	heartbeatContent := "HEARTBEAT rule: daytime proactive check"
+	if err := os.WriteFile(filepath.Join(workspace, "HEARTBEAT.md"), []byte(heartbeatContent), 0644); err != nil {
+		t.Fatalf("write HEARTBEAT.md: %v", err)
+	}
+
+	activity := Activity{
+		Channel:     "telegram",
+		ChatID:      "chat123",
+		UpdatedAtMS: time.Now().Add(-5 * time.Minute).UnixMilli(),
+	}
+	activityPath := ActivityPath(workspace)
+	if err := SaveActivity(activityPath, activity); err != nil {
+		t.Fatalf("save activity: %v", err)
+	}
+
+	hs := NewHeartbeatService(workspace, nil, 60, true)
+	prompt := hs.buildPrompt()
+
+	if !strings.Contains(prompt, "Last user message in main session:") {
+		t.Errorf("expected prompt to include activity info, got: %q", prompt)
+	}
+
+	if !strings.Contains(prompt, heartbeatContent) {
+		t.Errorf("expected prompt to include HEARTBEAT.md content, got: %q", prompt)
+	}
+}
+
+func TestHeartbeatService_BuildPromptIncludesNoActivityWhenNoneExists(t *testing.T) {
+	workspace := t.TempDir()
+	cronDir := filepath.Join(workspace, "cron")
+	if err := os.MkdirAll(cronDir, 0755); err != nil {
+		t.Fatalf("mkdir cron dir: %v", err)
+	}
+
+	hs := NewHeartbeatService(workspace, nil, 60, true)
+	prompt := hs.buildPrompt()
+
+	if strings.Contains(prompt, "Last user message:") {
+		t.Errorf("expected prompt NOT to include activity info when none exists, got: %q", prompt)
+	}
+}

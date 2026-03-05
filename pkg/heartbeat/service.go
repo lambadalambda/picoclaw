@@ -109,6 +109,21 @@ func (hs *HeartbeatService) buildPrompt() string {
 		notes = string(data)
 	}
 
+	// Read user activity information
+	activityPath := ActivityPath(hs.workspace)
+	activity, hasActivity, err := LoadActivity(activityPath)
+
+	var activityInfo string
+	if err != nil {
+		activityInfo = fmt.Sprintf("Unable to read activity: %v", err)
+	} else if hasActivity {
+		timeSince := FormatTimeSince(activity.UpdatedAtMS)
+		activityInfo = fmt.Sprintf("Last user message in main session: %s (channel: %s, chat: %s)",
+			timeSince, activity.Channel, activity.ChatID)
+	} else {
+		activityInfo = "No recent user activity detected in main session."
+	}
+
 	now := time.Now().Format("2006-01-02 15:04")
 
 	prompt := fmt.Sprintf(`# Heartbeat Check
@@ -117,13 +132,20 @@ Current time: %s
 
 This is a background heartbeat run.
 
+## User Activity
+
+%s
+
+## Instructions
+
 - You may use any tools.
 - If there is something important to tell the user, send it using the message tool (including any media), then respond with exactly: HEARTBEAT_OK
 - If there is nothing actionable to tell the user, respond with exactly: HEARTBEAT_OK
+- **IMPORTANT**: Check the User Activity section above before deciding to reach out. If the user has been active recently (within 2 hours), in the main session, you likely don't need proactive messaging.
 - Keep actions short and concrete.
 
 %s
-`, now, notes)
+`, now, activityInfo, notes)
 
 	return prompt
 }
