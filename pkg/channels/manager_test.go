@@ -265,6 +265,126 @@ func TestManager_GetStatus(t *testing.T) {
 	}
 }
 
+func TestManager_DispatchOutbound_TrimsAndSanitizes(t *testing.T) {
+	manager := &Manager{
+		channels: make(map[string]Channel),
+		bus:      bus.NewMessageBus(),
+	}
+
+	ch := newMockChannel("telegram")
+	manager.RegisterChannel("telegram", ch)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := manager.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll failed: %v", err)
+	}
+	defer manager.StopAll(ctx)
+
+	manager.bus.PublishOutbound(bus.OutboundMessage{
+		Channel: " telegram ",
+		ChatID:  " chat-1 ",
+		Content: "hello",
+		Media:   []string{"", " file.png ", "   "},
+	})
+
+	msg := ch.waitForSend(t, 2*time.Second)
+	if msg.Channel != "telegram" {
+		t.Fatalf("channel=%q, want %q", msg.Channel, "telegram")
+	}
+	if msg.ChatID != "chat-1" {
+		t.Fatalf("chat_id=%q, want %q", msg.ChatID, "chat-1")
+	}
+	if msg.Content != "hello" {
+		t.Fatalf("content=%q, want %q", msg.Content, "hello")
+	}
+	if len(msg.Media) != 1 || msg.Media[0] != "file.png" {
+		t.Fatalf("media=%#v, want [\"file.png\"]", msg.Media)
+	}
+}
+
+func TestManager_DispatchOutbound_DropsEmptyTarget(t *testing.T) {
+	manager := &Manager{
+		channels: make(map[string]Channel),
+		bus:      bus.NewMessageBus(),
+	}
+
+	ch := newMockChannel("telegram")
+	manager.RegisterChannel("telegram", ch)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := manager.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll failed: %v", err)
+	}
+	defer manager.StopAll(ctx)
+
+	manager.bus.PublishOutbound(bus.OutboundMessage{Channel: "telegram", ChatID: "   ", Content: "hello"})
+
+	select {
+	case msg := <-ch.sentSignal:
+		t.Fatalf("unexpected send: %#v", msg)
+	case <-time.After(200 * time.Millisecond):
+		// ok
+	}
+}
+
+func TestManager_DispatchOutbound_DropsEmptyPayload(t *testing.T) {
+	manager := &Manager{
+		channels: make(map[string]Channel),
+		bus:      bus.NewMessageBus(),
+	}
+
+	ch := newMockChannel("telegram")
+	manager.RegisterChannel("telegram", ch)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := manager.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll failed: %v", err)
+	}
+	defer manager.StopAll(ctx)
+
+	manager.bus.PublishOutbound(bus.OutboundMessage{Channel: "telegram", ChatID: "chat-1", Content: "   "})
+
+	select {
+	case msg := <-ch.sentSignal:
+		t.Fatalf("unexpected send: %#v", msg)
+	case <-time.After(200 * time.Millisecond):
+		// ok
+	}
+}
+
+func TestManager_DispatchOutbound_AllowsMediaOnly(t *testing.T) {
+	manager := &Manager{
+		channels: make(map[string]Channel),
+		bus:      bus.NewMessageBus(),
+	}
+
+	ch := newMockChannel("telegram")
+	manager.RegisterChannel("telegram", ch)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := manager.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll failed: %v", err)
+	}
+	defer manager.StopAll(ctx)
+
+	manager.bus.PublishOutbound(bus.OutboundMessage{Channel: "telegram", ChatID: "chat-1", Content: "", Media: []string{"  file.png  "}})
+	msg := ch.waitForSend(t, 2*time.Second)
+	if msg.ChatID != "chat-1" {
+		t.Fatalf("chat_id=%q, want %q", msg.ChatID, "chat-1")
+	}
+	if len(msg.Media) != 1 || msg.Media[0] != "file.png" {
+		t.Fatalf("media=%#v, want [\"file.png\"]", msg.Media)
+	}
+}
+
 func TestManager_GetEnabledChannels(t *testing.T) {
 	manager := &Manager{
 		channels: make(map[string]Channel),

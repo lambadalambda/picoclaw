@@ -9,6 +9,7 @@ package channels
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -233,6 +234,45 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 			if !ok {
 				continue
 			}
+
+			// Minimal outbound guard: normalize obvious fields and drop malformed
+			// messages before they hit channel implementations.
+			channelName := strings.TrimSpace(msg.Channel)
+			chatID := strings.TrimSpace(msg.ChatID)
+			if channelName == "" || chatID == "" {
+				logger.WarnCF("channels", "Dropping outbound message with empty target",
+					map[string]interface{}{
+						"channel": msg.Channel,
+						"chat_id": msg.ChatID,
+					})
+				continue
+			}
+
+			media := msg.Media
+			if len(media) > 0 {
+				sanitized := make([]string, 0, len(media))
+				for _, p := range media {
+					p = strings.TrimSpace(p)
+					if p == "" {
+						continue
+					}
+					sanitized = append(sanitized, p)
+				}
+				media = sanitized
+			}
+
+			if strings.TrimSpace(msg.Content) == "" && len(media) == 0 {
+				logger.WarnCF("channels", "Dropping empty outbound message",
+					map[string]interface{}{
+						"channel": channelName,
+						"chat_id": chatID,
+					})
+				continue
+			}
+
+			msg.Channel = channelName
+			msg.ChatID = chatID
+			msg.Media = media
 
 			m.mu.RLock()
 			channel, exists := m.channels[msg.Channel]
