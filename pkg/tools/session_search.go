@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -254,13 +255,9 @@ func (t *SessionSearchTool) searchFile(filePath, sessionKey, queryLower string, 
 }
 
 func sortResultsByTime(results []searchResult) {
-	for i := 0; i < len(results)-1; i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].Entry.TSMs > results[i].Entry.TSMs {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Entry.TSMs > results[j].Entry.TSMs
+	})
 }
 
 func (t *SessionSearchTool) formatResults(results []searchResult, query string, daysBack int, totalFound int, maxChars int) string {

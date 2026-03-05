@@ -371,11 +371,6 @@ func TestSessionSearchTool_Execute_UsesSessionKeyForChannel(t *testing.T) {
 	}
 }
 
-func writeTranscriptFileWithHelper(t *testing.T, path string, entries []session.TranscriptEntry) {
-	t.Helper()
-	writeTranscriptFile(t, path, entries)
-}
-
 func TestSortResultsByTime(t *testing.T) {
 	now := time.Now().UnixMilli()
 	results := []searchResult{
