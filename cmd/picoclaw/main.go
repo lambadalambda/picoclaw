@@ -28,6 +28,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/heartbeat"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/migrate"
+	localnotify "github.com/sipeed/picoclaw/pkg/notify"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/skills"
@@ -106,6 +107,8 @@ func main() {
 		agentCmd()
 	case "gateway":
 		gatewayCmd()
+	case "notify":
+		notifyCmd()
 	case "status":
 		statusCmd()
 	case "migrate":
@@ -181,6 +184,7 @@ func printHelp() {
 	fmt.Println("  agent       Interact with the agent directly")
 	fmt.Println("  auth        Manage authentication (login, logout, status)")
 	fmt.Println("  gateway     Start picoclaw gateway")
+	fmt.Println("  notify      Queue a local message for the active chat")
 	fmt.Println("  status      Show picoclaw status")
 	fmt.Println("  cron        Manage scheduled tasks")
 	fmt.Println("  migrate     Migrate from OpenClaw to PicoClaw")
@@ -701,6 +705,8 @@ func gatewayCmd() {
 		true,
 	)
 
+	notifyService := localnotify.NewInboxService(cfg.WorkspacePath(), msgBus, localnotify.ServiceOptions{})
+
 	channelManager, err := channels.NewManager(cfg, msgBus)
 	if err != nil {
 		fmt.Printf("Error creating channel manager: %v\n", err)
@@ -763,12 +769,19 @@ func gatewayCmd() {
 
 	go agentLoop.Run(ctx)
 
+	if err := notifyService.Start(); err != nil {
+		fmt.Printf("Error starting local notify service: %v\n", err)
+	} else {
+		fmt.Println("✓ Local notify service started")
+	}
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
 	<-sigChan
 
 	fmt.Println("\nShutting down...")
 	cancel()
+	notifyService.Stop()
 	heartbeatService.Stop()
 	cronService.Stop()
 	agentLoop.Stop()
