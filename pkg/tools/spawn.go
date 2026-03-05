@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	MaxIterationsLimit  = 100
-	TimeoutSecondsLimit = 3600
+	MaxIterationsLimit     = 100
+	TimeoutSecondsLimit    = 3600
+	MaxOutputTokensLimit   = 32768
+	DefaultOutputMaxTokens = 8192
 )
 
 func parseIntArg(args map[string]interface{}, key string) (int, bool) {
@@ -118,6 +120,10 @@ func (t *SpawnTool) Parameters() map[string]interface{} {
 				"type":        "integer",
 				"description": "Optional tool execution timeout in seconds for the subagent (default: 60)",
 			},
+			"max_output_tokens": map[string]interface{}{
+				"type":        "integer",
+				"description": "Optional max output tokens for the subagent (default: 8192, max: 32768)",
+			},
 		},
 	}
 }
@@ -202,6 +208,17 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (s
 				toolTimeout = TimeoutSecondsLimit
 			}
 			opts.ToolTimeoutSeconds = toolTimeout
+		}
+		if maxOutputTokens, ok := parseIntArg(args, "max_output_tokens"); ok && maxOutputTokens > 0 {
+			if maxOutputTokens > MaxOutputTokensLimit {
+				logger.WarnCF("spawn", "max_output_tokens clamped to upper limit",
+					map[string]interface{}{
+						"requested": maxOutputTokens,
+						"limit":     MaxOutputTokensLimit,
+					})
+				maxOutputTokens = MaxOutputTokensLimit
+			}
+			opts.MaxOutputTokens = maxOutputTokens
 		}
 
 		mgr := t.manager
