@@ -10,23 +10,30 @@ import (
 // EditFileTool edits a file by replacing old_text with new_text.
 // The old_text must exist exactly in the file.
 type EditFileTool struct {
-	name       string
-	allowedDir string // Optional directory restriction for security
+	name                string
+	allowedDir          string // Optional directory restriction for security
+	restrictToWorkspace bool
 }
 
 // NewEditFileTool creates a new EditFileTool with optional directory restriction.
 func NewEditFileTool(allowedDir string) *EditFileTool {
 	return &EditFileTool{
-		name:       "edit_file",
-		allowedDir: allowedDir,
+		name:                "edit_file",
+		allowedDir:          allowedDir,
+		restrictToWorkspace: true,
 	}
 }
 
 func NewUnsafeEditFileTool() *EditFileTool {
 	return &EditFileTool{
-		name:       "unsafe_edit_file",
-		allowedDir: "",
+		name:                "unsafe_edit_file",
+		allowedDir:          "",
+		restrictToWorkspace: false,
 	}
+}
+
+func (t *EditFileTool) SetRestrictToWorkspace(restrict bool) {
+	t.restrictToWorkspace = restrict
 }
 
 func (t *EditFileTool) Name() string {
@@ -39,6 +46,9 @@ func (t *EditFileTool) Name() string {
 func (t *EditFileTool) Description() string {
 	if t != nil && strings.HasPrefix(strings.ToLower(t.Name()), "unsafe_") {
 		return "Edit a file by replacing old_text with new_text at any path (unsafe). The old_text must exist exactly in the file."
+	}
+	if t != nil && !t.restrictToWorkspace {
+		return "Edit a file by replacing old_text with new_text at any path. The old_text must exist exactly in the file."
 	}
 	return "Edit a file by replacing old_text with new_text under the workspace. The old_text must exist exactly in the file."
 }
@@ -80,7 +90,7 @@ func (t *EditFileTool) Execute(ctx context.Context, args map[string]interface{})
 		return "", fmt.Errorf("new_text is required")
 	}
 
-	resolvedPath, err := resolvePathWithOptionalRoot(path, t.allowedDir, "workspace")
+	resolvedPath, err := resolvePathWithOptionalRootMode(path, t.allowedDir, "workspace", t.restrictToWorkspace)
 	if err != nil {
 		return "", err
 	}

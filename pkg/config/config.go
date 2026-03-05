@@ -163,10 +163,15 @@ type ToolPolicyConfig struct {
 	Deny     []string `json:"deny" env:"PICOCLAW_TOOLS_POLICY_DENY"`
 }
 
+type ToolSafeguardsConfig struct {
+	Disabled bool `json:"disabled" env:"PICOCLAW_TOOLS_SAFEGUARDS_DISABLED"`
+}
+
 type ToolsConfig struct {
-	Web    WebToolsConfig    `json:"web"`
-	Policy ToolPolicyConfig  `json:"policy"`
-	Vision VisionToolsConfig `json:"vision"`
+	Web        WebToolsConfig       `json:"web"`
+	Policy     ToolPolicyConfig     `json:"policy"`
+	Safeguards ToolSafeguardsConfig `json:"safeguards"`
+	Vision     VisionToolsConfig    `json:"vision"`
 }
 
 func DefaultConfig() *Config {
@@ -274,6 +279,9 @@ func DefaultConfig() *Config {
 				SafeMode: false,
 				Allow:    []string{},
 				Deny:     []string{},
+			},
+			Safeguards: ToolSafeguardsConfig{
+				Disabled: false,
 			},
 			Vision: VisionToolsConfig{
 				Enabled:        true,

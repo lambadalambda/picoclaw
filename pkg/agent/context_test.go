@@ -68,3 +68,16 @@ func TestBuildMessages_AttachesInlineMediaPartsOnUserMessage(t *testing.T) {
 		t.Fatalf("serialized message should not expose inline media paths, got: %s", payload)
 	}
 }
+
+func TestBuildSystemPrompt_OmitsUnsafeApprovalRuleWhenSafeguardsDisabled(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+	cb.SetUnsafeApprovalRequired(false)
+
+	prompt := cb.BuildSystemPrompt()
+	if strings.Contains(prompt, "UNSAFE_OK") {
+		t.Fatalf("expected prompt to omit UNSAFE_OK approval guidance when safeguards are disabled")
+	}
+	if !strings.Contains(prompt, "Tool safeguards are disabled") {
+		t.Fatalf("expected prompt to mention disabled safeguards")
+	}
+}

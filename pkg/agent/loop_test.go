@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1279,5 +1280,50 @@ func TestNewAgentLoop_PropagatesAnthropicCacheDefaults(t *testing.T) {
 	}
 	if al.compactOptions.AnthropicCacheTTL != "1h" {
 		t.Fatalf("compactOptions.AnthropicCacheTTL = %q, want 1h", al.compactOptions.AnthropicCacheTTL)
+	}
+}
+
+func TestNewAgentLoop_ToolSafeguardsDisabled_DisablesPolicyAndGuards(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Tools.Policy.Enabled = true
+	cfg.Tools.Policy.SafeMode = true
+	cfg.Tools.Policy.Deny = []string{"exec", "read_file"}
+	cfg.Tools.Safeguards.Disabled = true
+
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	defer al.bus.Close()
+
+	if al.unsafeGate != nil {
+		t.Fatal("expected unsafe gate to be disabled")
+	}
+
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside-ok"), 0644); err != nil {
+		t.Fatalf("setup outside file: %v", err)
+	}
+
+	readResult, err := al.tools.ExecuteWithContext(context.Background(), "read_file", map[string]interface{}{
+		"path": outsideFile,
+	}, "", "")
+	if err != nil {
+		t.Fatalf("read_file should be unrestricted when safeguards are disabled, got err: %v", err)
+	}
+	if readResult != "outside-ok" {
+		t.Fatalf("read_file result = %q, want %q", readResult, "outside-ok")
+	}
+
+	execResult, err := al.tools.ExecuteWithContext(context.Background(), "exec", map[string]interface{}{
+		"command": "echo rm -rf /",
+	}, "", "")
+	if err != nil {
+		t.Fatalf("exec should not be blocked by policy/guard when safeguards are disabled, got err: %v", err)
+	}
+	if strings.Contains(execResult, "Command blocked by safety guard") {
+		t.Fatalf("expected exec guard disabled, got %q", execResult)
+	}
+	if !strings.Contains(execResult, "rm -rf /") {
+		t.Fatalf("expected command output, got %q", execResult)
 	}
 }

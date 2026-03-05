@@ -22,6 +22,7 @@ type ExecTool struct {
 	denyPatterns        []*regexp.Regexp
 	allowPatterns       []*regexp.Regexp
 	restrictToWorkspace bool
+	disableGuards       bool
 }
 
 func NewExecTool(workingDir string) *ExecTool {
@@ -43,6 +44,7 @@ func NewExecTool(workingDir string) *ExecTool {
 		denyPatterns:        denyPatterns,
 		allowPatterns:       nil,
 		restrictToWorkspace: false,
+		disableGuards:       false,
 	}
 }
 
@@ -62,6 +64,10 @@ func (t *ExecTool) Name() string {
 func (t *ExecTool) Description() string {
 	if t != nil && strings.HasPrefix(strings.ToLower(t.Name()), "unsafe_") {
 		return "Execute a shell command and return its output (unsafe: can run outside the workspace). " +
+			"Do not use this for chat slash commands (for example /react or /set_profile_picture); use the message tool for those."
+	}
+	if t != nil && t.disableGuards {
+		return "Execute a shell command and return its output (safeguards disabled; unrestricted). " +
 			"Do not use this for chat slash commands (for example /react or /set_profile_picture); use the message tool for those."
 	}
 	return "Execute a shell command and return its output (workspace-scoped). Use with caution. " +
@@ -115,8 +121,10 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]interface{}) (st
 		}
 	}
 
-	if guardError := t.guardCommand(command, cwd); guardError != "" {
-		return fmt.Sprintf("Error: %s", guardError), nil
+	if !t.disableGuards {
+		if guardError := t.guardCommand(command, cwd); guardError != "" {
+			return fmt.Sprintf("Error: %s", guardError), nil
+		}
 	}
 
 	effectiveTimeout, err := resolveExecTimeout(args, t.timeout)
@@ -322,6 +330,10 @@ func (t *ExecTool) SetTimeout(timeout time.Duration) {
 
 func (t *ExecTool) SetRestrictToWorkspace(restrict bool) {
 	t.restrictToWorkspace = restrict
+}
+
+func (t *ExecTool) SetDisableGuards(disable bool) {
+	t.disableGuards = disable
 }
 
 func (t *ExecTool) SetAllowPatterns(patterns []string) error {

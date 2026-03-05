@@ -207,11 +207,27 @@ func (r *ToolRegistry) Count() int {
 
 // RegisterCoreTools registers the standard set of tools shared between the
 // main agent and subagents: filesystem ops, exec, edit, web search, and web fetch.
-func RegisterCoreTools(r *ToolRegistry, workspace string, webSearchCfg WebSearchToolConfig) {
+type CoreToolsOptions struct {
+	DisableSafeguards bool
+}
+
+func RegisterCoreTools(r *ToolRegistry, workspace string, webSearchCfg WebSearchToolConfig, opts CoreToolsOptions) {
 	// Safe (workspace-scoped) filesystem tools.
-	r.Register(NewReadFileTool(workspace))
-	r.Register(NewWriteFileTool(workspace))
-	r.Register(NewListDirTool(workspace))
+	readTool := NewReadFileTool(workspace)
+	writeTool := NewWriteFileTool(workspace)
+	listTool := NewListDirTool(workspace)
+	editTool := NewEditFileTool(workspace)
+
+	if opts.DisableSafeguards {
+		readTool.SetRestrictToWorkspace(false)
+		writeTool.SetRestrictToWorkspace(false)
+		listTool.SetRestrictToWorkspace(false)
+		editTool.SetRestrictToWorkspace(false)
+	}
+
+	r.Register(readTool)
+	r.Register(writeTool)
+	r.Register(listTool)
 	// Unsafe filesystem tools (require explicit user approval).
 	r.Register(NewUnsafeReadFileTool())
 	r.Register(NewUnsafeWriteFileTool())
@@ -219,11 +235,14 @@ func RegisterCoreTools(r *ToolRegistry, workspace string, webSearchCfg WebSearch
 	r.Register(NewSessionHistoryTool(workspace))
 	// Safe exec is workspace-scoped.
 	execTool := NewExecTool(workspace)
-	execTool.SetRestrictToWorkspace(true)
+	execTool.SetRestrictToWorkspace(!opts.DisableSafeguards)
+	execTool.SetDisableGuards(opts.DisableSafeguards)
 	r.Register(execTool)
 	// Unsafe exec (requires explicit user approval).
-	r.Register(NewUnsafeExecTool(workspace))
-	r.Register(NewEditFileTool(workspace))
+	unsafeExecTool := NewUnsafeExecTool(workspace)
+	unsafeExecTool.SetDisableGuards(opts.DisableSafeguards)
+	r.Register(unsafeExecTool)
+	r.Register(editTool)
 	r.Register(NewUnsafeEditFileTool())
 	r.Register(NewWebFetchTool(50000))
 	r.Register(NewWebSearchTool(webSearchCfg))

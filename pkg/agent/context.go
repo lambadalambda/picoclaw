@@ -15,10 +15,11 @@ import (
 )
 
 type ContextBuilder struct {
-	workspace    string
-	skillsLoader *skills.SkillsLoader
-	memory       *MemoryStore
-	tools        *tools.ToolRegistry // Direct reference to tool registry
+	workspace              string
+	skillsLoader           *skills.SkillsLoader
+	memory                 *MemoryStore
+	tools                  *tools.ToolRegistry // Direct reference to tool registry
+	unsafeApprovalRequired bool
 }
 
 func getGlobalConfigDir() string {
@@ -37,15 +38,20 @@ func NewContextBuilder(workspace string) *ContextBuilder {
 	globalSkillsDir := filepath.Join(getGlobalConfigDir(), "skills")
 
 	return &ContextBuilder{
-		workspace:    workspace,
-		skillsLoader: skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir),
-		memory:       NewMemoryStore(workspace),
+		workspace:              workspace,
+		skillsLoader:           skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir),
+		memory:                 NewMemoryStore(workspace),
+		unsafeApprovalRequired: true,
 	}
 }
 
 // SetToolsRegistry sets the tools registry for dynamic tool summary generation.
 func (cb *ContextBuilder) SetToolsRegistry(registry *tools.ToolRegistry) {
 	cb.tools = registry
+}
+
+func (cb *ContextBuilder) SetUnsafeApprovalRequired(required bool) {
+	cb.unsafeApprovalRequired = required
 }
 
 func (cb *ContextBuilder) getIdentity() string {
@@ -55,6 +61,11 @@ func (cb *ContextBuilder) getIdentity() string {
 
 	// Build tools section dynamically
 	toolsSection := cb.buildToolsSection()
+
+	rule7 := `7. **Unsafe tools require approval** - Tools prefixed with "unsafe_" can access paths outside the workspace (and may be higher-risk). You MUST ask the user first. Only use unsafe_* tools after the user replies with "UNSAFE_OK" (optionally "UNSAFE_OK 10m").`
+	if !cb.unsafeApprovalRequired {
+		rule7 = `7. **Tool safeguards are disabled** - Unsafe approvals are disabled by configuration, and tool safeguards are not enforced.`
+	}
 
 	return fmt.Sprintf(`# picoclaw 🦞
 
@@ -89,8 +100,8 @@ Your workspace is at: %s
 
   6. **Compaction recovery** - If conversation history has been compacted and you need exact prior tool calls/results, use the session_history tool to retrieve the missing context from the on-disk transcript.
 
-  7. **Unsafe tools require approval** - Tools prefixed with "unsafe_" can access paths outside the workspace (and may be higher-risk). You MUST ask the user first. Only use unsafe_* tools after the user replies with "UNSAFE_OK" (optionally "UNSAFE_OK 10m").`,
-		today, runtime, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
+  %s`,
+		today, runtime, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath, rule7)
 }
 
 func (cb *ContextBuilder) buildToolsSection() string {

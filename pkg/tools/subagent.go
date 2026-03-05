@@ -49,23 +49,24 @@ type SubagentTask struct {
 }
 
 type SubagentManager struct {
-	tasks            map[string]*SubagentTask
-	cancels          map[string]context.CancelFunc
-	mu               sync.RWMutex
-	provider         providers.LLMProvider
-	model            string
-	chatOptions      providers.ChatOptions
-	messageBudget    providers.MessageBudget
-	maxStoredTasks   int
-	completedTTL     time.Duration
-	llmTimeout       time.Duration
-	toolTimeout      time.Duration
-	maxParallelTools int
-	maxIterations    int
-	bus              *bus.MessageBus
-	workspace        string
-	nextID           int
-	unsafeGate       *UnsafeToolGate
+	tasks             map[string]*SubagentTask
+	cancels           map[string]context.CancelFunc
+	mu                sync.RWMutex
+	provider          providers.LLMProvider
+	model             string
+	chatOptions       providers.ChatOptions
+	messageBudget     providers.MessageBudget
+	maxStoredTasks    int
+	completedTTL      time.Duration
+	llmTimeout        time.Duration
+	toolTimeout       time.Duration
+	maxParallelTools  int
+	maxIterations     int
+	bus               *bus.MessageBus
+	workspace         string
+	nextID            int
+	unsafeGate        *UnsafeToolGate
+	disableSafeguards bool
 }
 
 func toolCallSignature(toolCalls []providers.ToolCall) string {
@@ -146,6 +147,12 @@ func (sm *SubagentManager) ConfigureUnsafeToolGate(gate *UnsafeToolGate) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.unsafeGate = gate
+}
+
+func (sm *SubagentManager) ConfigureDisableToolSafeguards(disable bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.disableSafeguards = disable
 }
 
 func (sm *SubagentManager) ConfigureRetention(maxStoredTasks int, completedTTL time.Duration) {
@@ -254,6 +261,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 	toolTimeout := sm.toolTimeout
 	maxParallelTools := sm.maxParallelTools
 	unsafeGate := sm.unsafeGate
+	disableSafeguards := sm.disableSafeguards
 	sm.mu.RUnlock()
 
 	if initial.Options.Model != "" {
@@ -275,16 +283,20 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 
 	// Build a subagent-only tool registry.
 	registry := NewToolRegistry()
-	registry.SetUnsafeToolGate(unsafeGate)
-	RegisterCoreTools(registry, sm.workspace, WebSearchToolConfig{MaxResults: 5}) // web search will self-report if key missing
+	if !disableSafeguards {
+		registry.SetUnsafeToolGate(unsafeGate)
+	}
+	RegisterCoreTools(registry, sm.workspace, WebSearchToolConfig{MaxResults: 5}, CoreToolsOptions{DisableSafeguards: disableSafeguards}) // web search will self-report if key missing
 
 	// Allow subagents to message the originating chat. This is required for
 	// streaming workflows (e.g. sending generated images as they finish).
 	// The execution context (origin channel/chat) is injected via ExecuteToolCallsOptions.
-	RegisterMessageTool(registry, sm.bus, sm.workspace, MessageToolOptions{
-		ForceContextTarget:       true,
-		RestrictMediaToWorkspace: true,
-	})
+	msgOpts := MessageToolOptions{}
+	if !disableSafeguards {
+		msgOpts.ForceContextTarget = true
+		msgOpts.RestrictMediaToWorkspace = true
+	}
+	RegisterMessageTool(registry, sm.bus, sm.workspace, msgOpts)
 	registry.Register(NewSubagentReportTool(sm.bus, initial.ID, initial.Label, initial.OriginChannel, initial.OriginChatID))
 
 	systemPrompt := sm.buildSubagentSystemPrompt(registry)
@@ -529,6 +541,10 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 }
 
 func (sm *SubagentManager) buildSubagentSystemPrompt(registry *ToolRegistry) string {
+	sm.mu.RLock()
+	disableSafeguards := sm.disableSafeguards
+	sm.mu.RUnlock()
+
 	// Build tools section dynamically
 	toolsSection := ""
 	summaries := registry.GetSummaries()
@@ -558,14 +574,28 @@ func (sm *SubagentManager) buildSubagentSystemPrompt(registry *ToolRegistry) str
 		"You are a background subagent working for the main picoclaw agent.",
 		"\nRules:",
 		"1. Use tools when you need to perform an action.",
-		"2. You MAY message the end user via `message` when delivering user-facing output (e.g. generated images).",
-		"   Do NOT set `channel`/`chat_id` in `message` calls; they are auto-routed to the originating chat.",
-		"   Media paths should be workspace-relative (e.g. generated/*).",
-		"   Use `subagent_report` for internal-only updates to the main agent.",
+	}
+
+	if disableSafeguards {
+		parts = append(parts,
+			"2. You MAY message the end user via `message` when delivering user-facing output (e.g. generated images).",
+			"   Tool safeguards are disabled by configuration, so `message` targets and media paths are unrestricted.",
+			"   Use `subagent_report` for internal-only updates to the main agent.",
+		)
+	} else {
+		parts = append(parts,
+			"2. You MAY message the end user via `message` when delivering user-facing output (e.g. generated images).",
+			"   Do NOT set `channel`/`chat_id` in `message` calls; they are auto-routed to the originating chat.",
+			"   Media paths should be workspace-relative (e.g. generated/*).",
+			"   Use `subagent_report` for internal-only updates to the main agent.",
+		)
+	}
+
+	parts = append(parts,
 		"3. If you need prior context, use `session_history` to inspect the parent chat transcript (you have execution context for the originating session).",
 		"4. When finished, provide a clear result and include any artifact file paths.",
 		fmt.Sprintf("\nWorkspace: %s", workspacePath),
-	}
+	)
 
 	if toolsSection != "" {
 		parts = append(parts, "\n"+toolsSection)

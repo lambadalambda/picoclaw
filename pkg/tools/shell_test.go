@@ -338,6 +338,24 @@ func TestExecTool_Execute_RestrictToWorkspaceWorkingDir(t *testing.T) {
 	})
 }
 
+func TestExecTool_DisableGuards_AllowsPreviouslyBlockedCommands(t *testing.T) {
+	tool := NewExecTool(t.TempDir())
+	tool.SetDisableGuards(true)
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"command": "echo rm -rf /",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(result, "Command blocked by safety guard") {
+		t.Fatalf("expected command to run when guards are disabled, got %q", result)
+	}
+	if !strings.Contains(result, "rm -rf /") {
+		t.Fatalf("expected command output to include payload, got %q", result)
+	}
+}
+
 func TestSetAllowPatterns_InvalidRegex(t *testing.T) {
 	tool := NewExecTool(t.TempDir())
 	err := tool.SetAllowPatterns([]string{`[invalid`})

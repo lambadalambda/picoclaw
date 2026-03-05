@@ -82,10 +82,14 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	messageBudget := messageBudgetFromDefaults(cfg.Agents.Defaults)
 	webSearchCfg := cfg.Tools.Web.Search
 	zaiSearchKey, zaiSearchBase := resolveZAISearchCredentials(webSearchCfg, cfg.Providers)
+	safeguardsDisabled := cfg.Tools.Safeguards.Disabled
 
 	toolsRegistry := tools.NewToolRegistry()
-	unsafeGate := tools.NewUnsafeToolGate(10 * time.Minute)
-	toolsRegistry.SetUnsafeToolGate(unsafeGate)
+	var unsafeGate *tools.UnsafeToolGate
+	if !safeguardsDisabled {
+		unsafeGate = tools.NewUnsafeToolGate(10 * time.Minute)
+		toolsRegistry.SetUnsafeToolGate(unsafeGate)
+	}
 	tools.RegisterCoreTools(toolsRegistry, workspace, tools.WebSearchToolConfig{
 		BraveAPIKey:     webSearchCfg.APIKey,
 		MaxResults:      webSearchCfg.MaxResults,
@@ -95,11 +99,11 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		ZAIMCPURL:       webSearchCfg.ZAIMCPURL,
 		ZAILocation:     webSearchCfg.ZAILocation,
 		ZAISearchEngine: webSearchCfg.ZAISearchEngine,
-	})
+	}, tools.CoreToolsOptions{DisableSafeguards: safeguardsDisabled})
 
-	policyEnabled := cfg.Tools.Policy.Enabled || cfg.Tools.Policy.SafeMode || len(cfg.Tools.Policy.Allow) > 0 || len(cfg.Tools.Policy.Deny) > 0
+	policyEnabled := !safeguardsDisabled && (cfg.Tools.Policy.Enabled || cfg.Tools.Policy.SafeMode || len(cfg.Tools.Policy.Allow) > 0 || len(cfg.Tools.Policy.Deny) > 0)
 	denyTools := append([]string{}, cfg.Tools.Policy.Deny...)
-	if cfg.Tools.Policy.SafeMode {
+	if !safeguardsDisabled && cfg.Tools.Policy.SafeMode {
 		denyTools = append(denyTools,
 			"exec",
 			"write_file",
@@ -118,6 +122,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 
 	// Register spawn tool
 	subagentManager := tools.NewSubagentManager(provider, cfg.Agents.Defaults.Model, workspace, msgBus)
+	subagentManager.ConfigureDisableToolSafeguards(safeguardsDisabled)
 	subagentManager.ConfigureExecution(
 		time.Duration(cfg.Agents.Defaults.LLMTimeoutSeconds)*time.Second,
 		time.Duration(cfg.Agents.Defaults.ToolTimeoutSeconds)*time.Second,
@@ -154,6 +159,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	// Create context builder and set tools registry
 	contextBuilder := NewContextBuilder(workspace)
 	contextBuilder.SetToolsRegistry(toolsRegistry)
+	contextBuilder.SetUnsafeApprovalRequired(!safeguardsDisabled)
 
 	chatTemperature := cfg.Agents.Defaults.Temperature
 	if chatTemperature == 0 {

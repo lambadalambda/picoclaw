@@ -21,16 +21,21 @@ const (
 const filesystemTruncationNotice = "\n... (truncated)"
 
 type ReadFileTool struct {
-	name       string
-	allowedDir string
+	name                string
+	allowedDir          string
+	restrictToWorkspace bool
 }
 
 func NewReadFileTool(allowedDir string) *ReadFileTool {
-	return &ReadFileTool{name: "read_file", allowedDir: allowedDir}
+	return &ReadFileTool{name: "read_file", allowedDir: allowedDir, restrictToWorkspace: true}
 }
 
 func NewUnsafeReadFileTool() *ReadFileTool {
-	return &ReadFileTool{name: "unsafe_read_file"}
+	return &ReadFileTool{name: "unsafe_read_file", restrictToWorkspace: false}
+}
+
+func (t *ReadFileTool) SetRestrictToWorkspace(restrict bool) {
+	t.restrictToWorkspace = restrict
 }
 
 func (t *ReadFileTool) Name() string {
@@ -43,6 +48,9 @@ func (t *ReadFileTool) Name() string {
 func (t *ReadFileTool) Description() string {
 	if t != nil && strings.HasPrefix(strings.ToLower(t.Name()), "unsafe_") {
 		return "Read file contents from any path (unsafe). Optional line ranges: start_line + max_lines"
+	}
+	if t != nil && !t.restrictToWorkspace {
+		return "Read file contents from any path. Optional line ranges: start_line + max_lines"
 	}
 	return "Read file contents from the workspace. Optional line ranges: start_line + max_lines"
 }
@@ -122,7 +130,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]interface{})
 		return "", fmt.Errorf("path is required")
 	}
 
-	resolvedPath, err := resolvePathWithOptionalRoot(path, t.allowedDir, "workspace")
+	resolvedPath, err := resolvePathWithOptionalRootMode(path, t.allowedDir, "workspace", t.restrictToWorkspace)
 	if err != nil {
 		return "", err
 	}
@@ -180,16 +188,21 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]interface{})
 }
 
 type WriteFileTool struct {
-	name       string
-	allowedDir string
+	name                string
+	allowedDir          string
+	restrictToWorkspace bool
 }
 
 func NewWriteFileTool(allowedDir string) *WriteFileTool {
-	return &WriteFileTool{name: "write_file", allowedDir: allowedDir}
+	return &WriteFileTool{name: "write_file", allowedDir: allowedDir, restrictToWorkspace: true}
 }
 
 func NewUnsafeWriteFileTool() *WriteFileTool {
-	return &WriteFileTool{name: "unsafe_write_file"}
+	return &WriteFileTool{name: "unsafe_write_file", restrictToWorkspace: false}
+}
+
+func (t *WriteFileTool) SetRestrictToWorkspace(restrict bool) {
+	t.restrictToWorkspace = restrict
 }
 
 func (t *WriteFileTool) Name() string {
@@ -202,6 +215,9 @@ func (t *WriteFileTool) Name() string {
 func (t *WriteFileTool) Description() string {
 	if t != nil && strings.HasPrefix(strings.ToLower(t.Name()), "unsafe_") {
 		return "Write content to a file at any path (unsafe)"
+	}
+	if t != nil && !t.restrictToWorkspace {
+		return "Write content to a file at any path"
 	}
 	return "Write content to a file under the workspace"
 }
@@ -241,7 +257,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]interface{}
 		return "", fmt.Errorf("content too large (max %d bytes)", filesystemWriteFileMaxBytes)
 	}
 
-	resolvedPath, err := resolvePathWithOptionalRoot(path, t.allowedDir, "workspace")
+	resolvedPath, err := resolvePathWithOptionalRootMode(path, t.allowedDir, "workspace", t.restrictToWorkspace)
 	if err != nil {
 		return "", err
 	}
@@ -274,16 +290,21 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]interface{}
 }
 
 type ListDirTool struct {
-	name       string
-	allowedDir string
+	name                string
+	allowedDir          string
+	restrictToWorkspace bool
 }
 
 func NewListDirTool(allowedDir string) *ListDirTool {
-	return &ListDirTool{name: "list_dir", allowedDir: allowedDir}
+	return &ListDirTool{name: "list_dir", allowedDir: allowedDir, restrictToWorkspace: true}
 }
 
 func NewUnsafeListDirTool() *ListDirTool {
-	return &ListDirTool{name: "unsafe_list_dir"}
+	return &ListDirTool{name: "unsafe_list_dir", restrictToWorkspace: false}
+}
+
+func (t *ListDirTool) SetRestrictToWorkspace(restrict bool) {
+	t.restrictToWorkspace = restrict
 }
 
 func (t *ListDirTool) Name() string {
@@ -296,6 +317,9 @@ func (t *ListDirTool) Name() string {
 func (t *ListDirTool) Description() string {
 	if t != nil && strings.HasPrefix(strings.ToLower(t.Name()), "unsafe_") {
 		return "List files and directories in any path (unsafe)"
+	}
+	if t != nil && !t.restrictToWorkspace {
+		return "List files and directories in any path"
 	}
 	return "List files and directories under the workspace"
 }
@@ -327,7 +351,7 @@ func (t *ListDirTool) Execute(ctx context.Context, args map[string]interface{}) 
 		path = "."
 	}
 
-	resolvedPath, err := resolvePathWithOptionalRoot(path, t.allowedDir, "workspace")
+	resolvedPath, err := resolvePathWithOptionalRootMode(path, t.allowedDir, "workspace", t.restrictToWorkspace)
 	if err != nil {
 		return "", err
 	}
@@ -492,6 +516,10 @@ func minInt(a, b int) int {
 }
 
 func resolvePathWithOptionalRoot(rawPath string, allowedDir string, allowedLabel string) (string, error) {
+	return resolvePathWithOptionalRootMode(rawPath, allowedDir, allowedLabel, true)
+}
+
+func resolvePathWithOptionalRootMode(rawPath string, allowedDir string, allowedLabel string, enforceWithinRoot bool) (string, error) {
 	rawPath = strings.TrimSpace(rawPath)
 	if rawPath == "" {
 		return "", fmt.Errorf("path is required")
@@ -513,6 +541,10 @@ func resolvePathWithOptionalRoot(rawPath string, allowedDir string, allowedLabel
 		resolved = filepath.Clean(rawPath)
 	} else {
 		resolved = filepath.Clean(filepath.Join(allowedAbs, rawPath))
+	}
+
+	if !enforceWithinRoot {
+		return resolved, nil
 	}
 
 	rel, err := filepath.Rel(allowedAbs, resolved)

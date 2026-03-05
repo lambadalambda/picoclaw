@@ -297,6 +297,49 @@ func TestSubagentManager_MessageToolIgnoresExplicitTargetOverride(t *testing.T) 
 	}
 }
 
+func TestSubagentManager_MessageToolAllowsExplicitTargetOverride_WhenSafeguardsDisabled(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	workspace := t.TempDir()
+
+	prov := &scriptedProvider{responses: []*providers.LLMResponse{
+		{
+			ToolCalls: []providers.ToolCall{{
+				ID:   "tc1",
+				Name: "message",
+				Arguments: map[string]interface{}{
+					"content": "hello",
+					"channel": "telegram",
+					"chat_id": "override-chat",
+				},
+			}},
+		},
+		{Content: "done"},
+	}}
+
+	sm := NewSubagentManager(prov, "test-model", workspace, msgBus)
+	sm.ConfigureDisableToolSafeguards(true)
+	_, err := sm.Spawn(context.Background(), "send", "msg", "deltachat", "chat1", "deltachat:chat1", "trace-123", SpawnOptions{})
+	if err != nil {
+		t.Fatalf("Spawn() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	out, ok := msgBus.SubscribeOutbound(ctx)
+	if !ok {
+		t.Fatal("expected outbound message")
+	}
+	if out.Channel != "telegram" {
+		t.Fatalf("channel = %q, want %q", out.Channel, "telegram")
+	}
+	if out.ChatID != "override-chat" {
+		t.Fatalf("chat_id = %q, want %q", out.ChatID, "override-chat")
+	}
+}
+
 func TestSubagentManager_MessageToolBlocksMediaOutsideWorkspace(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	defer msgBus.Close()
@@ -541,7 +584,7 @@ func TestIsMissingRequiredToolError(t *testing.T) {
 func TestBuildSubagentSystemPrompt_IncludesSessionHistoryGuidance(t *testing.T) {
 	sm := NewSubagentManager(&doneProvider{}, "test-model", t.TempDir(), nil)
 	registry := NewToolRegistry()
-	RegisterCoreTools(registry, t.TempDir(), WebSearchToolConfig{MaxResults: 5})
+	RegisterCoreTools(registry, t.TempDir(), WebSearchToolConfig{MaxResults: 5}, CoreToolsOptions{})
 
 	prompt := sm.buildSubagentSystemPrompt(registry)
 	if !strings.Contains(prompt, "session_history") {

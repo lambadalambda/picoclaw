@@ -212,6 +212,26 @@ func TestReadFileTool_ExecuteRejectsPathOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestReadFileTool_DisableWorkspaceRestriction_AllowsAbsoluteOutsidePath(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	file := filepath.Join(outside, "secrets.txt")
+	if err := os.WriteFile(file, []byte("ok"), 0644); err != nil {
+		t.Fatalf("failed to setup outside file: %v", err)
+	}
+
+	tool := NewReadFileTool(root)
+	tool.SetRestrictToWorkspace(false)
+
+	got, err := tool.Execute(context.Background(), map[string]interface{}{"path": file})
+	if err != nil {
+		t.Fatalf("expected unrestricted read to succeed, got error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("expected %q, got %q", "ok", got)
+	}
+}
+
 func TestReadFileTool_ExecuteTruncatesLargeFile(t *testing.T) {
 	root := t.TempDir()
 	tool := NewReadFileTool(root)
