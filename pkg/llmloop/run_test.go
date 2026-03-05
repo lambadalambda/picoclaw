@@ -284,3 +284,62 @@ func TestRun_RetriesWithoutImagesOnPolicyError(t *testing.T) {
 		t.Fatal("expected retry attempt to strip image parts")
 	}
 }
+
+func TestRun_TruncatedToolCall(t *testing.T) {
+	p := &mockProvider{responses: []*providers.LLMResponse{
+		{
+			ToolCalls:    []providers.ToolCall{{ID: "tc1", Name: "write_file", Arguments: map[string]interface{}{"path": "/tmp/test.txt"}}},
+			FinishReason: "length",
+		},
+		{Content: "recovered"},
+	}}
+
+	toolResultSeen := false
+	res, err := Run(context.Background(), RunOptions{
+		Provider:      p,
+		Model:         "test-model",
+		MaxIterations: 3,
+		Messages:      []providers.Message{{Role: "user", Content: "write large file"}},
+		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
+			t.Fatal("ExecuteTools should not be called for truncated tool calls")
+			return nil
+		},
+		Hooks: Hooks{
+			ToolResultMessage: func(iteration int, msg providers.Message) {
+				if iteration == 1 {
+					toolResultSeen = true
+					if !strings.Contains(msg.Content, "truncated") {
+						t.Errorf("expected truncation error message, got: %q", msg.Content)
+					}
+					if !strings.Contains(msg.Content, "output token limit") {
+						t.Errorf("expected token limit message, got: %q", msg.Content)
+					}
+				}
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.FinalContent != "recovered" {
+		t.Fatalf("FinalContent = %q, want %q", res.FinalContent, "recovered")
+	}
+	if res.Iterations != 2 {
+		t.Fatalf("Iterations = %d, want 2", res.Iterations)
+	}
+	if !toolResultSeen {
+		t.Fatal("expected truncation error to be injected as tool result")
+	}
+	if len(res.Messages) != 3 {
+		t.Fatalf("Messages len = %d, want 3 (user, assistant, tool error)", len(res.Messages))
+	}
+	if res.Messages[1].Role != "assistant" {
+		t.Fatalf("message[1].Role = %q, want assistant", res.Messages[1].Role)
+	}
+	if res.Messages[2].Role != "tool" {
+		t.Fatalf("message[2].Role = %q, want tool", res.Messages[2].Role)
+	}
+	if !strings.Contains(res.Messages[2].Content, "truncated") {
+		t.Errorf("expected truncation error in message[2], got: %q", res.Messages[2].Content)
+	}
+}

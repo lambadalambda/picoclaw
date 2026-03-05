@@ -156,6 +156,28 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			}
 		}
 
+		// Detect truncated tool calls (response cut off at max_tokens limit)
+		if resp.FinishReason == "length" && len(resp.ToolCalls) > 0 {
+			truncatedMsg := providers.AssistantMessageFromResponse(resp)
+			result.Messages = append(result.Messages, truncatedMsg)
+			if opts.Hooks.AssistantMessage != nil {
+				opts.Hooks.AssistantMessage(iteration, truncatedMsg)
+			}
+
+			errorMsg := providers.Message{
+				Role:    "tool",
+				Content: "Error: Your response was truncated at the output token limit. The tool call(s) were incomplete and cannot be executed. Try one of these approaches:\n1. Break the operation into smaller parts (e.g., write smaller files, make multiple calls)\n2. For write_file with large content, consider using exec with heredoc instead\n3. Request a higher output token limit if available",
+			}
+			if len(resp.ToolCalls) > 0 {
+				errorMsg.ToolCallID = resp.ToolCalls[0].ID
+			}
+			result.Messages = append(result.Messages, errorMsg)
+			if opts.Hooks.ToolResultMessage != nil {
+				opts.Hooks.ToolResultMessage(iteration, errorMsg)
+			}
+			continue
+		}
+
 		if len(resp.ToolCalls) == 0 {
 			result.FinalContent = resp.Content
 			result.Exhausted = false
