@@ -7,6 +7,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/cron"
 	"github.com/sipeed/picoclaw/pkg/heartbeat"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/routing"
 )
 
 func (al *AgentLoop) recordLastActiveTarget(msg bus.InboundMessage) {
@@ -20,12 +21,9 @@ func (al *AgentLoop) recordLastActiveTarget(msg bus.InboundMessage) {
 	if channel == "system" || channel == "cli" {
 		return
 	}
-	sessionKey := strings.TrimSpace(msg.SessionKey)
-	if strings.HasPrefix(sessionKey, "cron-") {
-		return
-	}
-	// Exclude heartbeat sessions - they shouldn't count as user activity
-	if strings.HasPrefix(strings.ToLower(sessionKey), "heartbeat") {
+
+	// Exclude background sessions (cron and heartbeat) - they shouldn't count as user activity
+	if routing.IsBackgroundSessionKey(msg.SessionKey) {
 		return
 	}
 
