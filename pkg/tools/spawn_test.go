@@ -368,9 +368,10 @@ func TestSpawnTool_WithOptions_FloatToIntConversion(t *testing.T) {
 	tool := NewSpawnTool(mgr)
 
 	_, err := tool.Execute(context.Background(), map[string]interface{}{
-		"action":         "spawn",
-		"task":           "float test",
-		"max_iterations": float64(25),
+		"action":            "spawn",
+		"task":              "float test",
+		"max_iterations":    float64(25),
+		"max_output_tokens": float64(16384),
 	})
 	if err != nil {
 		t.Fatalf("spawn failed: %v", err)
@@ -382,5 +383,8 @@ func TestSpawnTool_WithOptions_FloatToIntConversion(t *testing.T) {
 	}
 	if tasks[0].Options.MaxIterations != 25 {
 		t.Errorf("Options.MaxIterations = %d, want 25", tasks[0].Options.MaxIterations)
+	}
+	if tasks[0].Options.MaxOutputTokens != 16384 {
+		t.Errorf("Options.MaxOutputTokens = %d, want 16384", tasks[0].Options.MaxOutputTokens)
 	}
 }

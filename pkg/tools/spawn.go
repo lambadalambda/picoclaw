@@ -13,10 +13,9 @@ import (
 )
 
 const (
-	MaxIterationsLimit     = 100
-	TimeoutSecondsLimit    = 3600
-	MaxOutputTokensLimit   = 32768
-	DefaultOutputMaxTokens = 8192
+	MaxIterationsLimit   = 100
+	TimeoutSecondsLimit  = 3600
+	MaxOutputTokensLimit = 32768
 )
 
 func parseIntArg(args map[string]interface{}, key string) (int, bool) {
@@ -122,7 +121,7 @@ func (t *SpawnTool) Parameters() map[string]interface{} {
 			},
 			"max_output_tokens": map[string]interface{}{
 				"type":        "integer",
-				"description": "Optional max output tokens for the subagent (default: 8192, max: 32768)",
+				"description": "Optional max output tokens for the subagent (max: 32768)",
 			},
 		},
 	}
