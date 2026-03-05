@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/routing"
 )
 
 // SubagentReportTool lets a subagent send internal updates to the main agent.
@@ -106,7 +107,7 @@ func (t *SubagentReportTool) Execute(_ context.Context, args map[string]interfac
 		if t.label != "" {
 			md["subagent_label"] = t.label
 		}
-		chatID := fmt.Sprintf("%s:%s", t.originChannel, t.originChatID)
+		chatID := routing.EncodeSystemRoute(t.originChannel, t.originChatID)
 		t.bus.PublishInbound(bus.InboundMessage{
 			Channel:  "system",
 			SenderID: fmt.Sprintf("subagent:%s", t.taskID),

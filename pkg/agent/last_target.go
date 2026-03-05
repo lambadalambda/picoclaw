@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"path/filepath"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -24,7 +23,7 @@ func (al *AgentLoop) recordLastActiveTarget(msg bus.InboundMessage) {
 		return
 	}
 
-	path := filepath.Join(al.workspace, "cron", "last_target.json")
+	path := cron.LastTargetPath(al.workspace)
 	if err := cron.SaveLastTarget(path, cron.LastTarget{Channel: channel, ChatID: chatID}); err != nil {
 		logger.DebugCF("agent", "Failed to record last active target",
 			map[string]interface{}{"error": err.Error(), "channel": channel, "chat_id": chatID})

@@ -197,11 +197,11 @@ func (t *CronTool) resolveLastTarget() (string, string) {
 	if t.lastTargetPath == "" {
 		return "", ""
 	}
-	lt, ok, err := cron.LoadLastTarget(t.lastTargetPath)
+	ch, chatID, ok, err := cron.ResolveLastTarget(t.lastTargetPath)
 	if err != nil || !ok {
 		return "", ""
 	}
-	return lt.Channel, lt.ChatID
+	return ch, chatID
 }
 
 func (t *CronTool) listJobs() (string, error) {

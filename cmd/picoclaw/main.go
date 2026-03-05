@@ -29,6 +29,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/migrate"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/skills"
 	"github.com/sipeed/picoclaw/pkg/tools"
 	"github.com/sipeed/picoclaw/pkg/voice"
@@ -651,8 +652,8 @@ func gatewayCmd() {
 	heartbeatService := heartbeat.NewHeartbeatService(
 		cfg.WorkspacePath(),
 		func(prompt string) (string, error) {
-			lastTargetPath := filepath.Join(cfg.WorkspacePath(), "cron", "last_target.json")
-			lastTarget, ok, err := cron.LoadLastTarget(lastTargetPath)
+			lastTargetPath := cron.LastTargetPath(cfg.WorkspacePath())
+			lastChannel, lastChatID, ok, err := cron.ResolveLastTarget(lastTargetPath)
 			if err != nil {
 				return "", err
 			}
@@ -660,13 +661,13 @@ func gatewayCmd() {
 			channel := "cli"
 			chatID := "direct"
 			if ok {
-				channel = lastTarget.Channel
-				chatID = lastTarget.ChatID
+				channel = lastChannel
+				chatID = lastChatID
 			}
 
 			sessionKey := "heartbeat"
 			if ok {
-				sessionKey = fmt.Sprintf("heartbeat:%s:%s", channel, chatID)
+				sessionKey = routing.EncodeHeartbeatSessionKey(channel, chatID)
 			}
 
 			result, err := agentLoop.ProcessDirectWithChannel(context.Background(), prompt, sessionKey, channel, chatID)
@@ -1079,7 +1080,7 @@ func setupCronTool(agentLoop *agent.AgentLoop, msgBus *bus.MessageBus, workspace
 	cronService := cron.NewCronService(cronStorePath, nil)
 
 	// Create and register CronTool
-	lastTargetPath := filepath.Join(workspace, "cron", "last_target.json")
+	lastTargetPath := cron.LastTargetPath(workspace)
 	cronTool := tools.NewCronTool(cronService, agentLoop, msgBus, lastTargetPath)
 	agentLoop.RegisterTool(cronTool)
 

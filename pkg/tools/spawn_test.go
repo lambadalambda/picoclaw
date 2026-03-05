@@ -59,6 +59,64 @@ func TestSpawnTool_ExecuteWithRegistryContext_UsesOriginChat(t *testing.T) {
 	}
 }
 
+func TestSpawnTool_HeartbeatSession_RewritesOriginRoute(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	_, err := registry.ExecuteWithContext(context.Background(), "spawn", map[string]interface{}{
+		"task":                  "do the thing",
+		"__context_session_key": "heartbeat",
+	}, "telegram", "chat-ctx")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 spawned task, got %d", len(tasks))
+	}
+	if tasks[0].OriginChannel != "heartbeat" {
+		t.Fatalf("OriginChannel = %q, want %q", tasks[0].OriginChannel, "heartbeat")
+	}
+	if tasks[0].OriginChatID != "telegram:chat-ctx" {
+		t.Fatalf("OriginChatID = %q, want %q", tasks[0].OriginChatID, "telegram:chat-ctx")
+	}
+	if tasks[0].OriginSessionKey != "heartbeat" {
+		t.Fatalf("OriginSessionKey = %q, want %q", tasks[0].OriginSessionKey, "heartbeat")
+	}
+}
+
+func TestSpawnTool_HeartbeatScopedSession_RewritesOriginRouteFromSessionKey(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	_, err := registry.ExecuteWithContext(context.Background(), "spawn", map[string]interface{}{
+		"task":                  "do the thing",
+		"__context_session_key": "heartbeat:deltachat:42",
+	}, "telegram", "chat-ctx")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 spawned task, got %d", len(tasks))
+	}
+	if tasks[0].OriginChannel != "heartbeat" {
+		t.Fatalf("OriginChannel = %q, want %q", tasks[0].OriginChannel, "heartbeat")
+	}
+	if tasks[0].OriginChatID != "deltachat:42" {
+		t.Fatalf("OriginChatID = %q, want %q", tasks[0].OriginChatID, "deltachat:42")
+	}
+	if tasks[0].OriginSessionKey != "heartbeat:deltachat:42" {
+		t.Fatalf("OriginSessionKey = %q, want %q", tasks[0].OriginSessionKey, "heartbeat:deltachat:42")
+	}
+}
+
 func TestSpawnTool_StatusAndList(t *testing.T) {
 	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
 	tool := NewSpawnTool(mgr)

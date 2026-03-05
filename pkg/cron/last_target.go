@@ -54,6 +54,16 @@ func LoadLastTarget(path string) (target LastTarget, ok bool, err error) {
 	return target, true, nil
 }
 
+// ResolveLastTarget is a convenience wrapper around LoadLastTarget that returns
+// the channel/chat_id pair directly.
+func ResolveLastTarget(path string) (channel, chatID string, ok bool, err error) {
+	lt, ok, err := LoadLastTarget(path)
+	if err != nil || !ok {
+		return "", "", ok, err
+	}
+	return lt.Channel, lt.ChatID, true, nil
+}
+
 // SaveLastTarget writes a LastTarget file atomically.
 func SaveLastTarget(path string, target LastTarget) error {
 	path = strings.TrimSpace(path)
@@ -97,4 +107,13 @@ func SaveLastTarget(path string, target LastTarget) error {
 		return err
 	}
 	return os.Rename(tmpName, path)
+}
+
+// LastTargetPath returns the canonical last_target.json path inside a workspace.
+func LastTargetPath(workspace string) string {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return ""
+	}
+	return filepath.Join(workspace, "cron", "last_target.json")
 }

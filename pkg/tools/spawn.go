@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -154,20 +155,14 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (s
 		// We route reports by encoding the heartbeat session key into the system
 		// message routing prefix: ChatID becomes "heartbeat:<channel>:<chat_id>".
 		// AgentLoop.processSystemMessage special-cases originChannel="heartbeat".
-		skLower := strings.ToLower(originSessionKey)
-		if skLower == "heartbeat" || strings.HasPrefix(skLower, "heartbeat:") {
+		if routing.IsHeartbeatSessionKey(originSessionKey) {
 			ctxChannel := originChannel
 			ctxChatID := originChatID
 			originChannel = "heartbeat"
-			if strings.HasPrefix(skLower, "heartbeat:") {
-				// Preserve the remainder exactly (it may include colons).
-				if idx := strings.Index(originSessionKey, ":"); idx >= 0 && idx+1 < len(originSessionKey) {
-					originChatID = originSessionKey[idx+1:]
-				} else {
-					originChatID = ctxChannel + ":" + ctxChatID
-				}
+			if route, ok := routing.HeartbeatTargetRouteFromSessionKey(originSessionKey); ok {
+				originChatID = route
 			} else {
-				originChatID = ctxChannel + ":" + ctxChatID
+				originChatID = routing.EncodeSystemRoute(ctxChannel, ctxChatID)
 			}
 		}
 

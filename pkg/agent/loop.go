@@ -22,6 +22,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/memory"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -113,18 +114,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	toolsRegistry.SetExecutionPolicy(tools.NewToolExecutionPolicy(policyEnabled, cfg.Tools.Policy.Allow, denyTools))
 
 	// Register message tool
-	messageTool := tools.NewMessageTool()
-	messageTool.SetWorkspaceRoot(workspace)
-	messageTool.SetSendCallback(func(channel, chatID, content string, media []string) error {
-		msgBus.PublishOutbound(bus.OutboundMessage{
-			Channel: channel,
-			ChatID:  chatID,
-			Content: content,
-			Media:   media,
-		})
-		return nil
-	})
-	toolsRegistry.Register(messageTool)
+	tools.RegisterMessageTool(toolsRegistry, msgBus, workspace, tools.MessageToolOptions{})
 
 	// Register spawn tool
 	subagentManager := tools.NewSubagentManager(provider, cfg.Agents.Defaults.Model, workspace, msgBus)
@@ -694,13 +684,9 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 			"trace_id":  traceID,
 		})
 
-	// Parse origin from chat_id (format: "channel:chat_id")
-	var originChannel, originChatID string
-	if idx := strings.Index(msg.ChatID, ":"); idx > 0 {
-		originChannel = msg.ChatID[:idx]
-		originChatID = msg.ChatID[idx+1:]
-	} else {
-		// Fallback
+	// Parse origin from chat_id (format: "channel:chat_id", split on first colon).
+	originChannel, originChatID, ok := routing.DecodeSystemRoute(msg.ChatID)
+	if !ok {
 		originChannel = "cli"
 		originChatID = msg.ChatID
 	}

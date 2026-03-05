@@ -9,6 +9,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -175,14 +176,11 @@ func (al *AgentLoop) maybeEchoToolCalls(toolCalls []providers.ToolCall, channel,
 }
 
 func shouldEchoToolCallsForSession(sessionKey string) bool {
-	sessionKey = strings.ToLower(strings.TrimSpace(sessionKey))
+	sessionKey = strings.TrimSpace(sessionKey)
 	if sessionKey == "" {
 		return true
 	}
-	if sessionKey == "heartbeat" || strings.HasPrefix(sessionKey, "heartbeat:") {
-		return false
-	}
-	if sessionKey == "cron" || strings.HasPrefix(sessionKey, "cron-") || strings.HasPrefix(sessionKey, "cron:") {
+	if routing.IsBackgroundSessionKey(sessionKey) {
 		return false
 	}
 	return true
