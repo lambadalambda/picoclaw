@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -189,4 +190,97 @@ func TestExecuteToolCalls_AttachesRichToolParts(t *testing.T) {
 	if results[0].Parts[0].Type != providers.MessagePartTypeImage {
 		t.Fatalf("Parts[0].Type = %q, want %q", results[0].Parts[0].Type, providers.MessagePartTypeImage)
 	}
+}
+
+func TestExecuteToolCalls_OnToolProgress(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&execTestTool{name: "slow", delay: 200 * time.Millisecond, result: "ok"})
+
+	var progressCalls []struct {
+		call    providers.ToolCall
+		elapsed time.Duration
+	}
+	var mu sync.Mutex
+
+	results := registry.ExecuteToolCalls(context.Background(), []providers.ToolCall{
+		{ID: "tc1", Name: "slow", Arguments: map[string]interface{}{}, Description: "slow tool description"},
+	}, ExecuteToolCallsOptions{
+		ProgressInterval: 50 * time.Millisecond,
+		OnToolProgress: func(call providers.ToolCall, elapsed time.Duration) {
+			mu.Lock()
+			progressCalls = append(progressCalls, struct {
+				call    providers.ToolCall
+				elapsed time.Duration
+			}{call: call, elapsed: elapsed})
+			mu.Unlock()
+		},
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Content != "ok" {
+		t.Fatalf("Content = %q, want ok", results[0].Content)
+	}
+
+	mu.Lock()
+	numProgress := len(progressCalls)
+	mu.Unlock()
+
+	if numProgress == 0 {
+		t.Fatal("expected at least one progress callback for tool taking 200ms with 50ms interval")
+	}
+
+	mu.Lock()
+	first := progressCalls[0]
+	mu.Unlock()
+
+	if first.call.Name != "slow" {
+		t.Fatalf("progress call name = %q, want slow", first.call.Name)
+	}
+	if first.call.Description != "slow tool description" {
+		t.Fatalf("progress call description = %q, want slow tool description", first.call.Description)
+	}
+}
+
+func TestExecuteToolCalls_OnToolProgress_NilCallback(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&execTestTool{name: "slow", delay: 50 * time.Millisecond, result: "ok"})
+
+	results := registry.ExecuteToolCalls(context.Background(), []providers.ToolCall{
+		{ID: "tc1", Name: "slow", Arguments: map[string]interface{}{}},
+	}, ExecuteToolCallsOptions{
+		OnToolProgress: nil,
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Content != "ok" {
+		t.Fatalf("Content = %q, want ok", results[0].Content)
+	}
+}
+
+func TestExecuteToolCalls_OnToolProgress_MultipleTools(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&execTestTool{name: "tool_a", delay: 100 * time.Millisecond, result: "a"})
+	registry.Register(&execTestTool{name: "tool_b", delay: 150 * time.Millisecond, result: "b"})
+
+	var progressCount atomic.Int32
+
+	results := registry.ExecuteToolCalls(context.Background(), []providers.ToolCall{
+		{ID: "tc1", Name: "tool_a", Arguments: map[string]interface{}{}},
+		{ID: "tc2", Name: "tool_b", Arguments: map[string]interface{}{}},
+	}, ExecuteToolCallsOptions{
+		ProgressInterval: 30 * time.Millisecond,
+		OnToolProgress: func(call providers.ToolCall, elapsed time.Duration) {
+			progressCount.Add(1)
+		},
+	})
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	_ = progressCount.Load()
 }
