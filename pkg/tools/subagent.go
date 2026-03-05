@@ -16,6 +16,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/llmloop"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/skills"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
@@ -276,6 +277,14 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 	registry := NewToolRegistry()
 	registry.SetUnsafeToolGate(unsafeGate)
 	RegisterCoreTools(registry, sm.workspace, WebSearchToolConfig{MaxResults: 5}) // web search will self-report if key missing
+
+	// Allow subagents to message the originating chat. This is required for
+	// streaming workflows (e.g. sending generated images as they finish).
+	// The execution context (origin channel/chat) is injected via ExecuteToolCallsOptions.
+	RegisterMessageTool(registry, sm.bus, sm.workspace, MessageToolOptions{
+		ForceContextTarget:       true,
+		RestrictMediaToWorkspace: true,
+	})
 	registry.Register(NewSubagentReportTool(sm.bus, initial.ID, initial.Label, initial.OriginChannel, initial.OriginChatID))
 
 	systemPrompt := sm.buildSubagentSystemPrompt(registry)
@@ -301,10 +310,21 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
 			sessionKey := strings.TrimSpace(initial.OriginSessionKey)
 			if sessionKey == "" && initial.OriginChannel != "" && initial.OriginChatID != "" {
-				sessionKey = fmt.Sprintf("%s:%s", initial.OriginChannel, initial.OriginChatID)
+				sessionKey = routing.EncodeSystemRoute(initial.OriginChannel, initial.OriginChatID)
+			}
+
+			execChannel := initial.OriginChannel
+			execChatID := initial.OriginChatID
+			if strings.EqualFold(strings.TrimSpace(initial.OriginChannel), "heartbeat") {
+				if routeChannel, routeChatID, ok := routing.DecodeSystemRoute(initial.OriginChatID); ok {
+					execChannel = routeChannel
+					execChatID = routeChatID
+				}
 			}
 
 			results := registry.ExecuteToolCalls(ctx, toolCalls, ExecuteToolCallsOptions{
+				Channel:      execChannel,
+				ChatID:       execChatID,
 				SessionKey:   sessionKey,
 				TraceID:      initial.ParentTraceID,
 				Timeout:      toolTimeout,
@@ -497,7 +517,7 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 			Channel:  "system",
 			SenderID: fmt.Sprintf("subagent:%s", initial.ID),
 			// Format: "original_channel:original_chat_id" for routing back
-			ChatID:  fmt.Sprintf("%s:%s", initial.OriginChannel, initial.OriginChatID),
+			ChatID:  routing.EncodeSystemRoute(initial.OriginChannel, initial.OriginChatID),
 			Content: announceContent,
 			Metadata: map[string]string{
 				"subagent_event":   event,
@@ -538,7 +558,10 @@ func (sm *SubagentManager) buildSubagentSystemPrompt(registry *ToolRegistry) str
 		"You are a background subagent working for the main picoclaw agent.",
 		"\nRules:",
 		"1. Use tools when you need to perform an action.",
-		"2. Do NOT message the end user. Use `subagent_report` to communicate with the main agent.",
+		"2. You MAY message the end user via `message` when delivering user-facing output (e.g. generated images).",
+		"   Do NOT set `channel`/`chat_id` in `message` calls; they are auto-routed to the originating chat.",
+		"   Media paths should be workspace-relative (e.g. generated/*).",
+		"   Use `subagent_report` for internal-only updates to the main agent.",
 		"3. If you need prior context, use `session_history` to inspect the parent chat transcript (you have execution context for the originating session).",
 		"4. When finished, provide a clear result and include any artifact file paths.",
 		fmt.Sprintf("\nWorkspace: %s", workspacePath),

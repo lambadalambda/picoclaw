@@ -11,9 +11,11 @@ import (
 type SendCallback func(channel, chatID, content string, media []string) error
 
 type MessageTool struct {
-	mu            sync.RWMutex
-	sendCallback  SendCallback
-	workspaceRoot string
+	mu                       sync.RWMutex
+	sendCallback             SendCallback
+	workspaceRoot            string
+	restrictMediaToWorkspace bool
+	forceContextTarget       bool
 }
 
 func NewMessageTool() *MessageTool {
@@ -72,26 +74,56 @@ func (t *MessageTool) SetWorkspaceRoot(root string) {
 	t.workspaceRoot = strings.TrimSpace(root)
 }
 
+// SetRestrictMediaToWorkspace enforces that media attachment paths must resolve
+// within the configured workspace root. When enabled, absolute paths outside
+// the workspace are rejected.
+func (t *MessageTool) SetRestrictMediaToWorkspace(restrict bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.restrictMediaToWorkspace = restrict
+}
+
+// SetForceContextTarget forces messages to be delivered to the execution
+// context target (injected via ToolRegistry). When enabled, explicit
+// channel/chat_id arguments are ignored.
+func (t *MessageTool) SetForceContextTarget(force bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.forceContextTarget = force
+}
+
 func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
 	content, ok := args["content"].(string)
 	if !ok {
 		return "", fmt.Errorf("content is required")
 	}
 
-	channel, _ := args["channel"].(string)
-	chatID, _ := args["chat_id"].(string)
-	ctxChannel, ctxChatID := getExecutionContext(args)
-	if channel == "" {
-		channel = ctxChannel
-	}
-	if chatID == "" {
-		chatID = ctxChatID
-	}
-
 	t.mu.RLock()
 	callback := t.sendCallback
 	workspaceRoot := t.workspaceRoot
+	restrictMedia := t.restrictMediaToWorkspace
+	forceTarget := t.forceContextTarget
 	t.mu.RUnlock()
+
+	channel, _ := args["channel"].(string)
+	chatID, _ := args["chat_id"].(string)
+	channel = strings.TrimSpace(channel)
+	chatID = strings.TrimSpace(chatID)
+	ctxChannel, ctxChatID := getExecutionContext(args)
+	ctxChannel = strings.TrimSpace(ctxChannel)
+	ctxChatID = strings.TrimSpace(ctxChatID)
+
+	if forceTarget {
+		channel = ctxChannel
+		chatID = ctxChatID
+	} else {
+		if channel == "" {
+			channel = ctxChannel
+		}
+		if chatID == "" {
+			chatID = ctxChatID
+		}
+	}
 
 	if channel == "" || chatID == "" {
 		return "Error: No target channel/chat specified", nil
@@ -119,27 +151,43 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 	// Resolve relative media paths against the workspace root (if configured).
 	if len(media) > 0 {
 		workspaceRoot = strings.TrimSpace(workspaceRoot)
+		if restrictMedia && workspaceRoot == "" {
+			return "Error: Message tool workspace root not configured", nil
+		}
 		resolved := make([]string, 0, len(media))
 		for _, p := range media {
 			p = strings.TrimSpace(p)
 			if p == "" {
 				continue
 			}
-			if filepath.IsAbs(p) {
+			if workspaceRoot != "" {
+				if restrictMedia {
+					abs, err := resolvePathWithOptionalRoot(p, workspaceRoot, "workspace")
+					if err != nil {
+						return fmt.Sprintf("Error: invalid media path %q: %v", p, err), nil
+					}
+					resolved = append(resolved, abs)
+					continue
+				}
+				if !filepath.IsAbs(p) {
+					abs, err := resolvePathWithOptionalRoot(p, workspaceRoot, "workspace")
+					if err != nil {
+						return fmt.Sprintf("Error: invalid media path %q: %v", p, err), nil
+					}
+					resolved = append(resolved, abs)
+					continue
+				}
 				resolved = append(resolved, filepath.Clean(p))
 				continue
 			}
-			if workspaceRoot != "" {
-				abs, err := resolvePathWithOptionalRoot(p, workspaceRoot, "workspace")
-				if err != nil {
-					return fmt.Sprintf("Error: invalid media path %q: %v", p, err), nil
-				}
-				resolved = append(resolved, abs)
-				continue
-			}
+			// No workspace root restriction configured.
 			resolved = append(resolved, filepath.Clean(p))
 		}
 		media = resolved
+	}
+
+	if strings.TrimSpace(content) == "" && len(media) == 0 {
+		return "Error: message content or media is required", nil
 	}
 
 	if err := callback(channel, chatID, content, media); err != nil {

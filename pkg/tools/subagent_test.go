@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -148,6 +150,189 @@ func TestSubagentManager_SubagentReportPublishesInbound(t *testing.T) {
 	}
 	if !gotComplete {
 		t.Fatal("expected completion inbound message")
+	}
+}
+
+func TestSubagentManager_MessageToolPublishesOutboundToOrigin(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "generated"), 0755); err != nil {
+		t.Fatalf("mkdir generated: %v", err)
+	}
+
+	rel := filepath.Join("generated", "test.png")
+	if err := os.WriteFile(filepath.Join(workspace, rel), []byte("x"), 0644); err != nil {
+		t.Fatalf("write media: %v", err)
+	}
+
+	prov := &scriptedProvider{responses: []*providers.LLMResponse{
+		{
+			ToolCalls: []providers.ToolCall{{
+				ID:   "tc1",
+				Name: "message",
+				Arguments: map[string]interface{}{
+					"content": "Here's your image!",
+					"media":   []interface{}{rel},
+				},
+			}},
+		},
+		{Content: "done"},
+	}}
+
+	sm := NewSubagentManager(prov, "test-model", workspace, msgBus)
+	_, err := sm.Spawn(context.Background(), "send", "imggen", "deltachat", "chat1", "deltachat:chat1", "trace-123", SpawnOptions{})
+	if err != nil {
+		t.Fatalf("Spawn() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	out, ok := msgBus.SubscribeOutbound(ctx)
+	if !ok {
+		t.Fatal("expected outbound message from subagent message tool")
+	}
+	if out.Channel != "deltachat" {
+		t.Fatalf("channel = %q, want %q", out.Channel, "deltachat")
+	}
+	if out.ChatID != "chat1" {
+		t.Fatalf("chat_id = %q, want %q", out.ChatID, "chat1")
+	}
+	if out.Content != "Here's your image!" {
+		t.Fatalf("content = %q, want %q", out.Content, "Here's your image!")
+	}
+	if len(out.Media) != 1 {
+		t.Fatalf("media length = %d, want 1", len(out.Media))
+	}
+	wantMedia := filepath.Clean(filepath.Join(workspace, rel))
+	if out.Media[0] != wantMedia {
+		t.Fatalf("media[0] = %q, want %q", out.Media[0], wantMedia)
+	}
+}
+
+func TestSubagentManager_MessageToolFromHeartbeatRoutesToMainChat(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	workspace := t.TempDir()
+
+	prov := &scriptedProvider{responses: []*providers.LLMResponse{
+		{
+			ToolCalls: []providers.ToolCall{{
+				ID:   "tc1",
+				Name: "message",
+				Arguments: map[string]interface{}{
+					"content": "heartbeat artifact ready",
+				},
+			}},
+		},
+		{Content: "done"},
+	}}
+
+	sm := NewSubagentManager(prov, "test-model", workspace, msgBus)
+	_, err := sm.Spawn(context.Background(), "send", "hb", "heartbeat", "deltachat:chat1", "heartbeat:deltachat:chat1", "trace-123", SpawnOptions{})
+	if err != nil {
+		t.Fatalf("Spawn() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	out, ok := msgBus.SubscribeOutbound(ctx)
+	if !ok {
+		t.Fatal("expected outbound heartbeat subagent message")
+	}
+	if out.Channel != "deltachat" {
+		t.Fatalf("channel = %q, want %q", out.Channel, "deltachat")
+	}
+	if out.ChatID != "chat1" {
+		t.Fatalf("chat_id = %q, want %q", out.ChatID, "chat1")
+	}
+	if out.Content != "heartbeat artifact ready" {
+		t.Fatalf("content = %q, want %q", out.Content, "heartbeat artifact ready")
+	}
+}
+
+func TestSubagentManager_MessageToolIgnoresExplicitTargetOverride(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	workspace := t.TempDir()
+
+	prov := &scriptedProvider{responses: []*providers.LLMResponse{
+		{
+			ToolCalls: []providers.ToolCall{{
+				ID:   "tc1",
+				Name: "message",
+				Arguments: map[string]interface{}{
+					"content": "hello",
+					"channel": "telegram",
+					"chat_id": "override-chat",
+				},
+			}},
+		},
+		{Content: "done"},
+	}}
+
+	sm := NewSubagentManager(prov, "test-model", workspace, msgBus)
+	_, err := sm.Spawn(context.Background(), "send", "msg", "deltachat", "chat1", "deltachat:chat1", "trace-123", SpawnOptions{})
+	if err != nil {
+		t.Fatalf("Spawn() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	out, ok := msgBus.SubscribeOutbound(ctx)
+	if !ok {
+		t.Fatal("expected outbound message")
+	}
+	if out.Channel != "deltachat" {
+		t.Fatalf("channel = %q, want %q", out.Channel, "deltachat")
+	}
+	if out.ChatID != "chat1" {
+		t.Fatalf("chat_id = %q, want %q", out.ChatID, "chat1")
+	}
+}
+
+func TestSubagentManager_MessageToolBlocksMediaOutsideWorkspace(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	mediaPath := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(mediaPath, []byte("nope"), 0644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	prov := &scriptedProvider{responses: []*providers.LLMResponse{
+		{
+			ToolCalls: []providers.ToolCall{{
+				ID:   "tc1",
+				Name: "message",
+				Arguments: map[string]interface{}{
+					"content": "attempt",
+					"media":   []interface{}{mediaPath},
+				},
+			}},
+		},
+		{Content: "done"},
+	}}
+
+	sm := NewSubagentManager(prov, "test-model", workspace, msgBus)
+	_, err := sm.Spawn(context.Background(), "send", "msg", "deltachat", "chat1", "deltachat:chat1", "trace-123", SpawnOptions{})
+	if err != nil {
+		t.Fatalf("Spawn() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	if _, ok := msgBus.SubscribeOutbound(ctx); ok {
+		t.Fatal("expected no outbound message")
 	}
 }
 

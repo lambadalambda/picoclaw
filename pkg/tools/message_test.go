@@ -254,6 +254,55 @@ func TestMessageTool_Execute_CallbackError(t *testing.T) {
 	}
 }
 
+func TestMessageTool_Execute_RejectsEmptyPayload(t *testing.T) {
+	tool := NewMessageTool()
+	called := false
+	tool.SetSendCallback(func(channel, chatID, content string, media []string) error {
+		called = true
+		return nil
+	})
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"content": "   ",
+		"channel": "telegram",
+		"chat_id": "123",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called {
+		t.Fatal("expected callback not to be called")
+	}
+	if result != "Error: message content or media is required" {
+		t.Fatalf("result = %q, want %q", result, "Error: message content or media is required")
+	}
+}
+
+func TestMessageTool_Execute_AllowsMediaOnlyPayload(t *testing.T) {
+	tool := NewMessageTool()
+	called := false
+	tool.SetSendCallback(func(channel, chatID, content string, media []string) error {
+		called = true
+		if len(media) != 1 || media[0] != "/tmp/image.png" {
+			t.Fatalf("media = %v, want [/tmp/image.png]", media)
+		}
+		return nil
+	})
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"content": " ",
+		"channel": "telegram",
+		"chat_id": "123",
+		"media":   []interface{}{"/tmp/image.png"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected callback to be called")
+	}
+}
+
 func TestMessageTool_ExecuteWithRegistryContext(t *testing.T) {
 	tool := NewMessageTool()
 	registry := NewToolRegistry()
