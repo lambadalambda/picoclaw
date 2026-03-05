@@ -282,5 +282,8 @@ func TestExecuteToolCalls_OnToolProgress_MultipleTools(t *testing.T) {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
 
-	_ = progressCount.Load()
+	count := progressCount.Load()
+	if count == 0 {
+		t.Fatal("expected at least one progress callback for tools taking 100ms/150ms with 30ms interval")
+	}
 }
