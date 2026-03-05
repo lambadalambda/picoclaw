@@ -9,6 +9,7 @@
 | Runtime | Lightweight Go AI agent (CLI + chat gateway) |
 | Orchestration | Parallel tools, bounded concurrency, per-call timeouts |
 | Background Work | Subagents with `spawn/status/list/cancel` controls |
+| Local Notify | Inject messages from scripts/CI/other processes into the agent |
 | Reliability | Retry-After aware retries, jittered backoff, panic-safe tool workers |
 | Model Endpoints | OpenAI-compatible providers, including Modal GLM-5 |
 | Safety | Optional tool policy (`allow`/`deny` + safe mode) |
@@ -48,6 +49,7 @@ docker compose exec picoclaw picoclaw agent -m "hello"
 | [`docs/docker.md`](docs/docker.md) | Full Docker setup, data persistence, lifecycle commands |
 | [`docs/configuration.md`](docs/configuration.md) | Config reference and important tuning knobs |
 | [`docs/deltachat.md`](docs/deltachat.md) | DeltaChat bridge setup (including nine.testrun.org onboarding) |
+| [`docs/notify.md`](docs/notify.md) | Local inbox notifications (`picoclaw notify`) |
 | [`docs/features.md`](docs/features.md) | Capability overview, architecture, subagents |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Common errors and fixes |
 
@@ -59,6 +61,7 @@ pkg/bus/        # inbound/outbound message broker
 pkg/agent/      # agent loop + orchestration
 pkg/tools/      # tool implementations + policy + subagents
 pkg/providers/  # LLM provider integrations
+pkg/notify/     # local inbox message injection
 ```
 
 ## Local (Non-Docker)
