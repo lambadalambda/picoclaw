@@ -295,6 +295,7 @@ func TestRun_TruncatedToolCall(t *testing.T) {
 	}}
 
 	toolResultSeen := false
+	toolCallsRequestedSeen := false
 	res, err := Run(context.Background(), RunOptions{
 		Provider:      p,
 		Model:         "test-model",
@@ -305,6 +306,17 @@ func TestRun_TruncatedToolCall(t *testing.T) {
 			return nil
 		},
 		Hooks: Hooks{
+			ToolCallsRequested: func(iteration int, toolCalls []providers.ToolCall) {
+				if iteration == 1 {
+					toolCallsRequestedSeen = true
+					if len(toolCalls) != 1 {
+						t.Errorf("expected 1 tool call, got %d", len(toolCalls))
+					}
+					if toolCalls[0].Name != "write_file" {
+						t.Errorf("expected tool name write_file, got %q", toolCalls[0].Name)
+					}
+				}
+			},
 			ToolResultMessage: func(iteration int, msg providers.Message) {
 				if iteration == 1 {
 					toolResultSeen = true
@@ -329,6 +341,9 @@ func TestRun_TruncatedToolCall(t *testing.T) {
 	}
 	if !toolResultSeen {
 		t.Fatal("expected truncation error to be injected as tool result")
+	}
+	if !toolCallsRequestedSeen {
+		t.Fatal("expected ToolCallsRequested hook to be called for truncated tool calls")
 	}
 	if len(res.Messages) != 3 {
 		t.Fatalf("Messages len = %d, want 3 (user, assistant, tool error)", len(res.Messages))
@@ -357,6 +372,7 @@ func TestRun_TruncatedMultipleToolCalls(t *testing.T) {
 	}}
 
 	toolResultsSeen := 0
+	toolCallsRequestedSeen := false
 	res, err := Run(context.Background(), RunOptions{
 		Provider:      p,
 		Model:         "test-model",
@@ -367,6 +383,14 @@ func TestRun_TruncatedMultipleToolCalls(t *testing.T) {
 			return nil
 		},
 		Hooks: Hooks{
+			ToolCallsRequested: func(iteration int, toolCalls []providers.ToolCall) {
+				if iteration == 1 {
+					toolCallsRequestedSeen = true
+					if len(toolCalls) != 2 {
+						t.Errorf("expected 2 tool calls, got %d", len(toolCalls))
+					}
+				}
+			},
 			ToolResultMessage: func(iteration int, msg providers.Message) {
 				if iteration == 1 {
 					toolResultsSeen++
@@ -388,6 +412,9 @@ func TestRun_TruncatedMultipleToolCalls(t *testing.T) {
 	}
 	if toolResultsSeen != 2 {
 		t.Fatalf("expected 2 tool result messages for 2 truncated tool calls, got %d", toolResultsSeen)
+	}
+	if !toolCallsRequestedSeen {
+		t.Fatal("expected ToolCallsRequested hook to be called for truncated tool calls")
 	}
 	if len(res.Messages) != 4 {
 		t.Fatalf("Messages len = %d, want 4 (user, assistant with 2 tool calls, 2 tool errors)", len(res.Messages))

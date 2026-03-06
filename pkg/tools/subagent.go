@@ -105,7 +105,7 @@ func NewSubagentManager(provider providers.LLMProvider, model string, workspace 
 		cancels:          make(map[string]context.CancelFunc),
 		provider:         provider,
 		model:            model,
-		chatOptions:      providers.ChatOptions{MaxTokens: 16384, Temperature: 0.3},
+		chatOptions:      providers.ChatOptions{MaxTokens: 4096, Temperature: 0.3},
 		messageBudget:    providers.BudgetFromContextWindow(8192),
 		maxStoredTasks:   200,
 		completedTTL:     24 * time.Hour,

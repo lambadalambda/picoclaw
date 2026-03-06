@@ -158,6 +158,10 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 
 		// Detect truncated tool calls (response cut off at max_tokens limit)
 		if resp.FinishReason == "length" && len(resp.ToolCalls) > 0 {
+			if opts.Hooks.ToolCallsRequested != nil {
+				opts.Hooks.ToolCallsRequested(iteration, resp.ToolCalls)
+			}
+
 			truncatedMsg := providers.AssistantMessageFromResponse(resp)
 			result.Messages = append(result.Messages, truncatedMsg)
 			if opts.Hooks.AssistantMessage != nil {
