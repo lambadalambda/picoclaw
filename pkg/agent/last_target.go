@@ -27,6 +27,17 @@ func (al *AgentLoop) recordLastActiveTarget(msg bus.InboundMessage) {
 		return
 	}
 
+	// Exclude bot-injected local notifications (e.g., sender IDs like "local:*")
+	// These are not real user activity and should not suppress proactive pings.
+	if strings.HasPrefix(strings.ToLower(msg.SenderID), "local:") {
+		return
+	}
+
+	// Also check metadata as an additional safeguard
+	if msg.Metadata != nil && msg.Metadata["local_notify"] == "1" {
+		return
+	}
+
 	// Record last target for cron jobs
 	path := cron.LastTargetPath(al.workspace)
 	if err := cron.SaveLastTarget(path, cron.LastTarget{Channel: channel, ChatID: chatID}); err != nil {
