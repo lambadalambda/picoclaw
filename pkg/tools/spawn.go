@@ -122,7 +122,7 @@ func (t *SpawnTool) Parameters() map[string]interface{} {
 			},
 			"max_output_tokens": map[string]interface{}{
 				"type":        "integer",
-				"description": "Optional max output tokens for the subagent (max: 32768)",
+				"description": "Optional max output tokens for the subagent (min: 100, max: 32768)",
 			},
 		},
 	}
