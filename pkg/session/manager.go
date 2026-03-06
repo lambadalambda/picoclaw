@@ -20,6 +20,14 @@ type Session struct {
 	Updated  time.Time           `json:"updated"`
 }
 
+type SessionInfo struct {
+	Key             string    `json:"key"`
+	MessageCount    int       `json:"message_count"`
+	CompactionCount int       `json:"compaction_count"`
+	Created         time.Time `json:"created"`
+	Updated         time.Time `json:"updated"`
+}
+
 type SessionManager struct {
 	sessions map[string]*Session
 	mu       sync.RWMutex
@@ -177,6 +185,23 @@ func (sm *SessionManager) GetSummary(key string) string {
 	return session.Summary
 }
 
+func (sm *SessionManager) GetSessionInfo(key string) *SessionInfo {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	session, ok := sm.sessions[key]
+	if !ok {
+		return nil
+	}
+	return &SessionInfo{
+		Key:             session.Key,
+		MessageCount:    len(session.Messages),
+		CompactionCount: 0,
+		Created:         session.Created,
+		Updated:         session.Updated,
+	}
+}
+
 func (sm *SessionManager) SetSummary(key string, summary string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -255,4 +280,41 @@ func (sm *SessionManager) loadSessions() error {
 	}
 
 	return nil
+}
+
+type SessionStats struct {
+	Key             string    `json:"key"`
+	Channel         string    `json:"channel"`
+	ChatID          string    `json:"chat_id"`
+	MessageCount    int       `json:"message_count"`
+	CompactionCount int       `json:"compaction_count"`
+	SessionStart    time.Time `json:"session_start"`
+}
+
+func (sm *SessionManager) GetSessionStats(sessionKey string) *SessionStats {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	session, ok := sm.sessions[sessionKey]
+	if !ok {
+		return nil
+	}
+
+	channel, chatID := splitSessionKey(sessionKey)
+	return &SessionStats{
+		Key:             sessionKey,
+		Channel:         channel,
+		ChatID:          chatID,
+		MessageCount:    len(session.Messages),
+		CompactionCount: 0,
+		SessionStart:    session.Created,
+	}
+}
+
+func splitSessionKey(sessionKey string) (channel, chatID string) {
+	parts := strings.SplitN(sessionKey, ":", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return sessionKey, ""
 }
