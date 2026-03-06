@@ -81,7 +81,7 @@ func (t *SessionInfoTool) Execute(ctx context.Context, args map[string]interface
 		Model:           t.model,
 		SessionKey:      sessionKey,
 		MessageCount:    info.MessageCount,
-		TokenEstimate:   info.MessageCount * 4,
+		TokenEstimate:   info.TokenEstimate,
 		MaxTokens:       t.maxTokens,
 		ContextWindow:   t.contextWindow,
 		CompactionCount: info.CompactionCount,

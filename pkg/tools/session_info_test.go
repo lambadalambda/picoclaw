@@ -26,6 +26,7 @@ func TestSessionInfoTool_ReturnsJSON(t *testing.T) {
 	info := &session.SessionInfo{
 		Key:             "test:slack:chat-1",
 		MessageCount:    5,
+		TokenEstimate:   20,
 		CompactionCount: 1,
 		Created:         now,
 		Updated:         now,
@@ -55,6 +56,7 @@ func TestSessionInfoTool_RequiredFields(t *testing.T) {
 	info := &session.SessionInfo{
 		Key:             "test:slack:chat-1",
 		MessageCount:    10,
+		TokenEstimate:   40,
 		CompactionCount: 2,
 		Created:         now,
 		Updated:         now,
@@ -87,8 +89,8 @@ func TestSessionInfoTool_RequiredFields(t *testing.T) {
 	if output.MessageCount != 10 {
 		t.Errorf("expected message_count 10, got %d", output.MessageCount)
 	}
-	if output.TokenEstimate <= 0 {
-		t.Errorf("expected token_estimate > 0, got %d", output.TokenEstimate)
+	if output.TokenEstimate != 40 {
+		t.Errorf("expected token_estimate 40, got %d", output.TokenEstimate)
 	}
 	if output.Model != "test-model" {
 		t.Errorf("expected model 'test-model', got %q", output.Model)

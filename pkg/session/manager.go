@@ -13,16 +13,18 @@ import (
 )
 
 type Session struct {
-	Key      string              `json:"key"`
-	Messages []providers.Message `json:"messages"`
-	Summary  string              `json:"summary,omitempty"`
-	Created  time.Time           `json:"created"`
-	Updated  time.Time           `json:"updated"`
+	Key             string              `json:"key"`
+	Messages        []providers.Message `json:"messages"`
+	Summary         string              `json:"summary,omitempty"`
+	CompactionCount int                 `json:"compaction_count"`
+	Created         time.Time           `json:"created"`
+	Updated         time.Time           `json:"updated"`
 }
 
 type SessionInfo struct {
 	Key             string    `json:"key"`
 	MessageCount    int       `json:"message_count"`
+	TokenEstimate   int       `json:"token_estimate"`
 	CompactionCount int       `json:"compaction_count"`
 	Created         time.Time `json:"created"`
 	Updated         time.Time `json:"updated"`
@@ -193,10 +195,17 @@ func (sm *SessionManager) GetSessionInfo(key string) *SessionInfo {
 	if !ok {
 		return nil
 	}
+
+	tokenEstimate := 0
+	for _, m := range session.Messages {
+		tokenEstimate += len(m.Content) / 4
+	}
+
 	return &SessionInfo{
 		Key:             session.Key,
 		MessageCount:    len(session.Messages),
-		CompactionCount: 0,
+		TokenEstimate:   tokenEstimate,
+		CompactionCount: session.CompactionCount,
 		Created:         session.Created,
 		Updated:         session.Updated,
 	}
@@ -229,6 +238,7 @@ func (sm *SessionManager) TruncateHistory(key string, keepLast int) {
 	truncated := session.Messages[len(session.Messages)-keepLast:]
 	sanitized, _ := providers.SanitizeToolTranscript(truncated)
 	session.Messages = sanitized
+	session.CompactionCount++
 	session.Updated = time.Now()
 }
 
