@@ -96,11 +96,6 @@ func (r *ToolRegistry) ExecuteToolCalls(
 	for i, tc := range toolCalls {
 		wg.Add(1)
 		go func(idx int, tc providers.ToolCall) {
-			startTime := time.Now()
-			mu.Lock()
-			activeTools[idx] = toolStart{call: tc, startTime: startTime}
-			mu.Unlock()
-
 			acquired := false
 			defer func() {
 				mu.Lock()
@@ -132,6 +127,11 @@ func (r *ToolRegistry) ExecuteToolCalls(
 				results[idx] = providers.ToolResultMessage(tc.ID, fmt.Sprintf("Error: %v", ctx.Err()))
 				return
 			}
+
+			startTime := time.Now()
+			mu.Lock()
+			activeTools[idx] = toolStart{call: tc, startTime: startTime}
+			mu.Unlock()
 
 			argsJSON, _ := json.Marshal(tc.Arguments)
 			argsPreview := utils.Truncate(string(argsJSON), 200)
