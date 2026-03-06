@@ -10,10 +10,14 @@ import (
 )
 
 type mockSessionInfoProvider struct {
-	info *session.SessionInfo
+	info        *session.SessionInfo
+	expectedKey string
 }
 
 func (m *mockSessionInfoProvider) GetSessionInfo(sessionKey string) *session.SessionInfo {
+	if m.expectedKey != "" && sessionKey != m.expectedKey {
+		return nil
+	}
 	return m.info
 }
 
@@ -26,7 +30,7 @@ func TestSessionInfoTool_ReturnsJSON(t *testing.T) {
 		Created:         now,
 		Updated:         now,
 	}
-	provider := &mockSessionInfoProvider{info: info}
+	provider := &mockSessionInfoProvider{info: info, expectedKey: "test:slack:chat-1"}
 	tool := NewSessionInfoTool(provider, "test-model", 4000, 1000, false, false)
 
 	args := map[string]interface{}{
@@ -55,7 +59,7 @@ func TestSessionInfoTool_RequiredFields(t *testing.T) {
 		Created:         now,
 		Updated:         now,
 	}
-	provider := &mockSessionInfoProvider{info: info}
+	provider := &mockSessionInfoProvider{info: info, expectedKey: "test:slack:chat-1"}
 	tool := NewSessionInfoTool(provider, "test-model", 4000, 100, false, false)
 
 	args := map[string]interface{}{
@@ -109,5 +113,18 @@ func TestSessionInfoTool_NoParameters(t *testing.T) {
 	_, err := tool.Execute(context.Background(), map[string]interface{}{})
 	if err == nil {
 		t.Error("expected error when no session context, got nil")
+	}
+}
+
+func TestSessionInfoTool_SessionNotFound(t *testing.T) {
+	provider := &mockSessionInfoProvider{info: nil, expectedKey: "different:key"}
+	tool := NewSessionInfoTool(provider, "test-model", 4000, 100, false, false)
+
+	args := map[string]interface{}{
+		"session_key": "test:slack:chat-1",
+	}
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil {
+		t.Error("expected error when session not found, got nil")
 	}
 }
