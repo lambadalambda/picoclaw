@@ -649,3 +649,208 @@ func TestFormatToolCallSummary_RedactsSecrets(t *testing.T) {
 		t.Errorf("formatToolCallSummary() = %q, should contain [REDACTED]", got)
 	}
 }
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		input    time.Duration
+		expected string
+	}{
+		{100 * time.Millisecond, "<1s"},
+		{500 * time.Millisecond, "<1s"},
+		{999 * time.Millisecond, "<1s"},
+		{1 * time.Second, "1s"},
+		{5 * time.Second, "5s"},
+		{59 * time.Second, "59s"},
+		{60 * time.Second, "1m0s"},
+		{90 * time.Second, "1m30s"},
+		{120 * time.Second, "2m0s"},
+		{185 * time.Second, "3m5s"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input.String(), func(t *testing.T) {
+			got := formatDuration(tt.input)
+			if got != tt.expected {
+				t.Errorf("formatDuration(%v) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMakeToolProgressHandler_Disabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	testBus := bus.NewMessageBus()
+	defer testBus.Close()
+
+	al := &AgentLoop{
+		bus:           testBus,
+		workspace:     tmpDir,
+		echoToolCalls: false,
+	}
+
+	opts := processOptions{Channel: "telegram", ChatID: "chat1"}
+	handler := al.makeToolProgressHandler(opts)
+
+	if handler != nil {
+		t.Error("expected nil handler when echoToolCalls is disabled")
+	}
+}
+
+func TestMakeToolProgressHandler_SystemChannel(t *testing.T) {
+	tmpDir := t.TempDir()
+	testBus := bus.NewMessageBus()
+	defer testBus.Close()
+
+	al := &AgentLoop{
+		bus:           testBus,
+		workspace:     tmpDir,
+		echoToolCalls: true,
+	}
+
+	opts := processOptions{Channel: "system", ChatID: "chat1"}
+	handler := al.makeToolProgressHandler(opts)
+
+	if handler != nil {
+		t.Error("expected nil handler for system channel")
+	}
+}
+
+func TestMakeToolProgressHandler_BackgroundSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	testBus := bus.NewMessageBus()
+	defer testBus.Close()
+
+	al := &AgentLoop{
+		bus:           testBus,
+		workspace:     tmpDir,
+		echoToolCalls: true,
+	}
+
+	opts := processOptions{SessionKey: "heartbeat:telegram:chat1", Channel: "telegram", ChatID: "chat1"}
+	handler := al.makeToolProgressHandler(opts)
+
+	if handler != nil {
+		t.Error("expected nil handler for background session")
+	}
+}
+
+func TestMakeToolProgressHandler_SendsProgress(t *testing.T) {
+	tmpDir := t.TempDir()
+	testBus := bus.NewMessageBus()
+	defer testBus.Close()
+
+	al := &AgentLoop{
+		bus:           testBus,
+		workspace:     tmpDir,
+		echoToolCalls: true,
+	}
+
+	opts := processOptions{SessionKey: "telegram:chat1", Channel: "telegram", ChatID: "chat1"}
+	handler := al.makeToolProgressHandler(opts)
+
+	if handler == nil {
+		t.Fatal("expected non-nil handler")
+	}
+
+	call := providers.ToolCall{
+		ID:          "tc1",
+		Name:        "exec",
+		Description: "Running command",
+		Arguments:   map[string]interface{}{"command": "sleep 10"},
+	}
+
+	handler(call, 12*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	msg, ok := testBus.SubscribeOutbound(ctx)
+	if !ok {
+		t.Fatal("expected outbound message")
+	}
+
+	if msg.Channel != "telegram" {
+		t.Errorf("channel = %q, want telegram", msg.Channel)
+	}
+	if msg.ChatID != "chat1" {
+		t.Errorf("chatID = %q, want chat1", msg.ChatID)
+	}
+	expected := "⏳ Running command... (12s)"
+	if msg.Content != expected {
+		t.Errorf("content = %q, want %q", msg.Content, expected)
+	}
+}
+
+func TestMakeToolProgressHandler_SkipsNonEchoTools(t *testing.T) {
+	tmpDir := t.TempDir()
+	testBus := bus.NewMessageBus()
+	defer testBus.Close()
+
+	al := &AgentLoop{
+		bus:           testBus,
+		workspace:     tmpDir,
+		echoToolCalls: true,
+	}
+
+	opts := processOptions{SessionKey: "telegram:chat1", Channel: "telegram", ChatID: "chat1"}
+	handler := al.makeToolProgressHandler(opts)
+
+	if handler == nil {
+		t.Fatal("expected non-nil handler")
+	}
+
+	call := providers.ToolCall{
+		ID:   "tc1",
+		Name: "message",
+		Arguments: map[string]interface{}{
+			"content": "hello",
+		},
+	}
+
+	handler(call, 5*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, ok := testBus.SubscribeOutbound(ctx)
+	if ok {
+		t.Error("expected no outbound message for non-echo tool")
+	}
+}
+
+func TestMakeToolProgressHandler_UsesToolNameWhenNoDescription(t *testing.T) {
+	tmpDir := t.TempDir()
+	testBus := bus.NewMessageBus()
+	defer testBus.Close()
+
+	al := &AgentLoop{
+		bus:           testBus,
+		workspace:     tmpDir,
+		echoToolCalls: true,
+	}
+
+	opts := processOptions{SessionKey: "telegram:chat1", Channel: "telegram", ChatID: "chat1"}
+	handler := al.makeToolProgressHandler(opts)
+
+	call := providers.ToolCall{
+		ID:   "tc1",
+		Name: "web_fetch",
+		Arguments: map[string]interface{}{
+			"url": "https://example.com",
+		},
+	}
+
+	handler(call, 3*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	msg, ok := testBus.SubscribeOutbound(ctx)
+	if !ok {
+		t.Fatal("expected outbound message")
+	}
+
+	if !strings.Contains(msg.Content, "web_fetch") {
+		t.Errorf("content = %q, should contain tool name", msg.Content)
+	}
+}

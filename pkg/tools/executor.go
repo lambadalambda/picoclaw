@@ -23,7 +23,9 @@ type ExecuteToolCallsOptions struct {
 	LogComponent string // default: "tool"
 	Iteration    int
 
-	OnToolComplete func(completed, total, index int, call providers.ToolCall, result providers.Message)
+	OnToolComplete   func(completed, total, index int, call providers.ToolCall, result providers.Message)
+	OnToolProgress   func(call providers.ToolCall, elapsed time.Duration)
+	ProgressInterval time.Duration // interval for progress callbacks (default 5s)
 }
 
 // ExecuteToolCalls executes a batch of tool calls with optional per-tool timeout
@@ -52,12 +54,54 @@ func (r *ToolRegistry) ExecuteToolCalls(
 	sem := make(chan struct{}, parallelLimit)
 	doneCh := make(chan int, n)
 
+	type toolStart struct {
+		call      providers.ToolCall
+		startTime time.Time
+	}
+	var mu sync.Mutex
+	activeTools := make(map[int]toolStart)
+
+	progressInterval := opts.ProgressInterval
+	if progressInterval <= 0 {
+		progressInterval = 5 * time.Second
+	}
+	progressDone := make(chan struct{})
+	stopProgress := make(chan struct{})
+	progressTicker := time.NewTicker(progressInterval)
+	defer progressTicker.Stop()
+
+	go func() {
+		defer close(progressDone)
+		for {
+			select {
+			case <-progressTicker.C:
+				if opts.OnToolProgress == nil {
+					continue
+				}
+				mu.Lock()
+				for _, ts := range activeTools {
+					elapsed := time.Since(ts.startTime)
+					opts.OnToolProgress(ts.call, elapsed)
+				}
+				mu.Unlock()
+			case <-stopProgress:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	var wg sync.WaitGroup
 	for i, tc := range toolCalls {
 		wg.Add(1)
 		go func(idx int, tc providers.ToolCall) {
 			acquired := false
 			defer func() {
+				mu.Lock()
+				delete(activeTools, idx)
+				mu.Unlock()
+
 				if acquired {
 					<-sem
 				}
@@ -83,6 +127,11 @@ func (r *ToolRegistry) ExecuteToolCalls(
 				results[idx] = providers.ToolResultMessage(tc.ID, fmt.Sprintf("Error: %v", ctx.Err()))
 				return
 			}
+
+			startTime := time.Now()
+			mu.Lock()
+			activeTools[idx] = toolStart{call: tc, startTime: startTime}
+			mu.Unlock()
 
 			argsJSON, _ := json.Marshal(tc.Arguments)
 			argsPreview := utils.Truncate(string(argsJSON), 200)
@@ -111,9 +160,9 @@ func (r *ToolRegistry) ExecuteToolCalls(
 		}(i, tc)
 	}
 
-	progressDone := make(chan struct{})
+	completeDone := make(chan struct{})
 	go func() {
-		defer close(progressDone)
+		defer close(completeDone)
 		completed := 0
 		for range n {
 			idx := <-doneCh
@@ -125,6 +174,8 @@ func (r *ToolRegistry) ExecuteToolCalls(
 	}()
 
 	wg.Wait()
+	<-completeDone
+	close(stopProgress)
 	<-progressDone
 
 	return results

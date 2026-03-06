@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -175,6 +176,57 @@ func (al *AgentLoop) maybeEchoToolCalls(toolCalls []providers.ToolCall, channel,
 	})
 }
 
+func (al *AgentLoop) makeToolProgressHandler(opts processOptions) func(call providers.ToolCall, elapsed time.Duration) {
+	if !al.echoToolCalls || opts.Channel == "system" {
+		return nil
+	}
+	if !shouldEchoToolCallsForSession(opts.SessionKey) {
+		return nil
+	}
+
+	return func(call providers.ToolCall, elapsed time.Duration) {
+		if !toolsToEcho[call.Name] {
+			return
+		}
+
+		description := extractToolCallDescription(call)
+		if description == "" {
+			description = call.Name
+		}
+		description = redactSensitive(description)
+
+		elapsedStr := formatDuration(elapsed)
+		content := fmt.Sprintf("⏳ %s... (%s)", description, elapsedStr)
+
+		al.bus.PublishOutbound(bus.OutboundMessage{
+			Channel: opts.Channel,
+			ChatID:  opts.ChatID,
+			Content: content,
+		})
+
+		logger.DebugCF("agent", "Tool progress",
+			map[string]interface{}{
+				"tool":     call.Name,
+				"elapsed":  elapsedStr,
+				"channel":  opts.Channel,
+				"chat_id":  opts.ChatID,
+				"trace_id": opts.TraceID,
+			})
+	}
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return "<1s"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	mins := int(d.Minutes())
+	secs := int(d.Seconds()) % 60
+	return fmt.Sprintf("%dm%ds", mins, secs)
+}
+
 func shouldEchoToolCallsForSession(sessionKey string) bool {
 	sessionKey = strings.TrimSpace(sessionKey)
 	if sessionKey == "" {
@@ -246,6 +298,7 @@ func (al *AgentLoop) executeToolsConcurrently(
 					"trace_id":  opts.TraceID,
 				})
 		},
+		OnToolProgress: al.makeToolProgressHandler(opts),
 	})
 
 	// If the message tool sent user-facing output to a different session
