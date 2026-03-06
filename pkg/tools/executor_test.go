@@ -293,11 +293,12 @@ func TestExecuteToolCalls_OnToolProgress_QueuedToolNoProgressUntilSemaphore(t *t
 	registry.Register(&execTestTool{name: "slow1", delay: 200 * time.Millisecond, result: "a"})
 	registry.Register(&execTestTool{name: "slow2", delay: 200 * time.Millisecond, result: "b"})
 
-	var progressCalls []struct {
+	type progressCall struct {
 		call     providers.ToolCall
 		elapsed  time.Duration
 		realTime time.Time
 	}
+	var progressCalls []progressCall
 	var mu sync.Mutex
 
 	results := registry.ExecuteToolCalls(context.Background(), []providers.ToolCall{
@@ -308,11 +309,9 @@ func TestExecuteToolCalls_OnToolProgress_QueuedToolNoProgressUntilSemaphore(t *t
 		ProgressInterval: 50 * time.Millisecond,
 		OnToolProgress: func(call providers.ToolCall, elapsed time.Duration) {
 			mu.Lock()
-			progressCalls = append(progressCalls, struct {
-				call     providers.ToolCall
-				elapsed  time.Duration
-				realTime time.Time
-			}{call: call, elapsed: elapsed, realTime: time.Now()})
+			progressCalls = append(progressCalls, progressCall{
+				call: call, elapsed: elapsed, realTime: time.Now(),
+			})
 			mu.Unlock()
 		},
 	})
@@ -322,24 +321,12 @@ func TestExecuteToolCalls_OnToolProgress_QueuedToolNoProgressUntilSemaphore(t *t
 	}
 
 	mu.Lock()
-	calls := make([]struct {
-		call     providers.ToolCall
-		elapsed  time.Duration
-		realTime time.Time
-	}, len(progressCalls))
+	calls := make([]progressCall, len(progressCalls))
 	copy(calls, progressCalls)
 	mu.Unlock()
 
-	var slow1Calls []struct {
-		call     providers.ToolCall
-		elapsed  time.Duration
-		realTime time.Time
-	}
-	var slow2Calls []struct {
-		call     providers.ToolCall
-		elapsed  time.Duration
-		realTime time.Time
-	}
+	var slow1Calls []progressCall
+	var slow2Calls []progressCall
 
 	for _, pc := range calls {
 		if pc.call.Name == "slow1" {
@@ -356,23 +343,34 @@ func TestExecuteToolCalls_OnToolProgress_QueuedToolNoProgressUntilSemaphore(t *t
 		t.Fatal("expected at least one progress callback for slow2")
 	}
 
-	lastSlow1Progress := slow1Calls[len(slow1Calls)-1].realTime
-	firstSlow2Progress := slow2Calls[0].realTime
-
-	if firstSlow2Progress.Before(lastSlow1Progress) {
-		t.Fatalf("slow2 first progress at %v, but slow1 last progress at %v - slow2 started before slow1 completed (MaxParallel=1 violated)",
-			firstSlow2Progress, lastSlow1Progress)
-	}
-
-	for i, pc := range slow1Calls {
+	for _, pc := range slow1Calls {
 		if pc.elapsed > 250*time.Millisecond {
-			t.Fatalf("slow1 progress[%d] reported elapsed=%v, but tool only runs for ~200ms - likely includes queue wait time", i, pc.elapsed)
+			t.Fatalf("slow1 progress reported elapsed=%v, but tool only runs for ~200ms - likely includes queue wait time", pc.elapsed)
 		}
 	}
 
-	for i, pc := range slow2Calls {
+	for _, pc := range slow2Calls {
 		if pc.elapsed > 250*time.Millisecond {
-			t.Fatalf("slow2 progress[%d] reported elapsed=%v, but tool only runs for ~200ms - likely includes queue wait time", i, pc.elapsed)
+			t.Fatalf("slow2 progress reported elapsed=%v, but tool only runs for ~200ms - likely includes queue wait time", pc.elapsed)
 		}
+	}
+
+	type interval struct {
+		name          string
+		firstProgress time.Time
+		lastProgress  time.Time
+	}
+	intervals := []interval{
+		{name: "slow1", firstProgress: slow1Calls[0].realTime, lastProgress: slow1Calls[len(slow1Calls)-1].realTime},
+		{name: "slow2", firstProgress: slow2Calls[0].realTime, lastProgress: slow2Calls[len(slow2Calls)-1].realTime},
+	}
+
+	if intervals[0].firstProgress.After(intervals[1].firstProgress) {
+		intervals[0], intervals[1] = intervals[1], intervals[0]
+	}
+
+	if intervals[0].lastProgress.After(intervals[1].firstProgress) {
+		t.Fatalf("tools overlapped: %s was active until %v but %s started at %v (MaxParallel=1 violated)",
+			intervals[0].name, intervals[0].lastProgress, intervals[1].name, intervals[1].firstProgress)
 	}
 }
