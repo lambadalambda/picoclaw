@@ -135,6 +135,9 @@ func (t *SessionSearchTool) Execute(ctx context.Context, args map[string]interfa
 				}
 			}
 		}
+		if currentChannel == "" {
+			return "Channel context not available. To search, either:\n1. Provide channel context in the execution environment, or\n2. Set cross_channel=true to search across all channels", nil
+		}
 	}
 
 	cutoffTime := time.Now().AddDate(0, 0, -daysBack).UnixMilli()
@@ -197,6 +200,7 @@ func (t *SessionSearchTool) searchFile(filePath, sessionKey, queryLower string, 
 	defer f.Close()
 
 	var results []searchResult
+	seen := make(map[int]bool)
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
@@ -224,12 +228,15 @@ func (t *SessionSearchTool) searchFile(filePath, sessionKey, queryLower string, 
 
 		contentLower := strings.ToLower(e.Content)
 		if strings.Contains(contentLower, queryLower) {
-			results = append(results, searchResult{
-				SessionKey: sessionKey,
-				FilePath:   filePath,
-				Line:       lineNo,
-				Entry:      e,
-			})
+			if !seen[lineNo] {
+				results = append(results, searchResult{
+					SessionKey: sessionKey,
+					FilePath:   filePath,
+					Line:       lineNo,
+					Entry:      e,
+				})
+				seen[lineNo] = true
+			}
 		}
 
 		if e.Role == "assistant" && len(e.ToolCalls) > 0 {
@@ -237,12 +244,15 @@ func (t *SessionSearchTool) searchFile(filePath, sessionKey, queryLower string, 
 				if tc.Arguments != nil {
 					if argBytes, err := json.Marshal(tc.Arguments); err == nil {
 						if strings.Contains(strings.ToLower(string(argBytes)), queryLower) {
-							results = append(results, searchResult{
-								SessionKey: sessionKey,
-								FilePath:   filePath,
-								Line:       lineNo,
-								Entry:      e,
-							})
+							if !seen[lineNo] {
+								results = append(results, searchResult{
+									SessionKey: sessionKey,
+									FilePath:   filePath,
+									Line:       lineNo,
+									Entry:      e,
+								})
+								seen[lineNo] = true
+							}
 							break
 						}
 					}

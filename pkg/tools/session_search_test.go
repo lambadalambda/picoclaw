@@ -273,8 +273,9 @@ func TestSessionSearchTool_Execute_NoTranscriptsDir(t *testing.T) {
 
 	tool := NewSessionSearchTool(workspace)
 	out, err := tool.Execute(context.Background(), map[string]interface{}{
-		"query":     "anything",
-		"days_back": 7,
+		"query":         "anything",
+		"days_back":     7,
+		"cross_channel": true,
 	})
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
@@ -324,7 +325,7 @@ func TestSessionSearchTool_Execute_TimestampFormatting(t *testing.T) {
 	key := "telegram:chat-1"
 	transcriptPath := session.TranscriptPath(workspace, key)
 
-	fixedTime := time.Date(2024, 3, 15, 14, 30, 0, 0, time.Local)
+	fixedTime := time.Now().Add(-time.Hour * 24)
 	entries := []session.TranscriptEntry{
 		{TSMs: fixedTime.UnixMilli(), Role: "user", Content: "testing timestamp"},
 	}
@@ -333,14 +334,15 @@ func TestSessionSearchTool_Execute_TimestampFormatting(t *testing.T) {
 	tool := NewSessionSearchTool(workspace)
 	out, err := tool.Execute(context.Background(), map[string]interface{}{
 		"query":               "timestamp",
-		"days_back":           365,
+		"days_back":           7,
 		execContextChannelKey: "telegram",
 	})
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
-	if !strings.Contains(out, "2024-03-15") {
+	expectedDate := fixedTime.Format("2006-01-02")
+	if !strings.Contains(out, expectedDate) {
 		t.Fatalf("expected formatted timestamp in output, got:\n%s", out)
 	}
 }
@@ -497,5 +499,75 @@ func TestSessionSearchTool_MultipleTranscriptFiles(t *testing.T) {
 	}
 	if !strings.Contains(out, "Session: "+key2) {
 		t.Fatalf("expected second session key, got:\n%s", out)
+	}
+}
+
+func TestSessionSearchTool_Execute_FailsClosedWhenChannelContextUnavailable(t *testing.T) {
+	workspace := t.TempDir()
+
+	telegramKey := "telegram:chat-1"
+	telegramPath := session.TranscriptPath(workspace, telegramKey)
+	slackKey := "slack:team-1"
+	slackPath := session.TranscriptPath(workspace, slackKey)
+
+	now := time.Now().UnixMilli()
+	writeTranscriptFile(t, telegramPath, []session.TranscriptEntry{
+		{TSMs: now, Role: "user", Content: "secret telegram message"},
+	})
+	writeTranscriptFile(t, slackPath, []session.TranscriptEntry{
+		{TSMs: now, Role: "user", Content: "secret slack message"},
+	})
+
+	tool := NewSessionSearchTool(workspace)
+	out, err := tool.Execute(context.Background(), map[string]interface{}{
+		"query":     "secret",
+		"days_back": 7,
+	})
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !strings.Contains(out, "Channel context not available") {
+		t.Fatalf("expected channel context error message, got:\n%s", out)
+	}
+	if strings.Contains(out, "secret telegram message") {
+		t.Fatalf("did not expect to search across channels when context unavailable, got:\n%s", out)
+	}
+	if strings.Contains(out, "secret slack message") {
+		t.Fatalf("did not expect to search across channels when context unavailable, got:\n%s", out)
+	}
+}
+
+func TestSessionSearchTool_Execute_DeduplicatesContentAndToolCallMatch(t *testing.T) {
+	workspace := t.TempDir()
+	key := "telegram:chat-1"
+	transcriptPath := session.TranscriptPath(workspace, key)
+
+	now := time.Now().UnixMilli()
+	entries := []session.TranscriptEntry{
+		{
+			TSMs:    now,
+			Role:    "assistant",
+			Content: "unique-pattern in content",
+			ToolCalls: []session.TranscriptToolCall{
+				{ID: "tc1", Name: "exec", Arguments: map[string]interface{}{"command": "unique-pattern in args"}},
+			},
+		},
+	}
+	writeTranscriptFile(t, transcriptPath, entries)
+
+	tool := NewSessionSearchTool(workspace)
+	out, err := tool.Execute(context.Background(), map[string]interface{}{
+		"query":               "unique-pattern",
+		"days_back":           7,
+		execContextChannelKey: "telegram",
+	})
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	resultCount := strings.Count(out, "--- Result")
+	if resultCount != 1 {
+		t.Fatalf("expected 1 result (deduplicated), got %d (output:\n%s)", resultCount, out)
 	}
 }
