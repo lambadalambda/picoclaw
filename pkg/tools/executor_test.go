@@ -287,3 +287,92 @@ func TestExecuteToolCalls_OnToolProgress_MultipleTools(t *testing.T) {
 		t.Fatal("expected at least one progress callback for tools taking 100ms/150ms with 30ms interval")
 	}
 }
+
+func TestExecuteToolCalls_OnToolProgress_QueuedToolNoProgressUntilSemaphore(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&execTestTool{name: "slow1", delay: 200 * time.Millisecond, result: "a"})
+	registry.Register(&execTestTool{name: "slow2", delay: 200 * time.Millisecond, result: "b"})
+
+	var progressCalls []struct {
+		call     providers.ToolCall
+		elapsed  time.Duration
+		realTime time.Time
+	}
+	var mu sync.Mutex
+
+	results := registry.ExecuteToolCalls(context.Background(), []providers.ToolCall{
+		{ID: "tc1", Name: "slow1", Arguments: map[string]interface{}{}},
+		{ID: "tc2", Name: "slow2", Arguments: map[string]interface{}{}},
+	}, ExecuteToolCallsOptions{
+		MaxParallel:      1,
+		ProgressInterval: 50 * time.Millisecond,
+		OnToolProgress: func(call providers.ToolCall, elapsed time.Duration) {
+			mu.Lock()
+			progressCalls = append(progressCalls, struct {
+				call     providers.ToolCall
+				elapsed  time.Duration
+				realTime time.Time
+			}{call: call, elapsed: elapsed, realTime: time.Now()})
+			mu.Unlock()
+		},
+	})
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	mu.Lock()
+	calls := make([]struct {
+		call     providers.ToolCall
+		elapsed  time.Duration
+		realTime time.Time
+	}, len(progressCalls))
+	copy(calls, progressCalls)
+	mu.Unlock()
+
+	var slow1Calls []struct {
+		call     providers.ToolCall
+		elapsed  time.Duration
+		realTime time.Time
+	}
+	var slow2Calls []struct {
+		call     providers.ToolCall
+		elapsed  time.Duration
+		realTime time.Time
+	}
+
+	for _, pc := range calls {
+		if pc.call.Name == "slow1" {
+			slow1Calls = append(slow1Calls, pc)
+		} else if pc.call.Name == "slow2" {
+			slow2Calls = append(slow2Calls, pc)
+		}
+	}
+
+	if len(slow1Calls) == 0 {
+		t.Fatal("expected at least one progress callback for slow1")
+	}
+	if len(slow2Calls) == 0 {
+		t.Fatal("expected at least one progress callback for slow2")
+	}
+
+	lastSlow1Progress := slow1Calls[len(slow1Calls)-1].realTime
+	firstSlow2Progress := slow2Calls[0].realTime
+
+	if firstSlow2Progress.Before(lastSlow1Progress) {
+		t.Fatalf("slow2 first progress at %v, but slow1 last progress at %v - slow2 started before slow1 completed (MaxParallel=1 violated)",
+			firstSlow2Progress, lastSlow1Progress)
+	}
+
+	for i, pc := range slow1Calls {
+		if pc.elapsed > 250*time.Millisecond {
+			t.Fatalf("slow1 progress[%d] reported elapsed=%v, but tool only runs for ~200ms - likely includes queue wait time", i, pc.elapsed)
+		}
+	}
+
+	for i, pc := range slow2Calls {
+		if pc.elapsed > 250*time.Millisecond {
+			t.Fatalf("slow2 progress[%d] reported elapsed=%v, but tool only runs for ~200ms - likely includes queue wait time", i, pc.elapsed)
+		}
+	}
+}
