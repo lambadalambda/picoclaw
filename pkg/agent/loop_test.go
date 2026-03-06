@@ -170,6 +170,7 @@ func newTestAgentLoop(t *testing.T, provider providers.LLMProvider, maxIter int,
 		provider:       provider,
 		workspace:      tmpDir,
 		model:          "test-model",
+		contextWindow:  128000,
 		chatOptions:    providers.ChatOptions{MaxTokens: 8192, Temperature: 0.7},
 		compactOptions: providers.ChatOptions{MaxTokens: 1024, Temperature: 0.3},
 		maxIterations:  maxIter,
@@ -1339,4 +1340,121 @@ func TestNewAgentLoop_ToolSafeguardsDisabled_DisablesPolicyAndGuards(t *testing.
 	if !disabled {
 		t.Fatalf("expected safeguards_disabled=true in startup info")
 	}
+}
+
+func TestCompactSession_SynchronousHistoryTruncationAndSummaryUpdate(t *testing.T) {
+	prov := &mockProvider{
+		responses: []mockResponse{
+			{Content: "Summary of earlier conversation: user asked about topic A and B."},
+		},
+	}
+
+	al := newTestAgentLoop(t, prov, 5, nil)
+	defer al.bus.Close()
+
+	sessionKey := "test-compact-sync"
+
+	al.sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Message 1"})
+	al.sessions.AddFullMessage(sessionKey, providers.Message{Role: "assistant", Content: "Response 1"})
+	al.sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Message 2"})
+	al.sessions.AddFullMessage(sessionKey, providers.Message{Role: "assistant", Content: "Response 2"})
+	al.sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Message 3"})
+	al.sessions.AddFullMessage(sessionKey, providers.Message{Role: "assistant", Content: "Response 3"})
+
+	historyBefore := al.sessions.GetHistory(sessionKey)
+	if len(historyBefore) != 6 {
+		t.Fatalf("expected 6 messages before compaction, got %d", len(historyBefore))
+	}
+
+	err := al.CompactSession(sessionKey, "soft")
+	if err != nil {
+		t.Fatalf("CompactSession failed: %v", err)
+	}
+
+	historyAfter := al.sessions.GetHistory(sessionKey)
+	if len(historyAfter) >= len(historyBefore) {
+		t.Errorf("history should be truncated after compaction, but got len=%d before, len=%d after", len(historyBefore), len(historyAfter))
+	}
+
+	if len(historyAfter) > 4 {
+		t.Errorf("soft mode should keep last 4 messages, got %d", len(historyAfter))
+	}
+
+	summary := al.sessions.GetSummary(sessionKey)
+	if summary == "" {
+		t.Error("summary should be set after compaction")
+	}
+
+	if !strings.Contains(summary, "Summary of earlier conversation") {
+		t.Errorf("summary should contain provider response, got %q", summary)
+	}
+}
+
+func TestCompactSession_HardModeTruncatesAllHistory(t *testing.T) {
+	prov := &mockProvider{
+		responses: []mockResponse{
+			{Content: "Complete summary of entire conversation."},
+		},
+	}
+
+	al := newTestAgentLoop(t, prov, 5, nil)
+	defer al.bus.Close()
+
+	sessionKey := "test-compact-hard"
+
+	al.sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Message 1"})
+	al.sessions.AddFullMessage(sessionKey, providers.Message{Role: "assistant", Content: "Response 1"})
+	al.sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Message 2"})
+	al.sessions.AddFullMessage(sessionKey, providers.Message{Role: "assistant", Content: "Response 2"})
+
+	historyBefore := al.sessions.GetHistory(sessionKey)
+	if len(historyBefore) != 4 {
+		t.Fatalf("expected 4 messages before compaction, got %d", len(historyBefore))
+	}
+
+	err := al.CompactSession(sessionKey, "hard")
+	if err != nil {
+		t.Fatalf("CompactSession failed: %v", err)
+	}
+
+	historyAfter := al.sessions.GetHistory(sessionKey)
+	if len(historyAfter) != 0 {
+		t.Errorf("hard mode should truncate all messages, got %d remaining", len(historyAfter))
+	}
+
+	summary := al.sessions.GetSummary(sessionKey)
+	if summary == "" {
+		t.Error("summary should be set after hard compaction")
+	}
+}
+
+func TestCompactSession_PreventsConcurrentCompaction(t *testing.T) {
+	prov := &mockProvider{
+		responses: []mockResponse{
+			{Content: "Summary 1"},
+			{Content: "Summary 2"},
+		},
+	}
+
+	al := newTestAgentLoop(t, prov, 5, nil)
+	defer al.bus.Close()
+
+	sessionKey := "test-compact-concurrent"
+
+	for i := 0; i < 10; i++ {
+		al.sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Message"})
+	}
+
+	al.summarizing.Store(sessionKey, true)
+
+	err := al.CompactSession(sessionKey, "soft")
+	if err == nil {
+		t.Fatal("expected error when compaction already in progress")
+	}
+
+	if !strings.Contains(err.Error(), "already in progress") {
+		t.Errorf("expected 'already in progress' error, got %v", err)
+	}
+
+	al.summarizing.Delete(sessionKey)
 }
