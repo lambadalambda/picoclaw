@@ -233,6 +233,7 @@ func RegisterCoreTools(r *ToolRegistry, workspace string, webSearchCfg WebSearch
 	r.Register(NewUnsafeWriteFileTool())
 	r.Register(NewUnsafeListDirTool())
 	r.Register(NewSessionHistoryTool(workspace))
+	r.Register(NewSessionSearchTool(workspace))
 	// Safe exec is workspace-scoped.
 	execTool := NewExecTool(workspace)
 	execTool.SetRestrictToWorkspace(!opts.DisableSafeguards)
