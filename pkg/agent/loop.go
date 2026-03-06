@@ -1225,13 +1225,11 @@ func (al *AgentLoop) CompactSession(sessionKey string, mode string) error {
 	}
 
 	if _, loading := al.summarizing.LoadOrStore(sessionKey, true); loading {
-		return nil
+		return fmt.Errorf("compaction already in progress for session %s", sessionKey)
 	}
 
-	go func() {
-		defer al.summarizing.Delete(sessionKey)
-		al.summarizeSessionWithRetention(sessionKey, retentionCount)
-	}()
+	defer al.summarizing.Delete(sessionKey)
+	al.summarizeSessionWithRetention(sessionKey, retentionCount)
 
 	return nil
 }
