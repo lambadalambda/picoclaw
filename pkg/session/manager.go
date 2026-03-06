@@ -20,6 +20,14 @@ type Session struct {
 	Updated  time.Time           `json:"updated"`
 }
 
+type SessionInfo struct {
+	Key             string    `json:"key"`
+	MessageCount    int       `json:"message_count"`
+	CompactionCount int       `json:"compaction_count"`
+	Created         time.Time `json:"created"`
+	Updated         time.Time `json:"updated"`
+}
+
 type SessionManager struct {
 	sessions map[string]*Session
 	mu       sync.RWMutex
@@ -175,6 +183,23 @@ func (sm *SessionManager) GetSummary(key string) string {
 		return ""
 	}
 	return session.Summary
+}
+
+func (sm *SessionManager) GetSessionInfo(key string) *SessionInfo {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	session, ok := sm.sessions[key]
+	if !ok {
+		return nil
+	}
+	return &SessionInfo{
+		Key:             session.Key,
+		MessageCount:    len(session.Messages),
+		CompactionCount: 0,
+		Created:         session.Created,
+		Updated:         session.Updated,
+	}
 }
 
 func (sm *SessionManager) SetSummary(key string, summary string) {

@@ -225,6 +225,8 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		))
 	}
 
+	toolsRegistry.Register(tools.NewSessionInfoTool(sessionsManager, cfg.Agents.Defaults.Model, contextWindow, outputMaxTokens, false, false))
+
 	return &AgentLoop{
 		bus:           msgBus,
 		provider:      provider,
