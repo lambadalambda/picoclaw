@@ -153,6 +153,10 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		toolsRegistry.Register(tools.NewMemoryStoreTool(memoryDB))
 	}
 
+	// Register compact tool
+	compactTool := tools.NewCompactTool()
+	toolsRegistry.Register(compactTool)
+
 	// memoryDB may be nil — that's fine, extractAndStoreMemories handles it
 
 	sessionsManager := session.NewSessionManager(filepath.Join(workspace, "sessions"))
@@ -225,7 +229,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		))
 	}
 
-	return &AgentLoop{
+	al := &AgentLoop{
 		bus:           msgBus,
 		provider:      provider,
 		workspace:     workspace,
@@ -259,6 +263,12 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		echoToolCalls:      cfg.Agents.Defaults.EchoToolCalls,
 		safeguardsDisabled: safeguardsDisabled,
 	}
+
+	compactTool.SetCallback(func(sessionKey string, mode string) error {
+		return al.CompactSession(sessionKey, mode)
+	})
+
+	return al
 }
 
 func resolveZAISearchCredentials(webCfg config.WebSearchConfig, providersCfg config.ProvidersConfig) (string, string) {
@@ -1196,19 +1206,54 @@ func formatToolsForLog(tools []providers.ToolDefinition) string {
 }
 
 // summarizeSession summarizes the conversation history for a session.
+// Keeps last 4 messages for continuity (soft mode).
 func (al *AgentLoop) summarizeSession(sessionKey string) {
+	al.summarizeSessionWithRetention(sessionKey, 4)
+}
+
+// CompactSession manually triggers compaction for a session.
+// mode should be "soft" (keeps last 4 messages) or "hard" (summarizes everything).
+func (al *AgentLoop) CompactSession(sessionKey string, mode string) error {
+	retentionCount := 4
+	if mode == "hard" {
+		retentionCount = 0
+	}
+
+	history := al.sessions.GetHistory(sessionKey)
+	if len(history) <= retentionCount {
+		return nil
+	}
+
+	if _, loading := al.summarizing.LoadOrStore(sessionKey, true); loading {
+		return fmt.Errorf("compaction already in progress for session %s", sessionKey)
+	}
+
+	defer al.summarizing.Delete(sessionKey)
+	al.summarizeSessionWithRetention(sessionKey, retentionCount)
+
+	return nil
+}
+
+// summarizeSessionWithRetention summarizes the conversation history for a session.
+// retentionCount specifies how many recent messages to keep (0 = hard mode, summarize everything).
+func (al *AgentLoop) summarizeSessionWithRetention(sessionKey string, retentionCount int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
 
 	history := al.sessions.GetHistory(sessionKey)
 	summary := al.sessions.GetSummary(sessionKey)
 
-	// Keep last 4 messages for continuity
-	if len(history) <= 4 {
+	// Keep last N messages for continuity
+	if len(history) <= retentionCount {
 		return
 	}
 
-	toSummarize := history[:len(history)-4]
+	var toSummarize []providers.Message
+	if retentionCount > 0 {
+		toSummarize = history[:len(history)-retentionCount]
+	} else {
+		toSummarize = history
+	}
 
 	// Oversized Message Guard
 	// Skip messages larger than 50% of context window to prevent summarizer overflow
@@ -1262,7 +1307,7 @@ func (al *AgentLoop) summarizeSession(sessionKey string) {
 
 	if finalSummary != "" {
 		al.sessions.SetSummary(sessionKey, finalSummary)
-		al.sessions.TruncateHistory(sessionKey, 4)
+		al.sessions.TruncateHistory(sessionKey, retentionCount)
 		al.sessions.Save(al.sessions.GetOrCreate(sessionKey))
 
 		// Extract and store notable memories from the compacted messages
