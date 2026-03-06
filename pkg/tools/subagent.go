@@ -31,6 +31,7 @@ type SpawnOptions struct {
 	MaxIterations      int
 	LLMTimeoutSeconds  int
 	ToolTimeoutSeconds int
+	MaxOutputTokens    int
 }
 
 type SubagentTask struct {
@@ -275,6 +276,9 @@ func (sm *SubagentManager) runTask(ctx context.Context, taskID string) {
 	}
 	if initial.Options.ToolTimeoutSeconds > 0 {
 		toolTimeout = time.Duration(initial.Options.ToolTimeoutSeconds) * time.Second
+	}
+	if initial.Options.MaxOutputTokens > 0 {
+		chatOptions.MaxTokens = initial.Options.MaxOutputTokens
 	}
 
 	if model == "" {
