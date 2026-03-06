@@ -15,6 +15,7 @@ import (
 const (
 	MaxIterationsLimit   = 100
 	TimeoutSecondsLimit  = 3600
+	MinOutputTokensLimit = 100
 	MaxOutputTokensLimit = 32768
 )
 
@@ -209,6 +210,14 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) (s
 			opts.ToolTimeoutSeconds = toolTimeout
 		}
 		if maxOutputTokens, ok := parseIntArg(args, "max_output_tokens"); ok && maxOutputTokens > 0 {
+			if maxOutputTokens < MinOutputTokensLimit {
+				logger.WarnCF("spawn", "max_output_tokens clamped to lower limit",
+					map[string]interface{}{
+						"requested": maxOutputTokens,
+						"limit":     MinOutputTokensLimit,
+					})
+				maxOutputTokens = MinOutputTokensLimit
+			}
 			if maxOutputTokens > MaxOutputTokensLimit {
 				logger.WarnCF("spawn", "max_output_tokens clamped to upper limit",
 					map[string]interface{}{

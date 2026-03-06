@@ -289,6 +289,28 @@ func TestSpawnTool_WithOptions_MaxOutputTokens_ClampedToLimit(t *testing.T) {
 	}
 }
 
+func TestSpawnTool_WithOptions_MaxOutputTokens_ClampedToLowerLimit(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action":            "spawn",
+		"task":              "generate tiny output",
+		"max_output_tokens": 50,
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Options.MaxOutputTokens != 100 {
+		t.Errorf("Options.MaxOutputTokens = %d, want 100 (clamped to minimum)", tasks[0].Options.MaxOutputTokens)
+	}
+}
+
 func TestSpawnTool_WithOptions_AllOptions(t *testing.T) {
 	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
 	tool := NewSpawnTool(mgr)
