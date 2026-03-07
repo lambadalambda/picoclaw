@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -23,6 +24,7 @@ type ExecuteToolCallsOptions struct {
 	LogComponent string // default: "tool"
 	Iteration    int
 
+	OnToolStart    func(started, total, index int, call providers.ToolCall)
 	OnToolComplete func(completed, total, index int, call providers.ToolCall, result providers.Message)
 }
 
@@ -51,6 +53,7 @@ func (r *ToolRegistry) ExecuteToolCalls(
 	results := make([]providers.Message, n)
 	sem := make(chan struct{}, parallelLimit)
 	doneCh := make(chan int, n)
+	var startedCount atomic.Int32
 
 	var wg sync.WaitGroup
 	for i, tc := range toolCalls {
@@ -79,6 +82,10 @@ func (r *ToolRegistry) ExecuteToolCalls(
 			select {
 			case sem <- struct{}{}:
 				acquired = true
+				if opts.OnToolStart != nil {
+					started := int(startedCount.Add(1))
+					opts.OnToolStart(started, n, idx, tc)
+				}
 			case <-ctx.Done():
 				results[idx] = providers.ToolResultMessage(tc.ID, fmt.Sprintf("Error: %v", ctx.Err()))
 				return

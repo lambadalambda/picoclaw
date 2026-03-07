@@ -524,6 +524,26 @@ func parseDeltaReactionCommand(content string) (string, string, bool) {
 	return matches[1], reaction, true
 }
 
+func isDeltaAgentProgressMessage(content string) bool {
+	normalized := strings.TrimLeft(content, " \t\r\n")
+	if normalized == "" {
+		return false
+	}
+	if !strings.HasPrefix(normalized, "Agent progress (v1") {
+		return false
+	}
+	firstLine, _, _ := strings.Cut(normalized, "\n")
+	firstLine = strings.TrimSpace(firstLine)
+	// Tighten detection to the expected v1 header format used by Delta Chat Desktop.
+	if !strings.HasPrefix(firstLine, "Agent progress (v1, run=") {
+		return false
+	}
+	if !strings.Contains(firstLine, "):") {
+		return false
+	}
+	return true
+}
+
 func parseDeltaSetProfilePictureCommand(content string, media []string) (string, bool, error) {
 	trimmed := strings.TrimSpace(content)
 	matches := deltaSetProfilePictureCommandPattern.FindStringSubmatch(trimmed)
@@ -899,7 +919,10 @@ func (c *DeltaChatChannel) startTypingIndicator(chatID string) {
 }
 
 func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	c.stopTypingIndicator(msg.ChatID)
+	isProgress := isDeltaAgentProgressMessage(msg.Content)
+	if !isProgress {
+		c.stopTypingIndicator(msg.ChatID)
+	}
 
 	if profileImagePath, isCommand, commandErr := parseDeltaSetProfilePictureCommand(msg.Content, msg.Media); isCommand {
 		if commandErr != nil {
@@ -933,16 +956,20 @@ func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) er
 	}
 
 	if err := c.sendPayloadWithAck(ctx, payload); err != nil {
-		messageID := c.takeLastInboundMessageID(msg.ChatID)
-		if c.errorReaction != "" && messageID != "" {
-			c.maybeSendReaction(msg.ChatID, messageID, c.errorReaction)
+		if !isProgress {
+			messageID := c.takeLastInboundMessageID(msg.ChatID)
+			if c.errorReaction != "" && messageID != "" {
+				c.maybeSendReaction(msg.ChatID, messageID, c.errorReaction)
+			}
 		}
 		return err
 	}
 
-	messageID := c.takeLastInboundMessageID(msg.ChatID)
-	if c.doneReaction != "" && messageID != "" {
-		c.maybeSendReaction(msg.ChatID, messageID, c.doneReaction)
+	if !isProgress {
+		messageID := c.takeLastInboundMessageID(msg.ChatID)
+		if c.doneReaction != "" && messageID != "" {
+			c.maybeSendReaction(msg.ChatID, messageID, c.doneReaction)
+		}
 	}
 
 	return nil

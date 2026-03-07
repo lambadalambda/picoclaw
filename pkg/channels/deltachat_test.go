@@ -1013,6 +1013,144 @@ func TestDeltaChatChannelSendsDoneReactionAfterReply(t *testing.T) {
 	}
 }
 
+func TestDeltaChatChannelAgentProgressDoesNotTriggerDoneReactionOrStopTyping(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL, DoneReaction: "\u2705"}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	incoming := map[string]interface{}{
+		"type":    "message",
+		"id":      "77",
+		"from":    "dc-user-progress",
+		"chat":    "chat-progress",
+		"content": "hello",
+	}
+	if err := conn.WriteJSON(incoming); err != nil {
+		t.Fatalf("bridge write failed: %v", err)
+	}
+
+	// Ensure typing + thinking are active before we send any outbound messages.
+	_ = waitDeltaPayloadType(t, conn, "typing", 2*time.Second)
+	_ = waitDeltaPayloadType(t, conn, "thinking_start", 2*time.Second)
+
+	progressContent := "Agent progress (v1, run=R1): running exec\nCalls:\n1. run exec - run command\n"
+
+	progressErrCh := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			remaining := time.Until(deadline)
+			payload, readErr := readDeltaPayloadResult(conn, remaining)
+			if readErr != nil {
+				progressErrCh <- readErr
+				return
+			}
+
+			typeName, _ := payload["type"].(string)
+			switch typeName {
+			case "typing":
+				typingValue, _ := payload["typing"].(bool)
+				if !typingValue {
+					progressErrCh <- fmt.Errorf("unexpected typing stop during agent progress: %+v", payload)
+					return
+				}
+			case "thinking_clear":
+				progressErrCh <- fmt.Errorf("unexpected thinking_clear during agent progress: %+v", payload)
+				return
+			case "reaction":
+				if payload["reaction"] == "\u2705" {
+					progressErrCh <- fmt.Errorf("unexpected done reaction during agent progress: %+v", payload)
+					return
+				}
+			case "message":
+				content, _ := payload["content"].(string)
+				if strings.HasPrefix(content, "Agent progress (v1") {
+					if ackErr := writeDeltaAckForPayload(conn, payload, true, ""); ackErr != nil {
+						progressErrCh <- ackErr
+						return
+					}
+					progressErrCh <- nil
+					return
+				}
+				// Best-effort: ack any other message payload.
+				_ = writeDeltaAckForPayload(conn, payload, true, "")
+			}
+		}
+		progressErrCh <- fmt.Errorf("timed out waiting for agent progress message")
+	}()
+
+	if err := ch.Send(ctx, bus.OutboundMessage{Channel: "deltachat", ChatID: "chat-progress", Content: progressContent}); err != nil {
+		t.Fatalf("Send progress failed: %v", err)
+	}
+	if progressErr := <-progressErrCh; progressErr != nil {
+		t.Fatalf("bridge handling failed during progress send: %v", progressErr)
+	}
+
+	// Now send a normal reply and ensure done reaction arrives.
+	doneReactionCh := make(chan map[string]interface{}, 1)
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			remaining := time.Until(deadline)
+			payload, readErr := readDeltaPayloadResult(conn, remaining)
+			if readErr != nil {
+				bridgeErrCh <- readErr
+				return
+			}
+
+			typeName, _ := payload["type"].(string)
+			switch typeName {
+			case "message":
+				if ackErr := writeDeltaAckForPayload(conn, payload, true, ""); ackErr != nil {
+					bridgeErrCh <- ackErr
+					return
+				}
+			case "reaction":
+				if payload["reaction"] == "\u2705" {
+					doneReactionCh <- payload
+					bridgeErrCh <- nil
+					return
+				}
+			}
+		}
+		bridgeErrCh <- fmt.Errorf("timed out waiting for done reaction")
+	}()
+
+	if err := ch.Send(ctx, bus.OutboundMessage{Channel: "deltachat", ChatID: "chat-progress", Content: "response"}); err != nil {
+		t.Fatalf("Send reply failed: %v", err)
+	}
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge handling failed during reply send: %v", bridgeErr)
+	}
+
+	donePayload := <-doneReactionCh
+	if donePayload["to"] != "chat-progress" {
+		t.Fatalf("done reaction to = %v, want chat-progress", donePayload["to"])
+	}
+	if donePayload["message_id"] != "77" {
+		t.Fatalf("done reaction message_id = %v, want 77", donePayload["message_id"])
+	}
+}
+
 func TestDeltaChatChannelSendsErrorReactionWhenReplyFails(t *testing.T) {
 	mb := bus.NewMessageBus()
 	defer mb.Close()

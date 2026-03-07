@@ -190,3 +190,40 @@ func TestExecuteToolCalls_AttachesRichToolParts(t *testing.T) {
 		t.Fatalf("Parts[0].Type = %q, want %q", results[0].Parts[0].Type, providers.MessagePartTypeImage)
 	}
 }
+
+func TestExecuteToolCalls_CallsOnToolStart(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&execTestTool{name: "slow", delay: 20 * time.Millisecond, result: "ok"})
+
+	var starts atomic.Int32
+	results := registry.ExecuteToolCalls(context.Background(), []providers.ToolCall{
+		{ID: "tc1", Name: "slow", Arguments: map[string]interface{}{}},
+	}, ExecuteToolCallsOptions{
+		MaxParallel: 1,
+		OnToolStart: func(started, total, index int, call providers.ToolCall) {
+			starts.Add(1)
+			if started <= 0 {
+				t.Errorf("started = %d, want > 0", started)
+			}
+			if total != 1 {
+				t.Errorf("total = %d, want 1", total)
+			}
+			if index != 0 {
+				t.Errorf("index = %d, want 0", index)
+			}
+			if call.Name != "slow" {
+				t.Errorf("call.Name = %q, want slow", call.Name)
+			}
+		},
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Content != "ok" {
+		t.Fatalf("Content = %q, want ok", results[0].Content)
+	}
+	if starts.Load() != 1 {
+		t.Fatalf("OnToolStart calls = %d, want 1", starts.Load())
+	}
+}

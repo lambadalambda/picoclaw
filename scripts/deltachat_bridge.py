@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sqlite3
 import threading
@@ -21,6 +22,10 @@ from deltachat_rpc_client.const import ViewType
 from websockets.exceptions import ConnectionClosed
 
 _IMAGE_EXTENSIONS = frozenset((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".tiff"))
+
+_AGENT_PROGRESS_HEADER_RE = re.compile(
+    r"^Agent progress \(v1(?:,\s*run=([^)]+))?\):\s*([A-Za-z]+)(?:\s+(.+))?$"
+)
 
 ACCOUNTS_TOML_TEMPLATE = """accounts = []
 selected_account = 0
@@ -71,6 +76,13 @@ class Settings:
         )
 
 
+@dataclass
+class AgentProgressRecord:
+    msg_id: int
+    updated_at: float
+    last_text: str = ""
+
+
 class DeltaChatBridge:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -78,6 +90,11 @@ class DeltaChatBridge:
         self.delta_to_ws_queue: Queue[dict[str, Any] | None] = Queue()
         self.clients: set[Any] = set()
         self.clients_lock = threading.Lock()
+
+        self.agent_progress_lock = threading.Lock()
+        self.agent_progress_messages: dict[tuple[str, str], AgentProgressRecord] = {}
+        self.agent_progress_ttl_seconds = env_int("DELTACHAT_AGENT_PROGRESS_TTL_SECONDS", 30 * 60)
+        self.agent_progress_max_entries = env_int("DELTACHAT_AGENT_PROGRESS_MAX_ENTRIES", 200)
 
         self.rpc: Rpc | None = None
         self.delta_chat: DeltaChat | None = None
@@ -683,6 +700,72 @@ class DeltaChatBridge:
 
         return str(candidate)
 
+    def _parse_agent_progress_run_id(self, content_text: str) -> str | None:
+        normalized = content_text.lstrip()
+        if not normalized.startswith("Agent progress (v1"):
+            return None
+
+        header = normalized.splitlines()[0].strip() if normalized else ""
+        if header == "":
+            return None
+
+        match = _AGENT_PROGRESS_HEADER_RE.match(header)
+        if not match:
+            return None
+
+        run_id = (match.group(1) or "").strip()
+        if run_id == "":
+            return None
+
+        return run_id
+
+    def _prune_agent_progress_messages(self, now: float) -> None:
+        ttl = max(0, int(self.agent_progress_ttl_seconds))
+        if ttl > 0:
+            to_delete: list[tuple[str, str]] = []
+            for key, rec in self.agent_progress_messages.items():
+                if now - rec.updated_at > ttl:
+                    to_delete.append(key)
+            for key in to_delete:
+                self.agent_progress_messages.pop(key, None)
+
+        max_entries = max(0, int(self.agent_progress_max_entries))
+        if max_entries and len(self.agent_progress_messages) > max_entries:
+            items = sorted(self.agent_progress_messages.items(), key=lambda kv: kv[1].updated_at)
+            for key, _rec in items[: len(items) - max_entries]:
+                self.agent_progress_messages.pop(key, None)
+
+    def _send_agent_progress_message(self, chat: Any, target: str, run_id: str, content_text: str) -> None:
+        assert self.account is not None
+        assert self.rpc is not None
+
+        now = time.time()
+        key = (target, run_id)
+
+        with self.agent_progress_lock:
+            self._prune_agent_progress_messages(now)
+
+            rec = self.agent_progress_messages.get(key)
+            if rec is not None and rec.last_text == content_text:
+                rec.updated_at = now
+                return
+
+            if rec is not None:
+                try:
+                    self.rpc.send_edit_request(self.account.id, rec.msg_id, content_text)
+                    rec.updated_at = now
+                    rec.last_text = content_text
+                    return
+                except Exception as exc:
+                    logging.warning("Failed to edit agent progress message (will send new): %s", exc)
+
+            msg = chat.send_text(content_text)
+            self.agent_progress_messages[key] = AgentProgressRecord(
+                msg_id=int(getattr(msg, "id", 0) or 0),
+                updated_at=now,
+                last_text=content_text,
+            )
+
     def _send_to_deltachat(self, payload: dict[str, Any]) -> None:
         target_raw = payload.get("to")
         target = str(target_raw).strip() if target_raw is not None else ""
@@ -735,7 +818,11 @@ class DeltaChatBridge:
             return
 
         if content != "":
-            chat.send_text(content)
+            run_id = self._parse_agent_progress_run_id(content_text)
+            if run_id is not None:
+                self._send_agent_progress_message(chat, target, run_id, content_text)
+            else:
+                chat.send_text(content)
             logging.info(
                 "Outbound payload accepted by Delta Chat: chat=%s content_chars=%d media_count=0",
                 target,

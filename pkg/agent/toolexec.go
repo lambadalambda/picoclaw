@@ -224,7 +224,14 @@ func (al *AgentLoop) executeToolsConcurrently(
 		}
 	}
 
-	if shouldEchoToolCallsForSession(opts.SessionKey) {
+	shouldEcho := shouldEchoToolCallsForSession(opts.SessionKey)
+	useAgentProgress := shouldEcho && al.echoToolCalls && opts.Channel == "deltachat" && opts.Channel != "system"
+	var progress *agentProgressTracker
+	if useAgentProgress {
+		progress = newAgentProgressTracker(al.bus, opts.Channel, opts.ChatID, opts.TraceID, toolCalls)
+	}
+
+	if shouldEcho && !useAgentProgress {
 		al.maybeEchoToolCalls(toolCalls, opts.Channel, opts.ChatID)
 	}
 
@@ -237,7 +244,12 @@ func (al *AgentLoop) executeToolsConcurrently(
 		MaxParallel:  al.maxParallelTools,
 		LogComponent: "agent",
 		Iteration:    iteration,
-		OnToolComplete: func(completed, total, index int, call providers.ToolCall, _ providers.Message) {
+		OnToolStart: func(_ int, _ int, _ int, call providers.ToolCall) {
+			if progress != nil {
+				progress.onToolStart(call)
+			}
+		},
+		OnToolComplete: func(completed, total, index int, call providers.ToolCall, result providers.Message) {
 			logger.DebugCF("agent", fmt.Sprintf("Tool completed: %s (%d/%d)", call.Name, completed, total),
 				map[string]interface{}{
 					"tool":      call.Name,
@@ -245,6 +257,9 @@ func (al *AgentLoop) executeToolsConcurrently(
 					"total":     total,
 					"trace_id":  opts.TraceID,
 				})
+			if progress != nil {
+				progress.onToolComplete(call, result)
+			}
 		},
 	})
 

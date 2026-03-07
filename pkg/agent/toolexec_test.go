@@ -293,6 +293,96 @@ func TestExecuteToolsConcurrently_DoesNotEchoForCronSession(t *testing.T) {
 	}
 }
 
+type sleepTool struct {
+	name  string
+	delay time.Duration
+}
+
+func (t *sleepTool) Name() string        { return t.name }
+func (t *sleepTool) Description() string { return "sleep tool" }
+func (t *sleepTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+}
+func (t *sleepTool) Execute(ctx context.Context, _ map[string]interface{}) (string, error) {
+	select {
+	case <-time.After(t.delay):
+		return "ok", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func TestExecuteToolsConcurrently_DeltaChatAgentProgressMessages(t *testing.T) {
+	tmpDir := t.TempDir()
+	registry := tools.NewToolRegistry()
+	registry.Register(&sleepTool{name: "exec", delay: 25 * time.Millisecond})
+
+	testBus := bus.NewMessageBus()
+	defer testBus.Close()
+
+	al := &AgentLoop{
+		bus:           testBus,
+		workspace:     tmpDir,
+		model:         "test-model",
+		chatOptions:   providers.ChatOptions{MaxTokens: 8192, Temperature: 0.7},
+		maxIterations: 5,
+		sessions:      session.NewSessionManager(filepath.Join(tmpDir, "sessions")),
+		tools:         registry,
+		summarizing:   sync.Map{},
+		echoToolCalls: true,
+	}
+
+	toolCalls := []providers.ToolCall{
+		{
+			ID:          "tc1",
+			Name:        "exec",
+			Description: "run a safe command",
+			Arguments:   map[string]interface{}{"command": "rm -rf / --no-preserve-root"},
+		},
+	}
+
+	opts := processOptions{SessionKey: "deltachat:chat1", Channel: "deltachat", ChatID: "chat1", TraceID: "trace-test"}
+	results := al.executeToolsConcurrently(context.Background(), toolCalls, 1, opts)
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	msg1, ok := testBus.SubscribeOutbound(ctx)
+	if !ok {
+		t.Fatal("expected first agent progress outbound message")
+	}
+	msg2, ok := testBus.SubscribeOutbound(ctx)
+	if !ok {
+		t.Fatal("expected second agent progress outbound message")
+	}
+
+	if msg1.Channel != "deltachat" || msg1.ChatID != "chat1" {
+		t.Fatalf("unexpected target for msg1: %s:%s", msg1.Channel, msg1.ChatID)
+	}
+	if !strings.HasPrefix(msg1.Content, "Agent progress (v1, run=trace-test): running exec") {
+		t.Fatalf("msg1 content = %q, want agent progress running header", msg1.Content)
+	}
+	if strings.Contains(msg1.Content, "rm -rf") {
+		t.Fatalf("msg1 leaked command args: %q", msg1.Content)
+	}
+
+	if msg2.Channel != "deltachat" || msg2.ChatID != "chat1" {
+		t.Fatalf("unexpected target for msg2: %s:%s", msg2.Channel, msg2.ChatID)
+	}
+	if !strings.HasPrefix(msg2.Content, "Agent progress (v1, run=trace-test):") {
+		t.Fatalf("msg2 content = %q, want agent progress header", msg2.Content)
+	}
+	if !strings.Contains(msg2.Content, "Calls:") {
+		t.Fatalf("msg2 content missing Calls section: %q", msg2.Content)
+	}
+	if strings.Contains(msg2.Content, "rm -rf") {
+		t.Fatalf("msg2 leaked command args: %q", msg2.Content)
+	}
+}
+
 func TestFormatToolCallSummary_Exec(t *testing.T) {
 	tc := providers.ToolCall{
 		Name:      "exec",
