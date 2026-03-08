@@ -54,7 +54,17 @@ type AgentLoop struct {
 	visionAnalyzer     imageAnalyzer
 	echoToolCalls      bool // Echo tool calls to chat channel
 	safeguardsDisabled bool // Global tool safeguards disabled by config
+	timeContextMu      sync.Mutex
+	lastTimeContext    map[string]time.Time
+	timeContextEvery   time.Duration
+	timeNow            func() time.Time
 }
+
+const (
+	defaultTimeContextInterval = 30 * time.Minute
+	timeContextPruneAfter      = 24 * time.Hour
+	timeContextPruneThreshold  = 2048
+)
 
 // processOptions configures how a message is processed
 type processOptions struct {
@@ -258,6 +268,9 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		visionAnalyzer:     visionAnalyzer,
 		echoToolCalls:      cfg.Agents.Defaults.EchoToolCalls,
 		safeguardsDisabled: safeguardsDisabled,
+		lastTimeContext:    make(map[string]time.Time),
+		timeContextEvery:   defaultTimeContextInterval,
+		timeNow:            time.Now,
 	}
 }
 
@@ -781,24 +794,32 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 // runAgentLoop is the core message processing logic.
 // It handles context building, LLM calls, tool execution, and response handling.
 func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (string, error) {
+	sessionKey := normalizeSessionKey(opts.SessionKey, opts.Channel, opts.ChatID)
+	runOpts := opts
+	runOpts.SessionKey = sessionKey
+
 	// 1. Build messages
-	history := al.sessions.GetHistory(opts.SessionKey)
-	summary := al.sessions.GetSummary(opts.SessionKey)
+	history := al.sessions.GetHistory(sessionKey)
+	summary := al.sessions.GetSummary(sessionKey)
+	timeContext := al.maybeBuildTimeContextMessage(sessionKey)
 	messages := al.contextBuilder.BuildMessages(
 		history,
 		summary,
-		opts.UserMessage,
-		opts.UserMedia,
-		opts.Channel,
-		opts.ChatID,
+		runOpts.UserMessage,
+		runOpts.UserMedia,
+		runOpts.Channel,
+		runOpts.ChatID,
 	)
+	if strings.TrimSpace(timeContext) != "" {
+		messages = insertMessageBeforeLastUser(messages, providers.Message{Role: "user", Content: timeContext})
+	}
 
 	// 2. Save user message to session
-	al.sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
-	_ = al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
+	al.sessions.AddMessage(sessionKey, "user", runOpts.UserMessage)
+	_ = al.sessions.Save(al.sessions.GetOrCreate(sessionKey))
 
 	// 3. Run LLM iteration loop
-	finalContent, iteration, promptTokens, deliveredViaMessageTool, err := al.runLLMIteration(ctx, messages, opts)
+	finalContent, iteration, promptTokens, deliveredViaMessageTool, err := al.runLLMIteration(ctx, messages, runOpts)
 	if err != nil {
 		return "", err
 	}
@@ -817,20 +838,20 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 
 	// 5. Save final assistant message to session
 	if finalContent != "" {
-		al.sessions.AddMessage(opts.SessionKey, "assistant", finalContent)
-		al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
+		al.sessions.AddMessage(sessionKey, "assistant", finalContent)
+		al.sessions.Save(al.sessions.GetOrCreate(sessionKey))
 	}
 
 	// 6. Optional: summarization
-	if opts.EnableSummary {
-		al.maybeSummarize(opts.SessionKey, promptTokens)
+	if runOpts.EnableSummary {
+		al.maybeSummarize(sessionKey, promptTokens)
 	}
 
 	// 7. Optional: send response via bus
-	if opts.SendResponse {
+	if runOpts.SendResponse {
 		al.bus.PublishOutbound(bus.OutboundMessage{
-			Channel: opts.Channel,
-			ChatID:  opts.ChatID,
+			Channel: runOpts.Channel,
+			ChatID:  runOpts.ChatID,
 			Content: finalContent,
 		})
 	}
@@ -840,23 +861,137 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 		responsePreview := utils.Truncate(finalContent, 120)
 		logger.InfoCF("agent", fmt.Sprintf("Response: %s", responsePreview),
 			map[string]interface{}{
-				"session_key":  opts.SessionKey,
-				"trace_id":     opts.TraceID,
+				"session_key":  sessionKey,
+				"trace_id":     runOpts.TraceID,
 				"iterations":   iteration,
 				"final_length": len(finalContent),
 			})
 	} else {
 		logger.InfoCF("agent", "No final response to send",
 			map[string]interface{}{
-				"session_key":             opts.SessionKey,
-				"trace_id":                opts.TraceID,
+				"session_key":             sessionKey,
+				"trace_id":                runOpts.TraceID,
 				"iterations":              iteration,
 				"delivered_via_message":   deliveredViaMessageTool,
-				"default_response_config": strings.TrimSpace(opts.DefaultResponse) != "",
+				"default_response_config": strings.TrimSpace(runOpts.DefaultResponse) != "",
 			})
 	}
 
 	return finalContent, nil
+}
+
+func formatTimeContextMessage(now time.Time) string {
+	return fmt.Sprintf("[context] Current server time: %s", now.Format("Mon Jan 2, 15:04 -07:00"))
+}
+
+func normalizeSessionKey(sessionKey, channel, chatID string) string {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey != "" {
+		return sessionKey
+	}
+
+	channel = strings.TrimSpace(channel)
+	chatID = strings.TrimSpace(chatID)
+	if channel == "" || chatID == "" {
+		return ""
+	}
+
+	return channel + ":" + chatID
+}
+
+func insertMessageBeforeLastUser(messages []providers.Message, msg providers.Message) []providers.Message {
+	if len(messages) == 0 {
+		return []providers.Message{msg}
+	}
+
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+
+		out := make([]providers.Message, 0, len(messages)+1)
+		out = append(out, messages[:i]...)
+		out = append(out, msg)
+		out = append(out, messages[i:]...)
+		return out
+	}
+
+	return append(messages, msg)
+}
+
+func (al *AgentLoop) maybeBuildTimeContextMessage(sessionKey string) string {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return ""
+	}
+
+	interval := al.timeContextEvery
+	if interval <= 0 {
+		interval = defaultTimeContextInterval
+	}
+
+	nowFn := al.timeNow
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	now := nowFn().Round(0)
+
+	al.timeContextMu.Lock()
+	defer al.timeContextMu.Unlock()
+
+	if al.lastTimeContext == nil {
+		al.lastTimeContext = make(map[string]time.Time)
+	}
+	al.pruneTimeContextLocked(now)
+
+	if last, ok := al.lastTimeContext[sessionKey]; ok {
+		last = last.Round(0)
+		if now.Before(last) {
+			al.lastTimeContext[sessionKey] = now
+			return formatTimeContextMessage(now)
+		}
+		if now.Sub(last) < interval {
+			return ""
+		}
+	}
+
+	if _, ok := al.lastTimeContext[sessionKey]; !ok && len(al.lastTimeContext) >= timeContextPruneThreshold {
+		for key := range al.lastTimeContext {
+			if key == sessionKey {
+				continue
+			}
+			delete(al.lastTimeContext, key)
+			break
+		}
+	}
+
+	al.lastTimeContext[sessionKey] = now
+	return formatTimeContextMessage(now)
+}
+
+func (al *AgentLoop) pruneTimeContextLocked(now time.Time) {
+	if len(al.lastTimeContext) <= timeContextPruneThreshold {
+		return
+	}
+
+	for key, ts := range al.lastTimeContext {
+		if now.After(ts) && now.Sub(ts) > timeContextPruneAfter {
+			delete(al.lastTimeContext, key)
+		}
+	}
+
+	if len(al.lastTimeContext) <= timeContextPruneThreshold {
+		return
+	}
+
+	excess := len(al.lastTimeContext) - timeContextPruneThreshold
+	for key := range al.lastTimeContext {
+		delete(al.lastTimeContext, key)
+		excess--
+		if excess <= 0 {
+			break
+		}
+	}
 }
 
 type tokenUsageTrackingProvider struct {

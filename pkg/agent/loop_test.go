@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -508,6 +509,329 @@ func TestRunAgentLoop_SuppressesLLMFillerDefaultResponseAfterMessageTool(t *test
 	if got != "" {
 		t.Fatalf("response = %q, want empty string (suppress filler)", got)
 	}
+}
+
+func TestRunAgentLoop_InjectsTimeContextMessageOnFirstTurn(t *testing.T) {
+	prov := &mockProvider{responses: []mockResponse{{Content: "ok"}}}
+	al := newTestAgentLoop(t, prov, 3, nil)
+	defer al.bus.Close()
+
+	now := time.Date(2026, time.March, 8, 10, 50, 0, 0, time.FixedZone("+04", 4*60*60))
+	al.timeNow = func() time.Time { return now }
+	al.timeContextEvery = 30 * time.Minute
+
+	const sessionKey = "telegram:chat-time"
+	_, err := al.runAgentLoop(context.Background(), processOptions{
+		SessionKey:    sessionKey,
+		Channel:       "telegram",
+		ChatID:        "chat-time",
+		UserMessage:   "what time is it",
+		EnableSummary: false,
+		SendResponse:  false,
+	})
+	if err != nil {
+		t.Fatalf("runAgentLoop() error: %v", err)
+	}
+
+	calls := prov.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("provider calls = %d, want 1", len(calls))
+	}
+
+	timeCtx := extractTimeContextMessages(calls[0].Messages)
+	if len(timeCtx) != 1 {
+		t.Fatalf("time context messages = %d, want 1", len(timeCtx))
+	}
+	assertTimeContextImmediatelyBeforeUser(t, calls[0].Messages, "what time is it")
+
+	want := "[context] Current server time: Sun Mar 8, 10:50 +04:00"
+	if got := timeCtx[0].Content; got != want {
+		t.Fatalf("time context content = %q, want %q", got, want)
+	}
+
+	history := al.sessions.GetHistory(sessionKey)
+	for _, msg := range history {
+		if strings.HasPrefix(msg.Content, "[context] Current server time:") {
+			t.Fatalf("time context should not be persisted in session history: %q", msg.Content)
+		}
+	}
+}
+
+func TestRunAgentLoop_ThrottlesTimeContextMessageWithinInterval(t *testing.T) {
+	prov := &mockProvider{responses: []mockResponse{{Content: "one"}, {Content: "two"}}}
+	al := newTestAgentLoop(t, prov, 3, nil)
+	defer al.bus.Close()
+
+	now := time.Date(2026, time.March, 8, 10, 50, 0, 0, time.FixedZone("+04", 4*60*60))
+	al.timeNow = func() time.Time { return now }
+	al.timeContextEvery = 30 * time.Minute
+
+	const sessionKey = "telegram:chat-time-throttle"
+	for _, msg := range []string{"first", "second"} {
+		_, err := al.runAgentLoop(context.Background(), processOptions{
+			SessionKey:    sessionKey,
+			Channel:       "telegram",
+			ChatID:        "chat-time-throttle",
+			UserMessage:   msg,
+			EnableSummary: false,
+			SendResponse:  false,
+		})
+		if err != nil {
+			t.Fatalf("runAgentLoop(%q) error: %v", msg, err)
+		}
+		now = now.Add(10 * time.Minute)
+	}
+
+	calls := prov.getCalls()
+	if len(calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(calls))
+	}
+	if got := len(extractTimeContextMessages(calls[0].Messages)); got != 1 {
+		t.Fatalf("first call time context count = %d, want 1", got)
+	}
+	if got := len(extractTimeContextMessages(calls[1].Messages)); got != 0 {
+		t.Fatalf("second call time context count = %d, want 0", got)
+	}
+}
+
+func TestRunAgentLoop_ReinjectsTimeContextMessageAfterInterval(t *testing.T) {
+	prov := &mockProvider{responses: []mockResponse{{Content: "one"}, {Content: "two"}}}
+	al := newTestAgentLoop(t, prov, 3, nil)
+	defer al.bus.Close()
+
+	now := time.Date(2026, time.March, 8, 10, 50, 0, 0, time.FixedZone("+04", 4*60*60))
+	al.timeNow = func() time.Time { return now }
+	al.timeContextEvery = 30 * time.Minute
+
+	const sessionKey = "telegram:chat-time-reinject"
+	_, err := al.runAgentLoop(context.Background(), processOptions{
+		SessionKey:    sessionKey,
+		Channel:       "telegram",
+		ChatID:        "chat-time-reinject",
+		UserMessage:   "first",
+		EnableSummary: false,
+		SendResponse:  false,
+	})
+	if err != nil {
+		t.Fatalf("first runAgentLoop() error: %v", err)
+	}
+
+	now = now.Add(31 * time.Minute)
+	_, err = al.runAgentLoop(context.Background(), processOptions{
+		SessionKey:    sessionKey,
+		Channel:       "telegram",
+		ChatID:        "chat-time-reinject",
+		UserMessage:   "second",
+		EnableSummary: false,
+		SendResponse:  false,
+	})
+	if err != nil {
+		t.Fatalf("second runAgentLoop() error: %v", err)
+	}
+
+	calls := prov.getCalls()
+	if len(calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(calls))
+	}
+
+	secondCallCtx := extractTimeContextMessages(calls[1].Messages)
+	if len(secondCallCtx) != 1 {
+		t.Fatalf("second call time context count = %d, want 1", len(secondCallCtx))
+	}
+	want := "[context] Current server time: Sun Mar 8, 11:21 +04:00"
+	if got := secondCallCtx[0].Content; got != want {
+		t.Fatalf("second call context = %q, want %q", got, want)
+	}
+}
+
+func TestRunAgentLoop_TimeContextUsesDerivedKeyWhenSessionKeyEmpty(t *testing.T) {
+	prov := &mockProvider{responses: []mockResponse{{Content: "one"}, {Content: "two"}}}
+	al := newTestAgentLoop(t, prov, 3, nil)
+	defer al.bus.Close()
+
+	now := time.Date(2026, time.March, 8, 10, 50, 0, 0, time.FixedZone("+04", 4*60*60))
+	al.timeNow = func() time.Time { return now }
+	al.timeContextEvery = 30 * time.Minute
+
+	for _, msg := range []string{"first", "second"} {
+		_, err := al.runAgentLoop(context.Background(), processOptions{
+			SessionKey:    "",
+			Channel:       "telegram",
+			ChatID:        "chat-time-derived",
+			UserMessage:   msg,
+			EnableSummary: false,
+			SendResponse:  false,
+		})
+		if err != nil {
+			t.Fatalf("runAgentLoop(%q) error: %v", msg, err)
+		}
+		now = now.Add(10 * time.Minute)
+	}
+
+	calls := prov.getCalls()
+	if len(calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(calls))
+	}
+	if got := len(extractTimeContextMessages(calls[0].Messages)); got != 1 {
+		t.Fatalf("first call time context count = %d, want 1", got)
+	}
+	if got := len(extractTimeContextMessages(calls[1].Messages)); got != 0 {
+		t.Fatalf("second call time context count = %d, want 0", got)
+	}
+
+	derivedHistory := al.sessions.GetHistory("telegram:chat-time-derived")
+	if len(derivedHistory) == 0 {
+		t.Fatal("expected derived session key history to be populated")
+	}
+	blankHistory := al.sessions.GetHistory("")
+	if len(blankHistory) != 0 {
+		t.Fatalf("blank session history len = %d, want 0", len(blankHistory))
+	}
+}
+
+func TestRunAgentLoop_ReinjectsTimeContextWhenClockMovesBackward(t *testing.T) {
+	prov := &mockProvider{responses: []mockResponse{{Content: "one"}, {Content: "two"}}}
+	al := newTestAgentLoop(t, prov, 3, nil)
+	defer al.bus.Close()
+
+	now := time.Date(2026, time.March, 8, 10, 50, 0, 0, time.FixedZone("+04", 4*60*60))
+	al.timeNow = func() time.Time { return now }
+	al.timeContextEvery = 30 * time.Minute
+
+	const sessionKey = "telegram:chat-time-backward"
+	_, err := al.runAgentLoop(context.Background(), processOptions{
+		SessionKey:    sessionKey,
+		Channel:       "telegram",
+		ChatID:        "chat-time-backward",
+		UserMessage:   "first",
+		EnableSummary: false,
+		SendResponse:  false,
+	})
+	if err != nil {
+		t.Fatalf("first runAgentLoop() error: %v", err)
+	}
+
+	now = now.Add(-10 * time.Minute)
+	_, err = al.runAgentLoop(context.Background(), processOptions{
+		SessionKey:    sessionKey,
+		Channel:       "telegram",
+		ChatID:        "chat-time-backward",
+		UserMessage:   "second",
+		EnableSummary: false,
+		SendResponse:  false,
+	})
+	if err != nil {
+		t.Fatalf("second runAgentLoop() error: %v", err)
+	}
+
+	calls := prov.getCalls()
+	if len(calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(calls))
+	}
+
+	secondCallCtx := extractTimeContextMessages(calls[1].Messages)
+	if len(secondCallCtx) != 1 {
+		t.Fatalf("second call time context count = %d, want 1", len(secondCallCtx))
+	}
+	want := "[context] Current server time: Sun Mar 8, 10:40 +04:00"
+	if got := secondCallCtx[0].Content; got != want {
+		t.Fatalf("second call context = %q, want %q", got, want)
+	}
+}
+
+func TestFormatTimeContextMessage_IncludesMinuteOffset(t *testing.T) {
+	now := time.Date(2026, time.March, 8, 10, 50, 0, 0, time.FixedZone("+05:30", 5*60*60+30*60))
+	got := formatTimeContextMessage(now)
+	want := "[context] Current server time: Sun Mar 8, 10:50 +05:30"
+	if got != want {
+		t.Fatalf("formatTimeContextMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestMaybeBuildTimeContextMessage_PrunesStaleEntriesWhenOversized(t *testing.T) {
+	al := newTestAgentLoop(t, &mockProvider{responses: []mockResponse{{Content: "ok"}}}, 1, nil)
+	defer al.bus.Close()
+
+	now := time.Date(2026, time.March, 8, 10, 50, 0, 0, time.UTC)
+	al.timeNow = func() time.Time { return now }
+	al.lastTimeContext = make(map[string]time.Time, timeContextPruneThreshold+100)
+
+	staleTS := now.Add(-(timeContextPruneAfter + time.Minute))
+	for i := 0; i < timeContextPruneThreshold+100; i++ {
+		al.lastTimeContext[fmt.Sprintf("stale-%d", i)] = staleTS
+	}
+
+	msg := al.maybeBuildTimeContextMessage("target-stale")
+	if strings.TrimSpace(msg) == "" {
+		t.Fatal("expected time context message for target-stale")
+	}
+	if got := len(al.lastTimeContext); got != 1 {
+		t.Fatalf("lastTimeContext len = %d, want 1 after stale prune", got)
+	}
+	if _, ok := al.lastTimeContext["target-stale"]; !ok {
+		t.Fatal("expected target-stale to remain in map")
+	}
+}
+
+func TestMaybeBuildTimeContextMessage_CapsFreshEntriesWhenOversized(t *testing.T) {
+	al := newTestAgentLoop(t, &mockProvider{responses: []mockResponse{{Content: "ok"}}}, 1, nil)
+	defer al.bus.Close()
+
+	now := time.Date(2026, time.March, 8, 10, 50, 0, 0, time.UTC)
+	al.timeNow = func() time.Time { return now }
+	al.lastTimeContext = make(map[string]time.Time, timeContextPruneThreshold+100)
+
+	freshTS := now.Add(-time.Hour)
+	for i := 0; i < timeContextPruneThreshold+100; i++ {
+		al.lastTimeContext[fmt.Sprintf("fresh-%d", i)] = freshTS
+	}
+
+	msg := al.maybeBuildTimeContextMessage("target-fresh")
+	if strings.TrimSpace(msg) == "" {
+		t.Fatal("expected time context message for target-fresh")
+	}
+	if got := len(al.lastTimeContext); got != timeContextPruneThreshold {
+		t.Fatalf("lastTimeContext len = %d, want %d", got, timeContextPruneThreshold)
+	}
+	if _, ok := al.lastTimeContext["target-fresh"]; !ok {
+		t.Fatal("expected target-fresh to remain in map")
+	}
+}
+
+func assertTimeContextImmediatelyBeforeUser(t *testing.T, messages []providers.Message, userContent string) {
+	t.Helper()
+
+	userIdx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" && messages[i].Content == userContent {
+			userIdx = i
+			break
+		}
+	}
+	if userIdx <= 0 {
+		t.Fatalf("could not find user message %q with a preceding message", userContent)
+	}
+
+	prev := messages[userIdx-1]
+	if prev.Role != "user" {
+		t.Fatalf("preceding message role = %q, want user", prev.Role)
+	}
+	if !strings.HasPrefix(prev.Content, "[context] Current server time:") {
+		t.Fatalf("preceding message = %q, want time context prefix", prev.Content)
+	}
+}
+
+func extractTimeContextMessages(messages []providers.Message) []providers.Message {
+	out := make([]providers.Message, 0, 1)
+	for _, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(msg.Content), "[context] Current server time:") {
+			out = append(out, msg)
+		}
+	}
+	return out
 }
 
 func containsStr(s, substr string) bool {
