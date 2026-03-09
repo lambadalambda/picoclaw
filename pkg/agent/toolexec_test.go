@@ -383,6 +383,84 @@ func TestExecuteToolsConcurrently_DeltaChatAgentProgressMessages(t *testing.T) {
 	}
 }
 
+func TestExecuteToolsConcurrently_DeltaChatProgressAccumulatesAcrossBatches(t *testing.T) {
+	tmpDir := t.TempDir()
+	registry := tools.NewToolRegistry()
+	registry.Register(&sleepTool{name: "exec", delay: 8 * time.Millisecond})
+
+	testBus := bus.NewMessageBus()
+	defer testBus.Close()
+
+	al := &AgentLoop{
+		bus:              testBus,
+		workspace:        tmpDir,
+		model:            "test-model",
+		chatOptions:      providers.ChatOptions{MaxTokens: 8192, Temperature: 0.7},
+		maxIterations:    5,
+		sessions:         session.NewSessionManager(filepath.Join(tmpDir, "sessions")),
+		tools:            registry,
+		summarizing:      sync.Map{},
+		echoToolCalls:    true,
+		maxParallelTools: 1,
+	}
+
+	opts := processOptions{SessionKey: "deltachat:chat1", Channel: "deltachat", ChatID: "chat1", TraceID: "trace-multi"}
+
+	batch1 := []providers.ToolCall{
+		{ID: "tc1", Name: "exec", Description: "first batch one", Arguments: map[string]interface{}{"command": "echo 1"}},
+		{ID: "tc2", Name: "exec", Description: "first batch two", Arguments: map[string]interface{}{"command": "echo 2"}},
+	}
+	batch2 := []providers.ToolCall{
+		{ID: "tc3", Name: "exec", Description: "second batch one", Arguments: map[string]interface{}{"command": "echo 3"}},
+		{ID: "tc4", Name: "exec", Description: "second batch two", Arguments: map[string]interface{}{"command": "echo 4"}},
+	}
+
+	res1 := al.executeToolsConcurrently(context.Background(), batch1, 1, opts)
+	if len(res1) != 2 {
+		t.Fatalf("first batch results len = %d, want 2", len(res1))
+	}
+	res2 := al.executeToolsConcurrently(context.Background(), batch2, 2, opts)
+	if len(res2) != 2 {
+		t.Fatalf("second batch results len = %d, want 2", len(res2))
+	}
+
+	msgs := drainOutboundMessages(testBus)
+	if len(msgs) == 0 {
+		t.Fatal("expected outbound progress messages")
+	}
+
+	last := msgs[len(msgs)-1]
+	if !strings.HasPrefix(last.Content, "Agent progress (v1, run=trace-multi):") {
+		t.Fatalf("last progress header = %q, want agent progress v1 header", last.Content)
+	}
+	if !strings.Contains(last.Content, "1. ok exec - first batch one") {
+		t.Fatalf("expected first batch call in final progress message: %q", last.Content)
+	}
+	if !strings.Contains(last.Content, "2. ok exec - first batch two") {
+		t.Fatalf("expected second call from first batch in final message: %q", last.Content)
+	}
+	if !strings.Contains(last.Content, "3. ok exec - second batch one") {
+		t.Fatalf("expected first call from second batch in final message: %q", last.Content)
+	}
+	if !strings.Contains(last.Content, "4. ok exec - second batch two") {
+		t.Fatalf("expected second call from second batch in final message: %q", last.Content)
+	}
+}
+
+func drainOutboundMessages(testBus *bus.MessageBus) []bus.OutboundMessage {
+	msgs := make([]bus.OutboundMessage, 0)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		msg, ok := testBus.SubscribeOutbound(ctx)
+		cancel()
+		if !ok {
+			break
+		}
+		msgs = append(msgs, msg)
+	}
+	return msgs
+}
+
 func TestFormatToolCallSummary_Exec(t *testing.T) {
 	tc := providers.ToolCall{
 		Name:      "exec",

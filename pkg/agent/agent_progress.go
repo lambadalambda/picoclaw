@@ -30,7 +30,7 @@ type agentProgressTracker struct {
 	seenActive bool
 }
 
-func newAgentProgressTracker(msgBus *bus.MessageBus, channel, chatID, runID string, toolCalls []providers.ToolCall) *agentProgressTracker {
+func newAgentProgressTracker(msgBus *bus.MessageBus, channel, chatID, runID string) *agentProgressTracker {
 	channel = strings.TrimSpace(channel)
 	chatID = strings.TrimSpace(chatID)
 	runID = strings.TrimSpace(runID)
@@ -42,8 +42,17 @@ func newAgentProgressTracker(msgBus *bus.MessageBus, channel, chatID, runID stri
 		runID:     runID,
 		callIndex: make(map[string]int),
 	}
+	return tracker
+}
 
-	seq := 0
+func (t *agentProgressTracker) registerToolCalls(toolCalls []providers.ToolCall) {
+	if t == nil {
+		return
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	for _, tc := range toolCalls {
 		name := strings.TrimSpace(tc.Name)
 		if name == "" {
@@ -52,22 +61,23 @@ func newAgentProgressTracker(msgBus *bus.MessageBus, channel, chatID, runID stri
 		if !toolsToEcho[name] {
 			continue
 		}
-		seq++
+		callID := strings.TrimSpace(tc.ID)
+		if callID == "" {
+			continue
+		}
+		if _, exists := t.callIndex[callID]; exists {
+			continue
+		}
+
 		call := agentProgressCall{
-			seq:   seq,
-			id:    strings.TrimSpace(tc.ID),
+			seq:   len(t.calls) + 1,
+			id:    callID,
 			tool:  name,
 			label: safeAgentProgressLabel(tc),
 		}
-		if call.id == "" {
-			seq--
-			continue
-		}
-		tracker.callIndex[call.id] = len(tracker.calls)
-		tracker.calls = append(tracker.calls, call)
+		t.callIndex[call.id] = len(t.calls)
+		t.calls = append(t.calls, call)
 	}
-
-	return tracker
 }
 
 func safeAgentProgressLabel(tc providers.ToolCall) string {

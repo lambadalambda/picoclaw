@@ -49,6 +49,7 @@ type AgentLoop struct {
 	traceSeq           atomic.Uint64
 	running            atomic.Bool
 	summarizing        sync.Map            // Tracks which sessions are currently being summarized
+	progressTrackers   sync.Map            // Run-scoped DeltaChat tool progress trackers
 	memoryStore        *memory.MemoryStore // Searchable memory DB (nil = disabled)
 	modelCapabilities  providers.ModelCapabilities
 	visionAnalyzer     imageAnalyzer
@@ -797,6 +798,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	sessionKey := normalizeSessionKey(opts.SessionKey, opts.Channel, opts.ChatID)
 	runOpts := opts
 	runOpts.SessionKey = sessionKey
+	defer al.clearAgentProgressTracker(runOpts)
 
 	// 1. Build messages
 	history := al.sessions.GetHistory(sessionKey)

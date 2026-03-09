@@ -186,6 +186,59 @@ func shouldEchoToolCallsForSession(sessionKey string) bool {
 	return true
 }
 
+func agentProgressRunKey(traceID, sessionKey string) string {
+	traceID = strings.TrimSpace(traceID)
+	sessionKey = strings.TrimSpace(sessionKey)
+
+	if traceID != "" && sessionKey != "" {
+		return "trace:" + traceID + "|session:" + sessionKey
+	}
+	if traceID != "" {
+		return "trace:" + traceID
+	}
+	if sessionKey != "" {
+		return "session:" + sessionKey
+	}
+
+	return ""
+}
+
+func (al *AgentLoop) getOrCreateAgentProgressTracker(opts processOptions) *agentProgressTracker {
+	if al == nil || al.bus == nil {
+		return nil
+	}
+
+	runKey := agentProgressRunKey(opts.TraceID, opts.SessionKey)
+	created := newAgentProgressTracker(al.bus, opts.Channel, opts.ChatID, opts.TraceID)
+	if runKey == "" {
+		return created
+	}
+
+	if existing, ok := al.progressTrackers.Load(runKey); ok {
+		if tracker, ok := existing.(*agentProgressTracker); ok {
+			return tracker
+		}
+	}
+
+	actual, _ := al.progressTrackers.LoadOrStore(runKey, created)
+	if tracker, ok := actual.(*agentProgressTracker); ok {
+		return tracker
+	}
+
+	return created
+}
+
+func (al *AgentLoop) clearAgentProgressTracker(opts processOptions) {
+	if al == nil {
+		return
+	}
+	runKey := agentProgressRunKey(opts.TraceID, opts.SessionKey)
+	if runKey == "" {
+		return
+	}
+	al.progressTrackers.Delete(runKey)
+}
+
 func (al *AgentLoop) executeToolsConcurrently(
 	ctx context.Context,
 	toolCalls []providers.ToolCall,
@@ -225,10 +278,13 @@ func (al *AgentLoop) executeToolsConcurrently(
 	}
 
 	shouldEcho := shouldEchoToolCallsForSession(opts.SessionKey)
-	useAgentProgress := shouldEcho && al.echoToolCalls && opts.Channel == "deltachat" && opts.Channel != "system"
+	useAgentProgress := shouldEcho && al.echoToolCalls && opts.Channel == "deltachat"
 	var progress *agentProgressTracker
 	if useAgentProgress {
-		progress = newAgentProgressTracker(al.bus, opts.Channel, opts.ChatID, opts.TraceID, toolCalls)
+		progress = al.getOrCreateAgentProgressTracker(opts)
+		if progress != nil {
+			progress.registerToolCalls(toolCalls)
+		}
 	}
 
 	if shouldEcho && !useAgentProgress {
