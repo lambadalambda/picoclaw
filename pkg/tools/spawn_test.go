@@ -245,6 +245,72 @@ func TestSpawnTool_WithOptions_Timeouts(t *testing.T) {
 	}
 }
 
+func TestSpawnTool_WithOptions_MaxOutputTokens(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action":            "spawn",
+		"task":              "generate long output",
+		"max_output_tokens": 16384,
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Options.MaxOutputTokens != 16384 {
+		t.Errorf("Options.MaxOutputTokens = %d, want 16384", tasks[0].Options.MaxOutputTokens)
+	}
+}
+
+func TestSpawnTool_WithOptions_MaxOutputTokens_ClampedToLimit(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action":            "spawn",
+		"task":              "generate very long output",
+		"max_output_tokens": 50000,
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Options.MaxOutputTokens != 32768 {
+		t.Errorf("Options.MaxOutputTokens = %d, want 32768 (clamped)", tasks[0].Options.MaxOutputTokens)
+	}
+}
+
+func TestSpawnTool_WithOptions_MaxOutputTokens_ClampedToLowerLimit(t *testing.T) {
+	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
+	tool := NewSpawnTool(mgr)
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action":            "spawn",
+		"task":              "generate tiny output",
+		"max_output_tokens": 50,
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	tasks := mgr.ListTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Options.MaxOutputTokens != 100 {
+		t.Errorf("Options.MaxOutputTokens = %d, want 100 (clamped to minimum)", tasks[0].Options.MaxOutputTokens)
+	}
+}
+
 func TestSpawnTool_WithOptions_AllOptions(t *testing.T) {
 	mgr := NewSubagentManager(&fastMockProvider{}, "test-model", t.TempDir(), nil)
 	tool := NewSpawnTool(mgr)
@@ -257,6 +323,7 @@ func TestSpawnTool_WithOptions_AllOptions(t *testing.T) {
 		"max_iterations":       100,
 		"llm_timeout_seconds":  300,
 		"tool_timeout_seconds": 120,
+		"max_output_tokens":    16384,
 	})
 	if err != nil {
 		t.Fatalf("spawn failed: %v", err)
@@ -278,6 +345,9 @@ func TestSpawnTool_WithOptions_AllOptions(t *testing.T) {
 	}
 	if task.Options.ToolTimeoutSeconds != 120 {
 		t.Errorf("Options.ToolTimeoutSeconds = %d, want 120", task.Options.ToolTimeoutSeconds)
+	}
+	if task.Options.MaxOutputTokens != 16384 {
+		t.Errorf("Options.MaxOutputTokens = %d, want 16384", task.Options.MaxOutputTokens)
 	}
 }
 
@@ -310,6 +380,9 @@ func TestSpawnTool_WithOptions_NoOptions(t *testing.T) {
 	if task.Options.ToolTimeoutSeconds != 0 {
 		t.Errorf("Options.ToolTimeoutSeconds = %d, want 0", task.Options.ToolTimeoutSeconds)
 	}
+	if task.Options.MaxOutputTokens != 0 {
+		t.Errorf("Options.MaxOutputTokens = %d, want 0", task.Options.MaxOutputTokens)
+	}
 }
 
 func TestSpawnTool_WithOptions_FloatToIntConversion(t *testing.T) {
@@ -317,9 +390,10 @@ func TestSpawnTool_WithOptions_FloatToIntConversion(t *testing.T) {
 	tool := NewSpawnTool(mgr)
 
 	_, err := tool.Execute(context.Background(), map[string]interface{}{
-		"action":         "spawn",
-		"task":           "float test",
-		"max_iterations": float64(25),
+		"action":            "spawn",
+		"task":              "float test",
+		"max_iterations":    float64(25),
+		"max_output_tokens": float64(16384),
 	})
 	if err != nil {
 		t.Fatalf("spawn failed: %v", err)
@@ -331,5 +405,8 @@ func TestSpawnTool_WithOptions_FloatToIntConversion(t *testing.T) {
 	}
 	if tasks[0].Options.MaxIterations != 25 {
 		t.Errorf("Options.MaxIterations = %d, want 25", tasks[0].Options.MaxIterations)
+	}
+	if tasks[0].Options.MaxOutputTokens != 16384 {
+		t.Errorf("Options.MaxOutputTokens = %d, want 16384", tasks[0].Options.MaxOutputTokens)
 	}
 }
