@@ -189,6 +189,74 @@ func TestDeltaChatChannelSend(t *testing.T) {
 	}
 }
 
+func TestDeltaChatChannelSend_EscapesStandaloneTildes(t *testing.T) {
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+
+	wsURL, connCh, cleanup := startDeltaBridge(t)
+	defer cleanup()
+
+	ch, err := NewDeltaChatChannel(config.DeltaChatConfig{Enabled: true, BridgeURL: wsURL}, mb)
+	if err != nil {
+		t.Fatalf("NewDeltaChatChannel failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	conn := waitDeltaConn(t, connCh)
+	defer conn.Close()
+
+	out := bus.OutboundMessage{
+		Channel: "deltachat",
+		ChatID:  "chat-tilde",
+		Content: "PORTFOLIO: opened ~1h ago\nP/L (~$276)\nUse ~~bold strike~~ if needed",
+	}
+	payloadCh := make(chan map[string]interface{}, 1)
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		payload, readErr := readDeltaPayloadResult(conn, 2*time.Second)
+		if readErr != nil {
+			bridgeErrCh <- readErr
+			return
+		}
+		if ackErr := writeDeltaAckForPayload(conn, payload, true, ""); ackErr != nil {
+			bridgeErrCh <- ackErr
+			return
+		}
+		payloadCh <- payload
+		bridgeErrCh <- nil
+	}()
+
+	if err := ch.Send(ctx, out); err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	if bridgeErr := <-bridgeErrCh; bridgeErr != nil {
+		t.Fatalf("bridge ack failed: %v", bridgeErr)
+	}
+	got := <-payloadCh
+
+	want := "PORTFOLIO: opened \\~1h ago\nP/L (\\~$276)\nUse ~~bold strike~~ if needed"
+	if got["content"] != want {
+		t.Fatalf("content = %v, want %q", got["content"], want)
+	}
+}
+
+func TestSanitizeDeltaOutboundContent(t *testing.T) {
+	in := "~1h (~$276) ~~strike~~ \\~already"
+	got := sanitizeDeltaOutboundContent(in)
+	want := "\\~1h (\\~$276) ~~strike~~ \\~already"
+	if got != want {
+		t.Fatalf("sanitizeDeltaOutboundContent() = %q, want %q", got, want)
+	}
+}
+
 func TestDeltaChatChannelIncomingMessage(t *testing.T) {
 	mb := bus.NewMessageBus()
 	defer mb.Close()

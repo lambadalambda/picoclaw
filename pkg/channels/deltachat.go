@@ -544,6 +544,39 @@ func isDeltaAgentProgressMessage(content string) bool {
 	return true
 }
 
+func sanitizeDeltaOutboundContent(content string) string {
+	if !strings.Contains(content, "~") {
+		return content
+	}
+
+	var b strings.Builder
+	b.Grow(len(content) + 8)
+
+	for i := 0; i < len(content); i++ {
+		ch := content[i]
+		if ch != '~' {
+			b.WriteByte(ch)
+			continue
+		}
+
+		prevIsTilde := i > 0 && content[i-1] == '~'
+		nextIsTilde := i+1 < len(content) && content[i+1] == '~'
+		alreadyEscaped := i > 0 && content[i-1] == '\\'
+		if prevIsTilde || nextIsTilde || alreadyEscaped {
+			b.WriteByte(ch)
+			continue
+		}
+
+		// Delta Chat markdown rendering can treat lone tildes as strikethrough
+		// delimiters. Escape standalone tildes to avoid accidental multiline
+		// strike-through when models use "~" for approximation.
+		b.WriteByte('\\')
+		b.WriteByte('~')
+	}
+
+	return b.String()
+}
+
 func parseDeltaSetProfilePictureCommand(content string, media []string) (string, bool, error) {
 	trimmed := strings.TrimSpace(content)
 	matches := deltaSetProfilePictureCommandPattern.FindStringSubmatch(trimmed)
@@ -949,7 +982,7 @@ func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) er
 	payload := map[string]interface{}{
 		"type":    "message",
 		"to":      msg.ChatID,
-		"content": msg.Content,
+		"content": sanitizeDeltaOutboundContent(msg.Content),
 	}
 	if len(msg.Media) > 0 {
 		payload["media"] = msg.Media
