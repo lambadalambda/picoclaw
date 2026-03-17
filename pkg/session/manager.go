@@ -207,6 +207,48 @@ func (sm *SessionManager) TruncateHistory(key string, keepLast int) {
 	session.Updated = time.Now()
 }
 
+func (sm *SessionManager) TrimHistoryTo(key string, length int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	session, ok := sm.sessions[key]
+	if !ok {
+		return
+	}
+	if length < 0 {
+		length = 0
+	}
+	if len(session.Messages) <= length {
+		return
+	}
+
+	trimmed := append([]providers.Message(nil), session.Messages[:length]...)
+	session.Messages = trimmed
+	session.Updated = time.Now()
+}
+
+func (sm *SessionManager) ReplaceHistory(key string, messages []providers.Message) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	session, ok := sm.sessions[key]
+	if !ok {
+		now := time.Now()
+		session = &Session{
+			Key:      key,
+			Messages: []providers.Message{},
+			Created:  now,
+			Updated:  now,
+		}
+		sm.sessions[key] = session
+	}
+
+	history := append([]providers.Message(nil), messages...)
+	sanitized, _ := providers.SanitizeToolTranscript(history)
+	session.Messages = sanitized
+	session.Updated = time.Now()
+}
+
 func (sm *SessionManager) Save(session *Session) error {
 	if sm.storage == "" {
 		return nil

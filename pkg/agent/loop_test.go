@@ -398,6 +398,54 @@ func TestRunLLMIteration_SummaryCallIncludesHint(t *testing.T) {
 	}
 }
 
+func TestRunLLMIteration_RetriesAfterPromptTooLongWithEmergencyCompaction(t *testing.T) {
+	largeChunk := strings.Repeat("x", 4000)
+	messages := []providers.Message{{Role: "system", Content: "You are a test bot."}}
+	for i := 0; i < 50; i++ {
+		messages = append(messages, providers.Message{Role: "user", Content: fmt.Sprintf("%d-%s", i, largeChunk)})
+	}
+
+	prov := &mockProvider{responses: []mockResponse{
+		{Err: fmt.Errorf(`API error (HTTP 400): {"error":{"code":"1261","message":"Prompt exceeds max length"}}`)},
+		{Content: "recovered after trim"},
+	}}
+
+	al := newTestAgentLoop(t, prov, 3, nil)
+	defer al.bus.Close()
+
+	content, _, _, _, err := al.runLLMIteration(context.Background(), messages, processOptions{SessionKey: "test"})
+	if err != nil {
+		t.Fatalf("runLLMIteration() error: %v", err)
+	}
+	if content != "recovered after trim" {
+		t.Fatalf("content = %q, want %q", content, "recovered after trim")
+	}
+
+	calls := prov.getCalls()
+	if len(calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(calls))
+	}
+
+	sumChars := func(in []providers.Message) int {
+		total := 0
+		for _, msg := range in {
+			total += len(msg.Content)
+		}
+		return total
+	}
+
+	firstChars := sumChars(calls[0].Messages)
+	secondChars := sumChars(calls[1].Messages)
+	if secondChars >= firstChars {
+		t.Fatalf("second request chars = %d, want less than first request chars %d", secondChars, firstChars)
+	}
+
+	history := al.sessions.GetHistory("test")
+	if len(history) == 0 {
+		t.Fatal("expected compacted session history to be persisted")
+	}
+}
+
 func TestRunAgentLoop_SummarizesBasedOnReportedPromptTokens(t *testing.T) {
 	// The session history is short (so the char/4 heuristic would NOT trigger
 	// compaction), but the provider reports a high prompt token count.
@@ -479,6 +527,39 @@ func TestRunAgentLoop_SuppressesDefaultResponseAfterMessageTool(t *testing.T) {
 		if msg.Role == "assistant" && msg.Content == defaultResp {
 			t.Fatalf("session history should not include default response after message tool delivery")
 		}
+	}
+}
+
+func TestRunAgentLoop_DoesNotPersistUserMessageWhenInitialLLMCallFails(t *testing.T) {
+	prov := &mockProvider{responses: []mockResponse{{Err: fmt.Errorf("claude API call: POST \"https://api.anthropic.com/v1/messages\": 400 Bad Request")}}}
+	al := newTestAgentLoop(t, prov, 5, nil)
+	defer al.bus.Close()
+
+	const sessionKey = "telegram:chat1"
+	al.sessions.AddMessage(sessionKey, "user", "earlier")
+	al.sessions.AddMessage(sessionKey, "assistant", "done")
+
+	_, err := al.runAgentLoop(context.Background(), processOptions{
+		SessionKey:    sessionKey,
+		Channel:       "telegram",
+		ChatID:        "chat1",
+		UserMessage:   "new request",
+		EnableSummary: false,
+		SendResponse:  false,
+	})
+	if err == nil {
+		t.Fatal("runAgentLoop() error = nil, want LLM failure")
+	}
+
+	history := al.sessions.GetHistory(sessionKey)
+	if len(history) != 2 {
+		t.Fatalf("history len = %d, want 2", len(history))
+	}
+	if history[0].Role != "user" || history[0].Content != "earlier" {
+		t.Fatalf("history[0] = %#v, want original user message", history[0])
+	}
+	if history[1].Role != "assistant" || history[1].Content != "done" {
+		t.Fatalf("history[1] = %#v, want original assistant message", history[1])
 	}
 }
 

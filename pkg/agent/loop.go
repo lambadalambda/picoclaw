@@ -802,6 +802,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 
 	// 1. Build messages
 	history := al.sessions.GetHistory(sessionKey)
+	historyLen := len(history)
 	summary := al.sessions.GetSummary(sessionKey)
 	timeContext := al.maybeBuildTimeContextMessage(sessionKey)
 	messages := al.contextBuilder.BuildMessages(
@@ -823,6 +824,21 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	// 3. Run LLM iteration loop
 	finalContent, iteration, promptTokens, deliveredViaMessageTool, err := al.runLLMIteration(ctx, messages, runOpts)
 	if err != nil {
+		currentHistory := al.sessions.GetHistory(sessionKey)
+		if len(currentHistory) == historyLen+1 {
+			last := currentHistory[len(currentHistory)-1]
+			if last.Role == "user" && last.Content == runOpts.UserMessage {
+				al.sessions.TrimHistoryTo(sessionKey, historyLen)
+				if saveErr := al.sessions.Save(al.sessions.GetOrCreate(sessionKey)); saveErr != nil {
+					logger.WarnCF("agent", "Failed to persist session rollback after LLM error",
+						map[string]interface{}{
+							"session_key": sessionKey,
+							"trace_id":    runOpts.TraceID,
+							"error":       saveErr.Error(),
+						})
+				}
+			}
+		}
 		return "", err
 	}
 
@@ -1049,120 +1065,159 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 	chatOptions := al.chatOptions.ToMap()
 	trackingProvider := &tokenUsageTrackingProvider{inner: al.provider}
 	deliveredViaMessageTool := false
+	runWithMessages := func(startMessages []providers.Message, maxIterations int) (llmloop.RunResult, error) {
+		return llmloop.Run(ctx, llmloop.RunOptions{
+			Provider:      trackingProvider,
+			Model:         al.model,
+			MaxIterations: maxIterations,
+			LLMTimeout:    al.llmTimeout,
+			ChatOptions:   chatOptions,
+			MessageBudget: al.messageBudget,
+			Messages:      startMessages,
+			BuildToolDefs: func(iteration int, _ []providers.Message) []providers.ToolDefinition {
+				return al.tools.GetProviderDefinitions()
+			},
+			ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
+				results := al.executeToolsConcurrently(ctx, toolCalls, iteration, opts)
+				if !deliveredViaMessageTool {
+					deliveredViaMessageTool = deliveredMessageToolToTarget(opts.Channel, opts.ChatID, toolCalls, results)
+				}
+				return results
+			},
+			Hooks: llmloop.Hooks{
+				MessagesBudgeted: func(iteration int, stats providers.MessageBudgetStats) {
+					logger.WarnCF("agent", "LLM request payload budget applied",
+						map[string]interface{}{
+							"trace_id":           opts.TraceID,
+							"iteration":          iteration,
+							"messages_before":    stats.InputMessages,
+							"messages_after":     stats.OutputMessages,
+							"chars_before":       stats.CharsBefore,
+							"chars_after":        stats.CharsAfter,
+							"truncated_messages": stats.TruncatedMessages,
+							"dropped_messages":   stats.DroppedMessages,
+						})
+				},
+				BeforeLLMCall: func(iteration int, currentMessages []providers.Message, toolDefs []providers.ToolDefinition) {
+					logger.DebugCF("agent", "LLM iteration",
+						map[string]interface{}{
+							"trace_id":  opts.TraceID,
+							"iteration": iteration,
+							"max":       maxIterations,
+						})
 
-	loopRes, err := llmloop.Run(ctx, llmloop.RunOptions{
-		Provider:      trackingProvider,
-		Model:         al.model,
-		MaxIterations: al.maxIterations,
-		LLMTimeout:    al.llmTimeout,
-		ChatOptions:   chatOptions,
-		MessageBudget: al.messageBudget,
-		Messages:      messages,
-		BuildToolDefs: func(iteration int, _ []providers.Message) []providers.ToolDefinition {
-			return al.tools.GetProviderDefinitions()
-		},
-		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
-			results := al.executeToolsConcurrently(ctx, toolCalls, iteration, opts)
-			if !deliveredViaMessageTool {
-				deliveredViaMessageTool = deliveredMessageToolToTarget(opts.Channel, opts.ChatID, toolCalls, results)
+					systemPromptLen := 0
+					if len(currentMessages) > 0 {
+						systemPromptLen = len(currentMessages[0].Content)
+					}
+
+					logger.DebugCF("agent", "LLM request",
+						map[string]interface{}{
+							"trace_id":          opts.TraceID,
+							"iteration":         iteration,
+							"model":             al.model,
+							"messages_count":    len(currentMessages),
+							"tools_count":       len(toolDefs),
+							"max_tokens":        al.chatOptions.MaxTokens,
+							"temperature":       al.chatOptions.Temperature,
+							"system_prompt_len": systemPromptLen,
+						})
+
+					logger.DebugCF("agent", "Full LLM request",
+						map[string]interface{}{
+							"trace_id":      opts.TraceID,
+							"iteration":     iteration,
+							"messages_json": formatMessagesForLog(currentMessages),
+							"tools_json":    formatToolsForLog(toolDefs),
+						})
+
+					logger.InfoCF("agent", "Calling LLM",
+						map[string]interface{}{
+							"trace_id":       opts.TraceID,
+							"iteration":      iteration,
+							"model":          al.model,
+							"messages_count": len(currentMessages),
+							"tools_count":    len(toolDefs),
+						})
+				},
+				LLMCallFailed: func(iteration int, err error) {
+					logger.ErrorCF("agent", "LLM call failed",
+						map[string]interface{}{
+							"trace_id":  opts.TraceID,
+							"iteration": iteration,
+							"error":     err.Error(),
+						})
+				},
+				ToolCallsRequested: func(iteration int, toolCalls []providers.ToolCall) {
+					toolNames := make([]string, 0, len(toolCalls))
+					for _, tc := range toolCalls {
+						toolNames = append(toolNames, tc.Name)
+					}
+					logger.InfoCF("agent", "LLM requested tool calls",
+						map[string]interface{}{
+							"trace_id":  opts.TraceID,
+							"tools":     toolNames,
+							"count":     len(toolNames),
+							"iteration": iteration,
+						})
+				},
+				DirectResponse: func(iteration int, content string) {
+					logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
+						map[string]interface{}{
+							"trace_id":      opts.TraceID,
+							"iteration":     iteration,
+							"content_chars": len(content),
+						})
+				},
+				AssistantMessage: func(_ int, msg providers.Message) {
+					al.sessions.AddFullMessage(opts.SessionKey, msg)
+					_ = al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
+				},
+				ToolResultMessage: func(_ int, msg providers.Message) {
+					al.sessions.AddFullMessage(opts.SessionKey, msg)
+					_ = al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
+				},
+			},
+		})
+	}
+
+	loopRes, err := runWithMessages(messages, al.maxIterations)
+	if err != nil && isPromptTooLongError(err) {
+		retryBudget := promptTooLongRetryBudget(al.messageBudget)
+		retryMessages, retryStats := providers.ApplyMessageBudget(loopRes.Messages, retryBudget)
+		if retryStats.Changed() {
+			logger.WarnCF("agent", "Prompt too long; applying emergency compaction and retrying once",
+				map[string]interface{}{
+					"trace_id":           opts.TraceID,
+					"iteration":          loopRes.Iterations,
+					"messages_before":    retryStats.InputMessages,
+					"messages_after":     retryStats.OutputMessages,
+					"chars_before":       retryStats.CharsBefore,
+					"chars_after":        retryStats.CharsAfter,
+					"truncated_messages": retryStats.TruncatedMessages,
+					"dropped_messages":   retryStats.DroppedMessages,
+				})
+
+			if opts.SessionKey != "" {
+				al.sessions.ReplaceHistory(opts.SessionKey, retryMessages)
+				if saveErr := al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey)); saveErr != nil {
+					logger.WarnCF("agent", "Failed to persist emergency compacted history",
+						map[string]interface{}{
+							"session_key": opts.SessionKey,
+							"trace_id":    opts.TraceID,
+							"error":       saveErr.Error(),
+						})
+				}
 			}
-			return results
-		},
-		Hooks: llmloop.Hooks{
-			MessagesBudgeted: func(iteration int, stats providers.MessageBudgetStats) {
-				logger.WarnCF("agent", "LLM request payload budget applied",
-					map[string]interface{}{
-						"trace_id":           opts.TraceID,
-						"iteration":          iteration,
-						"messages_before":    stats.InputMessages,
-						"messages_after":     stats.OutputMessages,
-						"chars_before":       stats.CharsBefore,
-						"chars_after":        stats.CharsAfter,
-						"truncated_messages": stats.TruncatedMessages,
-						"dropped_messages":   stats.DroppedMessages,
-					})
-			},
-			BeforeLLMCall: func(iteration int, currentMessages []providers.Message, toolDefs []providers.ToolDefinition) {
-				logger.DebugCF("agent", "LLM iteration",
-					map[string]interface{}{
-						"trace_id":  opts.TraceID,
-						"iteration": iteration,
-						"max":       al.maxIterations,
-					})
 
-				systemPromptLen := 0
-				if len(currentMessages) > 0 {
-					systemPromptLen = len(currentMessages[0].Content)
-				}
+			remainingIterations := al.maxIterations - loopRes.Iterations + 1
+			if remainingIterations < 1 {
+				remainingIterations = 1
+			}
 
-				logger.DebugCF("agent", "LLM request",
-					map[string]interface{}{
-						"trace_id":          opts.TraceID,
-						"iteration":         iteration,
-						"model":             al.model,
-						"messages_count":    len(currentMessages),
-						"tools_count":       len(toolDefs),
-						"max_tokens":        al.chatOptions.MaxTokens,
-						"temperature":       al.chatOptions.Temperature,
-						"system_prompt_len": systemPromptLen,
-					})
-
-				logger.DebugCF("agent", "Full LLM request",
-					map[string]interface{}{
-						"trace_id":      opts.TraceID,
-						"iteration":     iteration,
-						"messages_json": formatMessagesForLog(currentMessages),
-						"tools_json":    formatToolsForLog(toolDefs),
-					})
-
-				logger.InfoCF("agent", "Calling LLM",
-					map[string]interface{}{
-						"trace_id":       opts.TraceID,
-						"iteration":      iteration,
-						"model":          al.model,
-						"messages_count": len(currentMessages),
-						"tools_count":    len(toolDefs),
-					})
-			},
-			LLMCallFailed: func(iteration int, err error) {
-				logger.ErrorCF("agent", "LLM call failed",
-					map[string]interface{}{
-						"trace_id":  opts.TraceID,
-						"iteration": iteration,
-						"error":     err.Error(),
-					})
-			},
-			ToolCallsRequested: func(iteration int, toolCalls []providers.ToolCall) {
-				toolNames := make([]string, 0, len(toolCalls))
-				for _, tc := range toolCalls {
-					toolNames = append(toolNames, tc.Name)
-				}
-				logger.InfoCF("agent", "LLM requested tool calls",
-					map[string]interface{}{
-						"trace_id":  opts.TraceID,
-						"tools":     toolNames,
-						"count":     len(toolNames),
-						"iteration": iteration,
-					})
-			},
-			DirectResponse: func(iteration int, content string) {
-				logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
-					map[string]interface{}{
-						"trace_id":      opts.TraceID,
-						"iteration":     iteration,
-						"content_chars": len(content),
-					})
-			},
-			AssistantMessage: func(_ int, msg providers.Message) {
-				al.sessions.AddFullMessage(opts.SessionKey, msg)
-				_ = al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
-			},
-			ToolResultMessage: func(_ int, msg providers.Message) {
-				al.sessions.AddFullMessage(opts.SessionKey, msg)
-				_ = al.sessions.Save(al.sessions.GetOrCreate(opts.SessionKey))
-			},
-		},
-	})
+			loopRes, err = runWithMessages(retryMessages, remainingIterations)
+		}
+	}
 	if err != nil {
 		return "", loopRes.Iterations, trackingProvider.maxPromptTokens, deliveredViaMessageTool, fmt.Errorf("LLM call failed: %w", err)
 	}
@@ -1216,6 +1271,47 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 	}
 
 	return finalContent, iteration, trackingProvider.maxPromptTokens, deliveredViaMessageTool, nil
+}
+
+func isPromptTooLongError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	patterns := []string{
+		"prompt exceeds max length",
+		"maximum context length",
+		"context length exceeded",
+		"context window exceeded",
+		"too many tokens",
+		"prompt is too long",
+		"input is too long",
+		`"code":"1261"`,
+		`"code": "1261"`,
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func promptTooLongRetryBudget(base providers.MessageBudget) providers.MessageBudget {
+	b := base
+	if b.MaxMessages <= 0 || b.MaxMessages > 80 {
+		b.MaxMessages = 80
+	}
+	if b.MaxTotalChars <= 0 || b.MaxTotalChars > 120000 {
+		b.MaxTotalChars = 120000
+	}
+	if b.MaxMessageChars <= 0 || b.MaxMessageChars > 12000 {
+		b.MaxMessageChars = 12000
+	}
+	if b.MaxToolMessageChars <= 0 || b.MaxToolMessageChars > 4000 {
+		b.MaxToolMessageChars = 4000
+	}
+	return b
 }
 
 func messageBudgetFromDefaults(d config.AgentDefaults) providers.MessageBudget {
