@@ -445,9 +445,9 @@ func TestParseClaudeResponse_PromptCachingCountsTowardPromptTokens(t *testing.T)
 	resp := &anthropic.Message{
 		Content: []anthropic.ContentBlockUnion{},
 		Usage: anthropic.Usage{
-			InputTokens:            3,
-			OutputTokens:           4,
-			CacheReadInputTokens:   100,
+			InputTokens:              3,
+			OutputTokens:             4,
+			CacheReadInputTokens:     100,
 			CacheCreationInputTokens: 50,
 		},
 	}
@@ -554,6 +554,68 @@ func TestClaudeProvider_AddsOAuthBetaHeaderForOAuthToken(t *testing.T) {
 
 		var reqBody map[string]interface{}
 		json.NewDecoder(r.Body).Decode(&reqBody)
+
+		resp := map[string]interface{}{
+			"id":          "msg_test",
+			"type":        "message",
+			"role":        "assistant",
+			"model":       reqBody["model"],
+			"stop_reason": "end_turn",
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "ok"},
+			},
+			"usage": map[string]interface{}{
+				"input_tokens":  1,
+				"output_tokens": 1,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	provider := NewClaudeProviderWithTokenSource("ignored", func() (string, error) {
+		return oauthToken, nil
+	})
+	provider.client = createAnthropicTestClient(server.URL, "ignored")
+
+	resp, err := provider.Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "claude-opus-4-6", map[string]interface{}{"max_tokens": 8})
+	if err != nil {
+		t.Fatalf("Chat() error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("Content = %q, want ok", resp.Content)
+	}
+}
+
+func TestClaudeProvider_OAuthAddsClaudeCodeSystemPrefix(t *testing.T) {
+	oauthToken := "sk-ant-oat01-test-oauth-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		var reqBody map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		systems, ok := reqBody["system"].([]interface{})
+		if !ok || len(systems) == 0 {
+			http.Error(w, "missing system", http.StatusBadRequest)
+			return
+		}
+		first, ok := systems[0].(map[string]interface{})
+		if !ok {
+			http.Error(w, "invalid system block", http.StatusBadRequest)
+			return
+		}
+		text, _ := first["text"].(string)
+		if !strings.Contains(text, "You are Claude Code, Anthropic's official CLI for Claude.") {
+			http.Error(w, "missing claude code oauth system prefix", http.StatusBadRequest)
+			return
+		}
 
 		resp := map[string]interface{}{
 			"id":          "msg_test",

@@ -13,6 +13,7 @@ import (
 )
 
 const anthropicPromptCachingBeta = "prompt-caching-2024-07-31"
+const claudeCodeOAuthSystemPrefix = "You are Claude Code, Anthropic's official CLI for Claude."
 
 type ClaudeProvider struct {
 	client      *anthropic.Client
@@ -78,12 +79,37 @@ func (p *ClaudeProvider) Chat(ctx context.Context, messages []Message, tools []T
 		return nil, err
 	}
 
+	ensureClaudeCodeOAuthSystemPrefix(&params, tok)
+
 	resp, err := p.client.Messages.New(ctx, params, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("claude API call: %w", err)
 	}
 
 	return parseClaudeResponse(resp), nil
+}
+
+func ensureClaudeCodeOAuthSystemPrefix(params *anthropic.MessageNewParams, token string) {
+	if params == nil || !isAnthropicOAuthToken(token) {
+		return
+	}
+	for _, block := range params.System {
+		if strings.Contains(block.Text, claudeCodeOAuthSystemPrefix) {
+			return
+		}
+	}
+	if len(params.System) == 0 {
+		params.System = []anthropic.TextBlockParam{{Text: claudeCodeOAuthSystemPrefix}}
+		return
+	}
+
+	first := params.System[0]
+	if strings.TrimSpace(first.Text) == "" {
+		first.Text = claudeCodeOAuthSystemPrefix
+	} else {
+		first.Text = claudeCodeOAuthSystemPrefix + "\n\n" + first.Text
+	}
+	params.System[0] = first
 }
 
 func (p *ClaudeProvider) GetDefaultModel() string {
