@@ -93,23 +93,14 @@ func ensureClaudeCodeOAuthSystemPrefix(params *anthropic.MessageNewParams, token
 	if params == nil || !isAnthropicOAuthToken(token) {
 		return
 	}
-	for _, block := range params.System {
-		if strings.Contains(block.Text, claudeCodeOAuthSystemPrefix) {
-			return
-		}
-	}
-	if len(params.System) == 0 {
-		params.System = []anthropic.TextBlockParam{{Text: claudeCodeOAuthSystemPrefix}}
+	if len(params.System) > 0 && strings.TrimSpace(params.System[0].Text) == claudeCodeOAuthSystemPrefix {
 		return
 	}
 
-	first := params.System[0]
-	if strings.TrimSpace(first.Text) == "" {
-		first.Text = claudeCodeOAuthSystemPrefix
-	} else {
-		first.Text = claudeCodeOAuthSystemPrefix + "\n\n" + first.Text
-	}
-	params.System[0] = first
+	prefixed := make([]anthropic.TextBlockParam, 0, len(params.System)+1)
+	prefixed = append(prefixed, anthropic.TextBlockParam{Text: claudeCodeOAuthSystemPrefix})
+	prefixed = append(prefixed, params.System...)
+	params.System = prefixed
 }
 
 func (p *ClaudeProvider) GetDefaultModel() string {

@@ -612,7 +612,7 @@ func TestClaudeProvider_OAuthAddsClaudeCodeSystemPrefix(t *testing.T) {
 			return
 		}
 		text, _ := first["text"].(string)
-		if !strings.Contains(text, "You are Claude Code, Anthropic's official CLI for Claude.") {
+		if text != "You are Claude Code, Anthropic's official CLI for Claude." {
 			http.Error(w, "missing claude code oauth system prefix", http.StatusBadRequest)
 			return
 		}
@@ -642,6 +642,77 @@ func TestClaudeProvider_OAuthAddsClaudeCodeSystemPrefix(t *testing.T) {
 	provider.client = createAnthropicTestClient(server.URL, "ignored")
 
 	resp, err := provider.Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "claude-opus-4-6", map[string]interface{}{"max_tokens": 8})
+	if err != nil {
+		t.Fatalf("Chat() error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("Content = %q, want ok", resp.Content)
+	}
+}
+
+func TestClaudeProvider_OAuthPreservesExistingSystemAsSeparateBlock(t *testing.T) {
+	oauthToken := "sk-ant-oat01-test-oauth-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		var reqBody map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		systems, ok := reqBody["system"].([]interface{})
+		if !ok || len(systems) < 2 {
+			http.Error(w, "missing expected system blocks", http.StatusBadRequest)
+			return
+		}
+		first, ok := systems[0].(map[string]interface{})
+		if !ok {
+			http.Error(w, "invalid first system block", http.StatusBadRequest)
+			return
+		}
+		if text, _ := first["text"].(string); text != "You are Claude Code, Anthropic's official CLI for Claude." {
+			http.Error(w, "invalid oauth system prefix block", http.StatusBadRequest)
+			return
+		}
+		second, ok := systems[1].(map[string]interface{})
+		if !ok {
+			http.Error(w, "invalid second system block", http.StatusBadRequest)
+			return
+		}
+		if text, _ := second["text"].(string); text != "You are picoclaw, a helpful AI assistant." {
+			http.Error(w, "existing system prompt was not preserved as separate block", http.StatusBadRequest)
+			return
+		}
+
+		resp := map[string]interface{}{
+			"id":          "msg_test",
+			"type":        "message",
+			"role":        "assistant",
+			"model":       reqBody["model"],
+			"stop_reason": "end_turn",
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "ok"},
+			},
+			"usage": map[string]interface{}{
+				"input_tokens":  1,
+				"output_tokens": 1,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	provider := NewClaudeProviderWithTokenSource("ignored", func() (string, error) {
+		return oauthToken, nil
+	})
+	provider.client = createAnthropicTestClient(server.URL, "ignored")
+
+	messages := []Message{{Role: "system", Content: "You are picoclaw, a helpful AI assistant."}, {Role: "user", Content: "hi"}}
+	resp, err := provider.Chat(t.Context(), messages, nil, "claude-opus-4-6", map[string]interface{}{"max_tokens": 8})
 	if err != nil {
 		t.Fatalf("Chat() error: %v", err)
 	}
