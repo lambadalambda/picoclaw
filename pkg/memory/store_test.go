@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +112,56 @@ func TestStore_WritesToMarkdown_Event(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "deployed v2.0") {
 		t.Errorf("expected daily log to contain stored memory, got:\n%s", string(data))
+	}
+}
+
+func TestStore_WritesToMarkdown_CapsMemoryFileSize(t *testing.T) {
+	s := newTestStore(t)
+
+	chunk := strings.Repeat("x", 6000)
+	for i := 0; i < 12; i++ {
+		_, err := s.Store(fmt.Sprintf("pref-%02d-%s", i, chunk), "preference", "chat", nil)
+		if err != nil {
+			t.Fatalf("Store failed at %d: %v", i, err)
+		}
+	}
+
+	memoryFile := filepath.Join(s.workspace, "memory", "MEMORY.md")
+	data, err := os.ReadFile(memoryFile)
+	if err != nil {
+		t.Fatalf("failed to read MEMORY.md: %v", err)
+	}
+	if len(data) > MarkdownFileMaxChars {
+		t.Fatalf("MEMORY.md size = %d, want <= %d", len(data), MarkdownFileMaxChars)
+	}
+	if !strings.Contains(string(data), markdownTrimNotice) {
+		t.Fatalf("expected MEMORY.md to include trim notice when capped")
+	}
+}
+
+func TestStore_WritesToMarkdown_CapsDailyFileSize(t *testing.T) {
+	s := newTestStore(t)
+
+	chunk := strings.Repeat("y", 6000)
+	for i := 0; i < 12; i++ {
+		_, err := s.Store(fmt.Sprintf("event-%02d-%s", i, chunk), "event", "chat", nil)
+		if err != nil {
+			t.Fatalf("Store failed at %d: %v", i, err)
+		}
+	}
+
+	today := time.Now().Format("20060102")
+	monthDir := today[:6]
+	dailyFile := filepath.Join(s.workspace, "memory", monthDir, today+".md")
+	data, err := os.ReadFile(dailyFile)
+	if err != nil {
+		t.Fatalf("failed to read daily file: %v", err)
+	}
+	if len(data) > MarkdownFileMaxChars {
+		t.Fatalf("daily file size = %d, want <= %d", len(data), MarkdownFileMaxChars)
+	}
+	if !strings.Contains(string(data), markdownTrimNotice) {
+		t.Fatalf("expected daily file to include trim notice when capped")
 	}
 }
 

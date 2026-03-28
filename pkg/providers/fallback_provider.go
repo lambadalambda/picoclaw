@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -114,6 +115,9 @@ func isModelFallbackEligibleError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+	if isOpaqueAnthropicBadRequest(msg) {
+		return true
+	}
 	patterns := []string{
 		"model not found",
 		"unknown model",
@@ -147,6 +151,28 @@ func isModelFallbackEligibleError(err error) bool {
 		}
 	}
 	return false
+}
+
+func isOpaqueAnthropicBadRequest(msg string) bool {
+	if !strings.Contains(msg, "api.anthropic.com/v1/messages") || !strings.Contains(msg, "400 bad request") {
+		return false
+	}
+
+	if start := strings.Index(msg, "{"); start >= 0 {
+		var payload struct {
+			Error struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(msg[start:]), &payload); err == nil {
+			return strings.EqualFold(strings.TrimSpace(payload.Error.Type), "invalid_request_error") &&
+				strings.EqualFold(strings.TrimSpace(payload.Error.Message), "error")
+		}
+	}
+
+	return strings.Contains(msg, "invalid_request_error") &&
+		(strings.Contains(msg, `"message":"error"`) || strings.Contains(msg, `"message": "error"`))
 }
 
 func normalizeFallbackModels(primary string, fallbackModels []string) []string {

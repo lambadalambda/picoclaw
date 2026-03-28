@@ -91,6 +91,7 @@ type processTaskResult struct {
 func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers.LLMProvider) *AgentLoop {
 	workspace := cfg.WorkspacePath()
 	os.MkdirAll(workspace, 0755)
+	provider = providers.NewUsageTrackingProvider(provider, workspace)
 	messageBudget := messageBudgetFromDefaults(cfg.Agents.Defaults)
 	webSearchCfg := cfg.Tools.Web.Search
 	zaiSearchKey, zaiSearchBase := resolveZAISearchCredentials(webSearchCfg, cfg.Providers)

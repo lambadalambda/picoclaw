@@ -8,7 +8,15 @@ import (
 func TestApplyMessageBudget_TruncatesToolMessage(t *testing.T) {
 	messages := []Message{
 		{Role: "system", Content: "sys"},
-		{Role: "tool", Content: strings.Repeat("x", 120)},
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{{
+				ID:        "call_1",
+				Name:      "exec",
+				Arguments: map[string]interface{}{"command": "pwd"},
+			}},
+		},
+		{Role: "tool", ToolCallID: "call_1", Content: strings.Repeat("x", 120)},
 	}
 
 	out, stats := ApplyMessageBudget(messages, MessageBudget{
@@ -16,14 +24,14 @@ func TestApplyMessageBudget_TruncatesToolMessage(t *testing.T) {
 		MaxToolMessageChars: 24,
 	})
 
-	if len(out) != 2 {
-		t.Fatalf("len(out) = %d, want 2", len(out))
+	if len(out) != 3 {
+		t.Fatalf("len(out) = %d, want 3", len(out))
 	}
-	if len(out[1].Content) > 24 {
-		t.Fatalf("tool message len = %d, want <= 24", len(out[1].Content))
+	if len(out[2].Content) > 24 {
+		t.Fatalf("tool message len = %d, want <= 24", len(out[2].Content))
 	}
-	if !strings.Contains(out[1].Content, "truncated") {
-		t.Fatalf("expected truncation marker in tool message, got %q", out[1].Content)
+	if !strings.Contains(out[2].Content, "truncated") {
+		t.Fatalf("expected truncation marker in tool message, got %q", out[2].Content)
 	}
 	if stats.TruncatedMessages != 1 {
 		t.Fatalf("TruncatedMessages = %d, want 1", stats.TruncatedMessages)
@@ -36,7 +44,7 @@ func TestApplyMessageBudget_MaxMessagesKeepsSystemAndLatest(t *testing.T) {
 		{Role: "user", Content: "u1"},
 		{Role: "assistant", Content: "a1"},
 		{Role: "user", Content: "u2"},
-		{Role: "tool", Content: "t2"},
+		{Role: "assistant", Content: "a2"},
 	}
 
 	out, stats := ApplyMessageBudget(messages, MessageBudget{MaxMessages: 3})
@@ -47,7 +55,7 @@ func TestApplyMessageBudget_MaxMessagesKeepsSystemAndLatest(t *testing.T) {
 	if out[0].Role != "system" {
 		t.Fatalf("first role = %q, want system", out[0].Role)
 	}
-	if out[1].Content != "u2" || out[2].Content != "t2" {
+	if out[1].Content != "u2" || out[2].Content != "a2" {
 		t.Fatalf("expected newest non-system messages preserved, got %+v", out)
 	}
 	if stats.DroppedMessages != 2 {
@@ -104,5 +112,32 @@ func TestBudgetFromContextWindow_Defaults(t *testing.T) {
 	}
 	if b.MaxToolMessageChars > b.MaxMessageChars {
 		t.Fatalf("expected tool cap <= message cap, got tool=%d message=%d", b.MaxToolMessageChars, b.MaxMessageChars)
+	}
+}
+
+func TestApplyMessageBudget_RemovesOrphanToolResultAfterTrim(t *testing.T) {
+	messages := []Message{
+		{Role: "system", Content: "sys"},
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{{
+				ID:        "call_1",
+				Name:      "exec",
+				Arguments: map[string]interface{}{"command": "pwd"},
+			}},
+		},
+		{Role: "tool", ToolCallID: "call_1", Content: "ok"},
+	}
+
+	out, stats := ApplyMessageBudget(messages, MessageBudget{MaxMessages: 2})
+
+	if len(out) != 1 {
+		t.Fatalf("len(out) = %d, want 1", len(out))
+	}
+	if out[0].Role != "system" {
+		t.Fatalf("role = %q, want system", out[0].Role)
+	}
+	if stats.DroppedMessages != 2 {
+		t.Fatalf("DroppedMessages = %d, want 2", stats.DroppedMessages)
 	}
 }

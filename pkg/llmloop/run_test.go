@@ -183,20 +183,28 @@ func TestRun_AppliesMessageBudget_BeforeProviderCall(t *testing.T) {
 		},
 		Messages: []providers.Message{
 			{Role: "system", Content: "sys"},
-			{Role: "tool", Content: longTool},
+			{
+				Role: "assistant",
+				ToolCalls: []providers.ToolCall{{
+					ID:        "call_1",
+					Name:      "exec",
+					Arguments: map[string]interface{}{"command": "pwd"},
+				}},
+			},
+			{Role: "tool", ToolCallID: "call_1", Content: longTool},
 		},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(p.seenMsgs) != 1 || len(p.seenMsgs[0]) != 2 {
+	if len(p.seenMsgs) != 1 || len(p.seenMsgs[0]) != 3 {
 		t.Fatalf("unexpected captured messages: %+v", p.seenMsgs)
 	}
-	if got := len(p.seenMsgs[0][1].Content); got > 24 {
+	if got := len(p.seenMsgs[0][2].Content); got > 24 {
 		t.Fatalf("tool message len = %d, want <= 24", got)
 	}
-	if !strings.Contains(p.seenMsgs[0][1].Content, "truncated") {
-		t.Fatalf("expected truncation marker, got %q", p.seenMsgs[0][1].Content)
+	if !strings.Contains(p.seenMsgs[0][2].Content, "truncated") {
+		t.Fatalf("expected truncation marker, got %q", p.seenMsgs[0][2].Content)
 	}
 }
 

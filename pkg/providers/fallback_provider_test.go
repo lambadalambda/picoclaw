@@ -87,6 +87,30 @@ func TestFallbackProvider_UsesFallbackModelOnInternalServerErrors(t *testing.T) 
 	}
 }
 
+func TestFallbackProvider_UsesFallbackModelOnOpaqueAnthropicBadRequests(t *testing.T) {
+	primary := &scriptedProvider{results: []scriptedResult{{err: fmt.Errorf("claude API call: POST \"https://api.anthropic.com/v1/messages\": 400 Bad Request (Request-ID: req_123) {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Error\"},\"request_id\":\"req_123\"}")}}}
+	backup := &scriptedProvider{results: []scriptedResult{{resp: &LLMResponse{Content: "from-backup"}}}}
+
+	p := newFallbackProvider("primary-model", []fallbackCandidate{
+		{model: "primary-model", provider: primary},
+		{model: "backup-model", provider: backup},
+	})
+
+	resp, err := p.Chat(context.Background(), nil, nil, "primary-model", nil)
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if resp == nil || resp.Content != "from-backup" {
+		t.Fatalf("Chat() response = %#v, want backup response", resp)
+	}
+	if len(primary.calls) != 1 || primary.calls[0] != "primary-model" {
+		t.Fatalf("primary calls = %v, want [primary-model]", primary.calls)
+	}
+	if len(backup.calls) != 1 || backup.calls[0] != "backup-model" {
+		t.Fatalf("backup calls = %v, want [backup-model]", backup.calls)
+	}
+}
+
 func TestFallbackProvider_DoesNotFallbackOnNonAvailabilityErrors(t *testing.T) {
 	primary := &scriptedProvider{results: []scriptedResult{{err: fmt.Errorf("provider error: 400 invalid_request_error")}}}
 	backup := &scriptedProvider{results: []scriptedResult{{resp: &LLMResponse{Content: "from-backup"}}}}
@@ -137,6 +161,7 @@ func TestIsModelFallbackEligibleError(t *testing.T) {
 	}{
 		{name: "503 unavailable", err: fmt.Errorf("provider error: 503 service unavailable"), want: true},
 		{name: "500 internal server error", err: fmt.Errorf("claude API call: POST \"https://api.anthropic.com/v1/messages\": 500 Internal Server Error"), want: true},
+		{name: "opaque anthropic 400", err: fmt.Errorf("claude API call: POST \"https://api.anthropic.com/v1/messages\": 400 Bad Request (Request-ID: req_123) {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Error\"},\"request_id\":\"req_123\"}"), want: true},
 		{name: "429 rate limit", err: fmt.Errorf("HTTP 429 too many requests"), want: true},
 		{name: "model not found", err: fmt.Errorf("invalid_request_error: model not found"), want: true},
 		{name: "generic bad request", err: fmt.Errorf("invalid_request_error: bad tool arguments"), want: false},

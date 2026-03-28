@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -23,6 +24,10 @@ type OAuthProviderConfig struct {
 	Scopes   string
 	Port     int
 }
+
+const anthropicOAuthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+const anthropicOAuthTokenURL = "https://platform.claude.com/v1/oauth/token"
+const anthropicOAuthUserAgent = "claude-cli/2.1.15 (external, cli)"
 
 func OpenAIOAuthConfig() OAuthProviderConfig {
 	return OAuthProviderConfig{
@@ -229,6 +234,74 @@ func RefreshAccessToken(cred *AuthCredential, cfg OAuthProviderConfig) (*AuthCre
 	}
 
 	return parseTokenResponse(body, cred.Provider)
+}
+
+func RefreshAnthropicAccessToken(cred *AuthCredential) (*AuthCredential, error) {
+	return refreshAnthropicAccessToken(cred, anthropicOAuthTokenURL, anthropicOAuthClientID)
+}
+
+func refreshAnthropicAccessToken(cred *AuthCredential, tokenURL, clientID string) (*AuthCredential, error) {
+	if cred == nil {
+		return nil, fmt.Errorf("no credentials provided")
+	}
+	if cred.RefreshToken == "" {
+		return nil, fmt.Errorf("no refresh token available")
+	}
+
+	tokenURL = strings.TrimSpace(tokenURL)
+	clientID = strings.TrimSpace(clientID)
+	if tokenURL == "" {
+		return nil, fmt.Errorf("token URL is required")
+	}
+	if clientID == "" {
+		return nil, fmt.Errorf("client ID is required")
+	}
+
+	payload := map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": cred.RefreshToken,
+		"client_id":     clientID,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encoding refresh payload: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, tokenURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", anthropicOAuthUserAgent)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("refreshing token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token refresh failed: %s", string(respBody))
+	}
+
+	refreshed, err := parseTokenResponse(respBody, "anthropic")
+	if err != nil {
+		return nil, err
+	}
+
+	if refreshed.RefreshToken == "" {
+		refreshed.RefreshToken = cred.RefreshToken
+	}
+	if refreshed.Provider == "" {
+		refreshed.Provider = "anthropic"
+	}
+	if refreshed.AuthMethod == "" {
+		refreshed.AuthMethod = "oauth"
+	}
+
+	return refreshed, nil
 }
 
 func BuildAuthorizeURL(cfg OAuthProviderConfig, pkce PKCECodes, state, redirectURI string) string {

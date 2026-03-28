@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -114,6 +115,18 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 	if err != nil {
 		return anthropic.MessageNewParams{}, err
 	}
+
+	beforeCount := len(messages)
+	messages, dropped := SanitizeToolTranscript(messages)
+	if dropped > 0 {
+		logger.WarnCF("provider", "Dropped invalid tool transcript messages before Claude request",
+			map[string]interface{}{
+				"messages_before": beforeCount,
+				"messages_after":  len(messages),
+				"dropped":         dropped,
+			})
+	}
+
 	toolResultIsError := func(content string) bool {
 		content = strings.TrimSpace(content)
 		if content == "" {
@@ -173,8 +186,11 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 		return anthropic.ContentBlockParamUnion{OfToolResult: &toolRes}
 	}
 
-	for _, msg := range messages {
-		switch msg.Role {
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+
+		switch role {
 		case "system":
 			tb := anthropic.TextBlockParam{Text: msg.Content}
 			system = append(system, tb)
@@ -243,7 +259,16 @@ func buildClaudeParams(messages []Message, tools []ToolDefinition, model string,
 				)
 			}
 		case "tool":
-			anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(buildToolResultBlock(msg)))
+			blocks := []anthropic.ContentBlockParamUnion{buildToolResultBlock(msg)}
+			for i+1 < len(messages) {
+				next := messages[i+1]
+				if strings.ToLower(strings.TrimSpace(next.Role)) != "tool" {
+					break
+				}
+				i++
+				blocks = append(blocks, buildToolResultBlock(next))
+			}
+			anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(blocks...))
 		}
 	}
 
@@ -467,6 +492,14 @@ func parseClaudeResponse(resp *anthropic.Message) *LLMResponse {
 	logClaudeCacheUsage(resp)
 
 	promptTokens := effectiveClaudePromptTokens(resp.Usage)
+	inputTokens := int(resp.Usage.InputTokens)
+	cacheReadInputTokens := int(resp.Usage.CacheReadInputTokens)
+	cacheCreationInputTokens := int(resp.Usage.CacheCreationInputTokens)
+	cacheCreationEphemeral5mInputTokens := int(resp.Usage.CacheCreation.Ephemeral5mInputTokens)
+	cacheCreationEphemeral1hInputTokens := int(resp.Usage.CacheCreation.Ephemeral1hInputTokens)
+	if cacheCreationInputTokens <= 0 {
+		cacheCreationInputTokens = cacheCreationEphemeral5mInputTokens + cacheCreationEphemeral1hInputTokens
+	}
 	completionTokens := int(resp.Usage.OutputTokens)
 	totalTokens := promptTokens + completionTokens
 
@@ -475,9 +508,16 @@ func parseClaudeResponse(resp *anthropic.Message) *LLMResponse {
 		ToolCalls:    toolCalls,
 		FinishReason: finishReason,
 		Usage: &UsageInfo{
-			PromptTokens:     promptTokens,
-			CompletionTokens: completionTokens,
-			TotalTokens:      totalTokens,
+			Provider:                            "anthropic",
+			PromptTokens:                        promptTokens,
+			CompletionTokens:                    completionTokens,
+			TotalTokens:                         totalTokens,
+			InputTokens:                         inputTokens,
+			OutputTokens:                        completionTokens,
+			CacheReadInputTokens:                cacheReadInputTokens,
+			CacheCreationInputTokens:            cacheCreationInputTokens,
+			CacheCreationEphemeral5mInputTokens: cacheCreationEphemeral5mInputTokens,
+			CacheCreationEphemeral1hInputTokens: cacheCreationEphemeral1hInputTokens,
 		},
 	}
 }
@@ -551,7 +591,12 @@ func anthropicCacheHitRatio(inputTokens, cacheReadInputTokens int64) (float64, b
 }
 
 func createClaudeTokenSource() func() (string, error) {
+	var mu sync.Mutex
+
 	return func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
 		cred, err := auth.GetCredential("anthropic")
 		if err != nil {
 			return "", fmt.Errorf("loading auth credentials: %w", err)
@@ -559,6 +604,25 @@ func createClaudeTokenSource() func() (string, error) {
 		if cred == nil {
 			return "", fmt.Errorf("no credentials for anthropic. Run: picoclaw auth login --provider anthropic")
 		}
+
+		if strings.EqualFold(cred.AuthMethod, "oauth") && cred.NeedsRefresh() {
+			if strings.TrimSpace(cred.RefreshToken) == "" {
+				if cred.IsExpired() {
+					return "", fmt.Errorf("anthropic oauth token expired and no refresh token is available; run auth login again")
+				}
+				return cred.AccessToken, nil
+			}
+
+			refreshed, err := auth.RefreshAnthropicAccessToken(cred)
+			if err != nil {
+				return "", fmt.Errorf("refreshing token: %w", err)
+			}
+			if err := auth.SetCredential("anthropic", refreshed); err != nil {
+				return "", fmt.Errorf("saving refreshed token: %w", err)
+			}
+			return refreshed.AccessToken, nil
+		}
+
 		return cred.AccessToken, nil
 	}
 }

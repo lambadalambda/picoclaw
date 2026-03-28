@@ -130,6 +130,14 @@ func ApplyMessageBudget(messages []Message, budget MessageBudget) ([]Message, Me
 		}
 	}
 
+	// Budget trimming can split tool-call exchanges (assistant tool_calls + tool
+	// results). Drop any orphaned or incomplete tool transcript fragments so
+	// providers that validate strict tool sequencing do not reject the request.
+	if sanitized, dropped := SanitizeToolTranscript(trimmed); dropped > 0 {
+		stats.DroppedMessages += dropped
+		trimmed = sanitized
+	}
+
 	stats.OutputMessages = len(trimmed)
 	stats.CharsAfter = sumMessageChars(trimmed)
 	return trimmed, stats

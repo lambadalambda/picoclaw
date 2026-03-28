@@ -194,6 +194,86 @@ func TestBuildClaudeParams_ToolCallMessage(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeParams_GroupsConsecutiveToolResults(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "run checks"},
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{ID: "call_1", Name: "exec", Arguments: map[string]interface{}{"command": "pwd"}},
+				{ID: "call_2", Name: "exec", Arguments: map[string]interface{}{"command": "ls"}},
+			},
+		},
+		{Role: "tool", ToolCallID: "call_1", Content: "/tmp"},
+		{Role: "tool", ToolCallID: "call_2", Content: "file.txt"},
+	}
+
+	params, err := buildClaudeParams(messages, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("buildClaudeParams() error: %v", err)
+	}
+
+	b, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("json.Marshal(params) error: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(b, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error: %v", err)
+	}
+
+	msgs, ok := payload["messages"].([]interface{})
+	if !ok {
+		t.Fatalf("payload.messages has unexpected type: %T", payload["messages"])
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len(payload.messages) = %d, want 3", len(msgs))
+	}
+
+	last, ok := msgs[2].(map[string]interface{})
+	if !ok {
+		t.Fatalf("payload.messages[2] has unexpected type: %T", msgs[2])
+	}
+	blocks, ok := last["content"].([]interface{})
+	if !ok {
+		t.Fatalf("payload.messages[2].content has unexpected type: %T", last["content"])
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("len(payload.messages[2].content) = %d, want 2", len(blocks))
+	}
+
+	for i, raw := range blocks {
+		block, ok := raw.(map[string]interface{})
+		if !ok {
+			t.Fatalf("content[%d] has unexpected type: %T", i, raw)
+		}
+		if block["type"] != "tool_result" {
+			t.Fatalf("content[%d].type = %v, want tool_result", i, block["type"])
+		}
+	}
+}
+
+func TestBuildClaudeParams_DropsOrphanToolResult(t *testing.T) {
+	messages := []Message{
+		{Role: "tool", ToolCallID: "call_orphan", Content: "orphan"},
+		{Role: "user", Content: "hi"},
+	}
+
+	params, err := buildClaudeParams(messages, nil, "claude-sonnet-4-5-20250929", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("buildClaudeParams() error: %v", err)
+	}
+
+	b, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("json.Marshal(params) error: %v", err)
+	}
+	if strings.Contains(string(b), "tool_result") {
+		t.Fatalf("expected orphan tool_result to be dropped, got: %s", string(b))
+	}
+}
+
 func TestBuildClaudeParams_ToolResultMarksIsError(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Content: "What's the weather?"},

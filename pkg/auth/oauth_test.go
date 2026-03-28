@@ -185,6 +185,122 @@ func TestRefreshAccessTokenNoRefreshToken(t *testing.T) {
 	}
 }
 
+func TestRefreshAnthropicAccessToken(t *testing.T) {
+	var gotGrantType string
+	var gotRefreshToken string
+	var gotClientID string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/oauth/token" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+			http.Error(w, "expected application/json", http.StatusBadRequest)
+			return
+		}
+
+		var reqBody map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+
+		gotGrantType = reqBody["grant_type"]
+		gotRefreshToken = reqBody["refresh_token"]
+		gotClientID = reqBody["client_id"]
+
+		resp := map[string]interface{}{
+			"access_token":  "refreshed-anthropic-access-token",
+			"refresh_token": "refreshed-anthropic-refresh-token",
+			"expires_in":    7200,
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cred := &AuthCredential{
+		AccessToken:  "old-anthropic-token",
+		RefreshToken: "old-anthropic-refresh-token",
+		Provider:     "anthropic",
+		AuthMethod:   "oauth",
+	}
+
+	refreshed, err := refreshAnthropicAccessToken(cred, server.URL+"/v1/oauth/token", "test-client-id")
+	if err != nil {
+		t.Fatalf("refreshAnthropicAccessToken() error: %v", err)
+	}
+
+	if gotGrantType != "refresh_token" {
+		t.Fatalf("grant_type = %q, want refresh_token", gotGrantType)
+	}
+	if gotRefreshToken != "old-anthropic-refresh-token" {
+		t.Fatalf("refresh_token = %q, want old-anthropic-refresh-token", gotRefreshToken)
+	}
+	if gotClientID != "test-client-id" {
+		t.Fatalf("client_id = %q, want test-client-id", gotClientID)
+	}
+
+	if refreshed.AccessToken != "refreshed-anthropic-access-token" {
+		t.Fatalf("AccessToken = %q, want refreshed-anthropic-access-token", refreshed.AccessToken)
+	}
+	if refreshed.RefreshToken != "refreshed-anthropic-refresh-token" {
+		t.Fatalf("RefreshToken = %q, want refreshed-anthropic-refresh-token", refreshed.RefreshToken)
+	}
+	if refreshed.Provider != "anthropic" {
+		t.Fatalf("Provider = %q, want anthropic", refreshed.Provider)
+	}
+	if refreshed.AuthMethod != "oauth" {
+		t.Fatalf("AuthMethod = %q, want oauth", refreshed.AuthMethod)
+	}
+	if refreshed.ExpiresAt.IsZero() {
+		t.Fatal("ExpiresAt should not be zero")
+	}
+}
+
+func TestRefreshAnthropicAccessToken_PreservesRefreshTokenWhenMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"access_token": "new-access-token",
+			"expires_in":   3600,
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cred := &AuthCredential{
+		AccessToken:  "old-access-token",
+		RefreshToken: "stable-refresh-token",
+		Provider:     "anthropic",
+		AuthMethod:   "oauth",
+	}
+
+	refreshed, err := refreshAnthropicAccessToken(cred, server.URL, "test-client-id")
+	if err != nil {
+		t.Fatalf("refreshAnthropicAccessToken() error: %v", err)
+	}
+	if refreshed.RefreshToken != "stable-refresh-token" {
+		t.Fatalf("RefreshToken = %q, want stable-refresh-token", refreshed.RefreshToken)
+	}
+}
+
+func TestRefreshAnthropicAccessTokenNoRefreshToken(t *testing.T) {
+	cred := &AuthCredential{
+		AccessToken: "old-token",
+		Provider:    "anthropic",
+		AuthMethod:  "oauth",
+	}
+
+	_, err := RefreshAnthropicAccessToken(cred)
+	if err == nil {
+		t.Fatal("expected error for missing refresh token")
+	}
+}
+
 func TestOpenAIOAuthConfig(t *testing.T) {
 	cfg := OpenAIOAuthConfig()
 	if cfg.Issuer != "https://auth.openai.com" {

@@ -31,13 +31,19 @@ type MemoryStats struct {
 }
 
 // MemoryStore provides semantic memory storage backed by SQLite with FTS5,
-// with markdown files as the source of truth.
+// with markdown files as a bounded write-through mirror for prompt context.
 type MemoryStore struct {
 	db        *sql.DB
 	workspace string
 }
 
 const schemaVersion = 1
+
+// MarkdownFileMaxChars bounds each markdown memory file so prompt context does
+// not grow unbounded. Older entries remain available via memory_search (SQLite).
+const MarkdownFileMaxChars = 40 * 1024
+
+const markdownTrimNotice = "[... older memory entries omitted from this file; use memory_search to access full history ...]"
 
 // NewMemoryStore opens or creates a SQLite memory database at dbPath.
 // workspace is the picoclaw workspace root (parent of memory/).
@@ -193,7 +199,7 @@ func (s *MemoryStore) Store(content, category, source string, metadata map[strin
 		return 0, err
 	}
 
-	// Write through to markdown (best-effort — DB is the index, markdown is truth)
+	// Write through to bounded markdown context files (best-effort).
 	s.writeToMarkdown(content, category)
 
 	return id, nil
@@ -397,31 +403,88 @@ func (s *MemoryStore) writeToMarkdown(content, category string) {
 	case "preference", "note":
 		// Append to MEMORY.md
 		memoryFile := filepath.Join(memoryDir, "MEMORY.md")
-		s.appendToFile(memoryFile, entry)
+		s.appendToFile(memoryFile, entry, "# Memory\n\n")
 	default:
 		// fact, event, general → daily log
 		today := time.Now().Format("20060102")
+		header := fmt.Sprintf("# %s\n\n", time.Now().Format("2006-01-02"))
 		monthDir := today[:6]
 		dailyDir := filepath.Join(memoryDir, monthDir)
 		os.MkdirAll(dailyDir, 0755)
 
 		dailyFile := filepath.Join(dailyDir, today+".md")
-		if _, err := os.Stat(dailyFile); os.IsNotExist(err) {
-			header := fmt.Sprintf("# %s\n\n", time.Now().Format("2006-01-02"))
-			os.WriteFile(dailyFile, []byte(header+entry), 0644)
-		} else {
-			s.appendToFile(dailyFile, entry)
-		}
+		s.appendToFile(dailyFile, entry, header)
 	}
 }
 
-func (s *MemoryStore) appendToFile(path, content string) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
+func (s *MemoryStore) appendToFile(path, content, defaultHeader string) {
+	existing := ""
+	if data, err := os.ReadFile(path); err == nil {
+		existing = string(data)
 	}
-	defer f.Close()
-	f.WriteString(content)
+
+	if strings.TrimSpace(existing) == "" && strings.TrimSpace(defaultHeader) != "" {
+		existing = defaultHeader
+	}
+
+	combined := existing
+	if combined != "" && !strings.HasSuffix(combined, "\n") {
+		combined += "\n"
+	}
+	combined += content
+
+	combined = enforceMarkdownFileLimit(combined)
+
+	_ = os.WriteFile(path, []byte(combined), 0644)
+}
+
+func enforceMarkdownFileLimit(content string) string {
+	if len(content) <= MarkdownFileMaxChars {
+		return content
+	}
+
+	header, body := splitMarkdownHeader(content)
+	trimPrefix := markdownTrimNotice + "\n\n"
+	body = strings.TrimPrefix(body, trimPrefix)
+
+	keep := MarkdownFileMaxChars - len(header) - len(trimPrefix)
+	if keep <= 0 {
+		header = ""
+		keep = MarkdownFileMaxChars - len(trimPrefix)
+		if keep < 0 {
+			keep = 0
+			trimPrefix = ""
+		}
+	}
+
+	if len(body) > keep {
+		body = body[len(body)-keep:]
+		if idx := strings.IndexByte(body, '\n'); idx >= 0 && idx < len(body)-1 {
+			body = body[idx+1:]
+		}
+	}
+
+	result := header + trimPrefix + body
+	if len(result) > MarkdownFileMaxChars {
+		result = result[len(result)-MarkdownFileMaxChars:]
+	}
+	return result
+}
+
+func splitMarkdownHeader(content string) (string, string) {
+	if !strings.HasPrefix(content, "#") {
+		return "", content
+	}
+
+	if sep := strings.Index(content, "\n\n"); sep >= 0 {
+		return content[:sep+2], content[sep+2:]
+	}
+
+	if lineEnd := strings.IndexByte(content, '\n'); lineEnd >= 0 {
+		return content[:lineEnd+1], content[lineEnd+1:]
+	}
+
+	return content + "\n\n", ""
 }
 
 // extractMemoryLines parses markdown content into individual memory entries.

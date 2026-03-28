@@ -270,9 +270,13 @@ func parseCodexResponse(resp *responses.Response) *LLMResponse {
 	var usage *UsageInfo
 	if resp.Usage.TotalTokens > 0 {
 		usage = &UsageInfo{
-			PromptTokens:     int(resp.Usage.InputTokens),
-			CompletionTokens: int(resp.Usage.OutputTokens),
-			TotalTokens:      int(resp.Usage.TotalTokens),
+			Provider:           "codex",
+			PromptTokens:       int(resp.Usage.InputTokens),
+			CompletionTokens:   int(resp.Usage.OutputTokens),
+			TotalTokens:        int(resp.Usage.TotalTokens),
+			InputTokens:        int(resp.Usage.InputTokens),
+			OutputTokens:       int(resp.Usage.OutputTokens),
+			CachedPromptTokens: int(resp.Usage.InputTokensDetails.CachedTokens),
 		}
 	}
 

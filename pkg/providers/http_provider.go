@@ -488,7 +488,7 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage *UsageInfo `json:"usage"`
+		Usage map[string]interface{} `json:"usage"`
 	}
 
 	if err := json.Unmarshal(body, &apiResponse); err != nil {
@@ -562,7 +562,7 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 		Content:      choice.Message.Content,
 		ToolCalls:    toolCalls,
 		FinishReason: choice.FinishReason,
-		Usage:        apiResponse.Usage,
+		Usage:        usageInfoFromMap(apiResponse.Usage, "openai-compatible"),
 	}, nil
 }
 
@@ -636,6 +636,94 @@ func promptTokensFromUsageMap(usage map[string]interface{}) (float64, bool) {
 	return 0, false
 }
 
+func completionTokensFromUsageMap(usage map[string]interface{}) (float64, bool) {
+	if v, ok := toFloat64(usage["completion_tokens"]); ok {
+		return v, true
+	}
+	if v, ok := toFloat64(usage["output_tokens"]); ok {
+		return v, true
+	}
+	return 0, false
+}
+
+func totalTokensFromUsageMap(usage map[string]interface{}) (float64, bool) {
+	if v, ok := toFloat64(usage["total_tokens"]); ok {
+		return v, true
+	}
+	return 0, false
+}
+
+func usageInfoFromMap(usage map[string]interface{}, provider string) *UsageInfo {
+	if len(usage) == 0 {
+		return nil
+	}
+
+	info := &UsageInfo{Provider: strings.TrimSpace(provider)}
+
+	if promptTokens, ok := promptTokensFromUsageMap(usage); ok {
+		info.PromptTokens = int(math.Round(promptTokens))
+		info.InputTokens = info.PromptTokens
+	}
+	if completionTokens, ok := completionTokensFromUsageMap(usage); ok {
+		info.CompletionTokens = int(math.Round(completionTokens))
+		info.OutputTokens = info.CompletionTokens
+	}
+	if totalTokens, ok := totalTokensFromUsageMap(usage); ok {
+		info.TotalTokens = int(math.Round(totalTokens))
+	}
+
+	if inputTokens, ok := toFloat64(usage["input_tokens"]); ok {
+		info.InputTokens = int(math.Round(inputTokens))
+		if info.PromptTokens <= 0 {
+			info.PromptTokens = info.InputTokens
+		}
+	}
+	if outputTokens, ok := toFloat64(usage["output_tokens"]); ok {
+		info.OutputTokens = int(math.Round(outputTokens))
+		if info.CompletionTokens <= 0 {
+			info.CompletionTokens = info.OutputTokens
+		}
+	}
+
+	if cacheReadInputTokens, ok := toFloat64(usage["cache_read_input_tokens"]); ok {
+		info.CacheReadInputTokens = int(math.Round(cacheReadInputTokens))
+	}
+	if cacheCreationInputTokens, ok := toFloat64(usage["cache_creation_input_tokens"]); ok {
+		info.CacheCreationInputTokens = int(math.Round(cacheCreationInputTokens))
+	}
+
+	if cacheCreation, ok := usage["cache_creation"].(map[string]interface{}); ok {
+		if fiveMinTokens, ok := toFloat64(cacheCreation["ephemeral_5m_input_tokens"]); ok {
+			info.CacheCreationEphemeral5mInputTokens = int(math.Round(fiveMinTokens))
+		}
+		if oneHourTokens, ok := toFloat64(cacheCreation["ephemeral_1h_input_tokens"]); ok {
+			info.CacheCreationEphemeral1hInputTokens = int(math.Round(oneHourTokens))
+		}
+	}
+
+	if info.CacheCreationInputTokens <= 0 {
+		info.CacheCreationInputTokens = info.CacheCreationEphemeral5mInputTokens + info.CacheCreationEphemeral1hInputTokens
+	}
+
+	cacheFields := extractCacheUsageFieldsFromMap(usage)
+	if cachedPromptTokens, ok := cachedTokensFromUsageMap(usage, cacheFields); ok {
+		info.CachedPromptTokens = int(math.Round(cachedPromptTokens))
+	}
+
+	if info.TotalTokens <= 0 {
+		info.TotalTokens = info.PromptTokens + info.CompletionTokens
+	}
+
+	if !usageInfoHasTokenData(info) {
+		return nil
+	}
+	if info.Provider == "" {
+		info.Provider = "unknown"
+	}
+
+	return info
+}
+
 func cachedTokensFromUsageMap(usage map[string]interface{}, cacheFields map[string]interface{}) (float64, bool) {
 	if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
 		if v, ok := toFloat64(details["cached_tokens"]); ok {
@@ -661,6 +749,22 @@ func cachedTokensFromUsageMap(usage map[string]interface{}, cacheFields map[stri
 		}
 	}
 	return 0, false
+}
+
+func usageInfoHasTokenData(info *UsageInfo) bool {
+	if info == nil {
+		return false
+	}
+	return info.PromptTokens > 0 ||
+		info.CompletionTokens > 0 ||
+		info.TotalTokens > 0 ||
+		info.InputTokens > 0 ||
+		info.OutputTokens > 0 ||
+		info.CacheReadInputTokens > 0 ||
+		info.CacheCreationInputTokens > 0 ||
+		info.CacheCreationEphemeral5mInputTokens > 0 ||
+		info.CacheCreationEphemeral1hInputTokens > 0 ||
+		info.CachedPromptTokens > 0
 }
 
 func toFloat64(v interface{}) (float64, bool) {

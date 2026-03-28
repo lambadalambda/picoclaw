@@ -24,9 +24,17 @@ type LLMResponse struct {
 }
 
 type UsageInfo struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	Provider                            string `json:"provider,omitempty"`
+	PromptTokens                        int    `json:"prompt_tokens"`
+	CompletionTokens                    int    `json:"completion_tokens"`
+	TotalTokens                         int    `json:"total_tokens"`
+	InputTokens                         int    `json:"input_tokens,omitempty"`
+	OutputTokens                        int    `json:"output_tokens,omitempty"`
+	CacheReadInputTokens                int    `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens            int    `json:"cache_creation_input_tokens,omitempty"`
+	CacheCreationEphemeral5mInputTokens int    `json:"cache_creation_ephemeral_5m_input_tokens,omitempty"`
+	CacheCreationEphemeral1hInputTokens int    `json:"cache_creation_ephemeral_1h_input_tokens,omitempty"`
+	CachedPromptTokens                  int    `json:"cached_prompt_tokens,omitempty"`
 }
 
 type Message struct {

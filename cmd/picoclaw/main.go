@@ -111,6 +111,8 @@ func main() {
 		notifyCmd()
 	case "status":
 		statusCmd()
+	case "usage":
+		usageCmd()
 	case "migrate":
 		migrateCmd()
 	case "auth":
@@ -186,6 +188,7 @@ func printHelp() {
 	fmt.Println("  gateway     Start picoclaw gateway")
 	fmt.Println("  notify      Queue a local message for the active chat")
 	fmt.Println("  status      Show picoclaw status")
+	fmt.Println("  usage       Show LLM token usage stats")
 	fmt.Println("  cron        Manage scheduled tasks")
 	fmt.Println("  migrate     Migrate from OpenClaw to PicoClaw")
 	fmt.Println("  skills      Manage skills (install, list, remove)")
