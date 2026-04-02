@@ -292,3 +292,157 @@ func TestRun_RetriesWithoutImagesOnPolicyError(t *testing.T) {
 		t.Fatal("expected retry attempt to strip image parts")
 	}
 }
+
+func TestRun_TruncatedToolCall(t *testing.T) {
+	p := &mockProvider{responses: []*providers.LLMResponse{
+		{
+			ToolCalls:    []providers.ToolCall{{ID: "tc1", Name: "write_file", Arguments: map[string]interface{}{"path": "/tmp/test.txt"}}},
+			FinishReason: "length",
+		},
+		{Content: "recovered"},
+	}}
+
+	toolResultSeen := false
+	toolCallsRequestedSeen := false
+	res, err := Run(context.Background(), RunOptions{
+		Provider:      p,
+		Model:         "test-model",
+		MaxIterations: 3,
+		Messages:      []providers.Message{{Role: "user", Content: "write large file"}},
+		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
+			t.Fatal("ExecuteTools should not be called for truncated tool calls")
+			return nil
+		},
+		Hooks: Hooks{
+			ToolCallsRequested: func(iteration int, toolCalls []providers.ToolCall) {
+				if iteration == 1 {
+					toolCallsRequestedSeen = true
+					if len(toolCalls) != 1 {
+						t.Errorf("expected 1 tool call, got %d", len(toolCalls))
+					}
+					if toolCalls[0].Name != "write_file" {
+						t.Errorf("expected tool name write_file, got %q", toolCalls[0].Name)
+					}
+				}
+			},
+			ToolResultMessage: func(iteration int, msg providers.Message) {
+				if iteration == 1 {
+					toolResultSeen = true
+					if !strings.Contains(msg.Content, "truncated") {
+						t.Errorf("expected truncation error message, got: %q", msg.Content)
+					}
+					if !strings.Contains(msg.Content, "output token limit") {
+						t.Errorf("expected token limit message, got: %q", msg.Content)
+					}
+				}
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.FinalContent != "recovered" {
+		t.Fatalf("FinalContent = %q, want %q", res.FinalContent, "recovered")
+	}
+	if res.Iterations != 2 {
+		t.Fatalf("Iterations = %d, want 2", res.Iterations)
+	}
+	if !toolResultSeen {
+		t.Fatal("expected truncation error to be injected as tool result")
+	}
+	if !toolCallsRequestedSeen {
+		t.Fatal("expected ToolCallsRequested hook to be called for truncated tool calls")
+	}
+	if len(res.Messages) != 3 {
+		t.Fatalf("Messages len = %d, want 3 (user, assistant, tool error)", len(res.Messages))
+	}
+	if res.Messages[1].Role != "assistant" {
+		t.Fatalf("message[1].Role = %q, want assistant", res.Messages[1].Role)
+	}
+	if res.Messages[2].Role != "tool" {
+		t.Fatalf("message[2].Role = %q, want tool", res.Messages[2].Role)
+	}
+	if !strings.Contains(res.Messages[2].Content, "truncated") {
+		t.Errorf("expected truncation error in message[2], got: %q", res.Messages[2].Content)
+	}
+}
+
+func TestRun_TruncatedMultipleToolCalls(t *testing.T) {
+	p := &mockProvider{responses: []*providers.LLMResponse{
+		{
+			ToolCalls: []providers.ToolCall{
+				{ID: "tc1", Name: "write_file", Arguments: map[string]interface{}{"path": "/tmp/a.txt"}},
+				{ID: "tc2", Name: "write_file", Arguments: map[string]interface{}{"path": "/tmp/b.txt"}},
+			},
+			FinishReason: "length",
+		},
+		{Content: "recovered"},
+	}}
+
+	toolResultsSeen := 0
+	toolCallsRequestedSeen := false
+	res, err := Run(context.Background(), RunOptions{
+		Provider:      p,
+		Model:         "test-model",
+		MaxIterations: 3,
+		Messages:      []providers.Message{{Role: "user", Content: "write large files"}},
+		ExecuteTools: func(ctx context.Context, toolCalls []providers.ToolCall, iteration int) []providers.Message {
+			t.Fatal("ExecuteTools should not be called for truncated tool calls")
+			return nil
+		},
+		Hooks: Hooks{
+			ToolCallsRequested: func(iteration int, toolCalls []providers.ToolCall) {
+				if iteration == 1 {
+					toolCallsRequestedSeen = true
+					if len(toolCalls) != 2 {
+						t.Errorf("expected 2 tool calls, got %d", len(toolCalls))
+					}
+				}
+			},
+			ToolResultMessage: func(iteration int, msg providers.Message) {
+				if iteration == 1 {
+					toolResultsSeen++
+					if !strings.Contains(msg.Content, "truncated") {
+						t.Errorf("expected truncation error message, got: %q", msg.Content)
+					}
+				}
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.FinalContent != "recovered" {
+		t.Fatalf("FinalContent = %q, want %q", res.FinalContent, "recovered")
+	}
+	if res.Iterations != 2 {
+		t.Fatalf("Iterations = %d, want 2", res.Iterations)
+	}
+	if toolResultsSeen != 2 {
+		t.Fatalf("expected 2 tool result messages for 2 truncated tool calls, got %d", toolResultsSeen)
+	}
+	if !toolCallsRequestedSeen {
+		t.Fatal("expected ToolCallsRequested hook to be called for truncated tool calls")
+	}
+	if len(res.Messages) != 4 {
+		t.Fatalf("Messages len = %d, want 4 (user, assistant with 2 tool calls, 2 tool errors)", len(res.Messages))
+	}
+	if res.Messages[1].Role != "assistant" {
+		t.Fatalf("message[1].Role = %q, want assistant", res.Messages[1].Role)
+	}
+	if len(res.Messages[1].ToolCalls) != 2 {
+		t.Fatalf("message[1] should have 2 tool calls, got %d", len(res.Messages[1].ToolCalls))
+	}
+	if res.Messages[2].Role != "tool" {
+		t.Fatalf("message[2].Role = %q, want tool", res.Messages[2].Role)
+	}
+	if res.Messages[2].ToolCallID != "tc1" {
+		t.Fatalf("message[2].ToolCallID = %q, want tc1", res.Messages[2].ToolCallID)
+	}
+	if res.Messages[3].Role != "tool" {
+		t.Fatalf("message[3].Role = %q, want tool", res.Messages[3].Role)
+	}
+	if res.Messages[3].ToolCallID != "tc2" {
+		t.Fatalf("message[3].ToolCallID = %q, want tc2", res.Messages[3].ToolCallID)
+	}
+}
