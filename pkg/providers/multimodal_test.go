@@ -33,6 +33,7 @@ func TestValidateInlineImagePath_AcceptsSmallPNGByExtension(t *testing.T) {
 func TestSupportsInlineVisionTransport_FallbackProviderMatchesRequestedModel(t *testing.T) {
 	fp := newFallbackProvider("glm-5", []fallbackCandidate{
 		{model: "glm-5", provider: &HTTPProvider{}},
+		{model: "glm-5v-turbo", provider: &HTTPProvider{}},
 		{model: "gpt-4o", provider: &HTTPProvider{}},
 	})
 
@@ -41,6 +42,9 @@ func TestSupportsInlineVisionTransport_FallbackProviderMatchesRequestedModel(t *
 	}
 	if !SupportsInlineVisionTransport(fp, "gpt-4o") {
 		t.Fatal("SupportsInlineVisionTransport(gpt-4o) = false, want true")
+	}
+	if !SupportsInlineVisionTransport(fp, "glm-5v-turbo") {
+		t.Fatal("SupportsInlineVisionTransport(glm-5v-turbo) = false, want true")
 	}
 }
 

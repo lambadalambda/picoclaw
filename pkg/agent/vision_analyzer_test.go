@@ -40,3 +40,21 @@ func TestResolvePrimaryVisionAnalyzer_VisionModel_ReturnsClient(t *testing.T) {
 		t.Fatalf("client model = %q, want %q", analyzer.Model, "glm-4.6v")
 	}
 }
+
+func TestResolvePrimaryVisionAnalyzer_GLM5VModel_ReturnsClient(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Model = "glm-5v-turbo"
+	cfg.Providers.Zhipu.APIKey = "test-key"
+	cfg.Providers.Zhipu.APIBase = "https://open.bigmodel.cn/api/paas/v4"
+
+	analyzer, model := resolvePrimaryVisionAnalyzer(cfg)
+	if analyzer == nil {
+		t.Fatalf("expected analyzer to be configured")
+	}
+	if model != "glm-5v-turbo" {
+		t.Fatalf("model = %q, want %q", model, "glm-5v-turbo")
+	}
+	if analyzer.Model != "glm-5v-turbo" {
+		t.Fatalf("client model = %q, want %q", analyzer.Model, "glm-5v-turbo")
+	}
+}

@@ -22,6 +22,18 @@ func TestModelCapabilities_GLM46V_Vision(t *testing.T) {
 	}
 }
 
+func TestModelCapabilities_GLM5V_Vision(t *testing.T) {
+	for _, model := range []string{"glm-5v-turbo", "zai-org/GLM-5V-Turbo"} {
+		caps := ModelCapabilitiesFor(model)
+		if !caps.SupportsVision {
+			t.Fatalf("%s should advertise native vision support", model)
+		}
+		if !caps.SupportsInlineVision {
+			t.Fatalf("%s should advertise inline vision transport support", model)
+		}
+	}
+}
+
 func TestModelCapabilities_GPT4O_InlineVision(t *testing.T) {
 	caps := ModelCapabilitiesFor("gpt-4o")
 	if !caps.SupportsVision {

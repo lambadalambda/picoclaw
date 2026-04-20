@@ -14,6 +14,8 @@ func ModelCapabilitiesFor(model string) ModelCapabilities {
 	}
 
 	switch {
+	case strings.Contains(normalized, "glm-5v"):
+		return ModelCapabilities{SupportsVision: true, SupportsInlineVision: true}
 	case strings.Contains(normalized, "glm-5"):
 		return ModelCapabilities{SupportsVision: false, SupportsInlineVision: false}
 	case strings.Contains(normalized, "glm-4.6v"):
