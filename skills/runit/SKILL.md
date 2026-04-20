@@ -1,29 +1,49 @@
 ---
 name: runit
-description: Manage long-running workspace services (runit/runsvdir) inside the Docker container.
+description: Manage long-running workspace services (runit/runsvdir) on this host.
 metadata: {"nanobot":{"emoji":"🧰","os":["linux"],"requires":{"bins":["runsvdir","runsv","sv","svlogd"]}}}
 ---
 
 # runit (workspace services)
 
-This repo's Docker image can start a lightweight service supervisor (runit)
-so the agent can run long-lived daemons that boot with PicoClaw.
+This setup provides a dedicated runit supervisor service (`workspace-services`)
+for agent-managed daemons.
 
 ## Where services live
 
-Default service root (bind-mounted, persistent):
+Default service root:
 
-`/root/.picoclaw/workspace/services/`
+`/home/picoclaw/.picoclaw/workspace/services/`
+
+Equivalent generic form:
+
+`$PICOCLAW_HOME/workspace/services`
 
 Each service is a directory:
 
 ```text
-/root/.picoclaw/workspace/services/<name>/run
-/root/.picoclaw/workspace/services/<name>/log/run   # optional (svlogd)
-/root/.picoclaw/workspace/services/<name>/down      # optional (disable autostart)
+/home/picoclaw/.picoclaw/workspace/services/<name>/run
+/home/picoclaw/.picoclaw/workspace/services/<name>/log/run   # optional (svlogd)
+/home/picoclaw/.picoclaw/workspace/services/<name>/down      # optional (disable autostart)
 ```
 
 Important: `run` (and `log/run`) must be executable.
+
+## Workspace supervisor service
+
+Check that workspace service supervision is running:
+
+```bash
+sv status /etc/service/workspace-services
+```
+
+Supervisor log:
+
+`/home/picoclaw/.picoclaw/log/workspace-services/current`
+
+```bash
+tail -n 80 /home/picoclaw/.picoclaw/log/workspace-services/current
+```
 
 ## Minimal service example
 
@@ -31,7 +51,7 @@ Example: a tiny HTTP server on port 8081.
 
 Create:
 
-- `/root/.picoclaw/workspace/services/hello-http/run`
+- `/home/picoclaw/.picoclaw/workspace/services/hello-http/run`
 
 ```sh
 #!/bin/sh
@@ -43,20 +63,20 @@ exec python3 -m http.server 8081
 Then mark executable:
 
 ```bash
-chmod +x /root/.picoclaw/workspace/services/hello-http/run
+chmod +x /home/picoclaw/.picoclaw/workspace/services/hello-http/run
 ```
 
 ## Logging (recommended)
 
 Add a `log/run` so stdout/stderr are captured on disk:
 
-- `/root/.picoclaw/workspace/services/hello-http/log/run`
+- `/home/picoclaw/.picoclaw/workspace/services/hello-http/log/run`
 
 ```sh
 #!/bin/sh
 set -eu
 
-LOG_DIR="/root/.picoclaw/workspace/services/hello-http/log"
+LOG_DIR="/home/picoclaw/.picoclaw/workspace/services/hello-http/log"
 mkdir -p "$LOG_DIR"
 exec svlogd -tt "$LOG_DIR"
 ```
@@ -64,31 +84,32 @@ exec svlogd -tt "$LOG_DIR"
 Then:
 
 ```bash
-chmod +x /root/.picoclaw/workspace/services/hello-http/log/run
+chmod +x /home/picoclaw/.picoclaw/workspace/services/hello-http/log/run
 ```
 
 Log file:
 
-`/root/.picoclaw/workspace/services/hello-http/log/current`
+`/home/picoclaw/.picoclaw/workspace/services/hello-http/log/current`
 
 ## Control services
 
 `sv` is the primary CLI.
 
-If `$SVDIR` is set to `/root/.picoclaw/workspace/services`, you can use just
-the service name:
+Use explicit paths (works even if `SVDIR` is not exported in your shell):
 
 ```bash
-sv status hello-http
-sv up hello-http
-sv down hello-http
-sv restart hello-http
+SVC_ROOT=/home/picoclaw/.picoclaw/workspace/services
+sv status "$SVC_ROOT/hello-http"
+sv up "$SVC_ROOT/hello-http"
+sv down "$SVC_ROOT/hello-http"
+sv restart "$SVC_ROOT/hello-http"
 ```
 
-Otherwise, point `sv` at the directory explicitly:
+If you prefer service names, export `SVDIR` first:
 
 ```bash
-sv status /root/.picoclaw/workspace/services/hello-http
+export SVDIR=/home/picoclaw/.picoclaw/workspace/services
+sv status hello-http
 ```
 
 ## Disabling autostart
@@ -96,13 +117,20 @@ sv status /root/.picoclaw/workspace/services/hello-http
 Create a `down` file:
 
 ```bash
-touch /root/.picoclaw/workspace/services/hello-http/down
-sv down hello-http
+SVC_ROOT=/home/picoclaw/.picoclaw/workspace/services
+touch "$SVC_ROOT/hello-http/down"
+sv down "$SVC_ROOT/hello-http"
 ```
 
 Remove it to re-enable autostart:
 
 ```bash
-rm /root/.picoclaw/workspace/services/hello-http/down
-sv up hello-http
+SVC_ROOT=/home/picoclaw/.picoclaw/workspace/services
+rm "$SVC_ROOT/hello-http/down"
+sv up "$SVC_ROOT/hello-http"
 ```
+
+## Guardrails
+
+Use this skill for workspace services under `.../workspace/services`.
+Do not modify system services under `/etc/sv/picoclaw-gateway` or `/etc/sv/deltachat-bridge` unless explicitly requested.

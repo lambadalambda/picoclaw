@@ -41,7 +41,14 @@ Rules and conventions for AI agents (and humans) working on this codebase.
 
 ## Remote deploy helper
 
-- Use `scripts/deploy-remote.sh` to deploy the gateway binary to the remote host (`alice@100.79.8.81` by default).
-- The script builds `./cmd/picoclaw` for `linux/amd64`, uploads to `/home/alice/.local/bin/picoclaw`, restarts `/home/alice/.config/runit/service/picoclaw-gateway`, and tails logs.
-- If `scripts/deltachat_bridge.py` changed, deploy it in the same run with `scripts/deploy-remote.sh --copy-bridge`.
-- Useful flags: `--skip-build`, `--skip-restart`, `--no-logs`, `--log-lines <n>`, and `--remote <user@host>`.
+- Use `scripts/deploy-proxmox-lxc.sh` for the Proxmox LXC setup (`root@nas`, CT `111` by default).
+- First migration/bootstrap: `scripts/deploy-proxmox-lxc.sh --bootstrap --sync-home --copy-bridge`.
+- Day-to-day binary deploys: `scripts/deploy-proxmox-lxc.sh` (builds `./cmd/picoclaw`, pushes binary with `pct push`, restarts runit service, tails logs).
+- If `scripts/deltachat_bridge.py` changed, include `--copy-bridge`; to start bridge service too, add `--enable-bridge`.
+- Useful flags: `--skip-build`, `--skip-restart`, `--no-logs`, `--log-lines <n>`, `--ctid <id>`, and `--remote <user@host>`.
+
+### Current LXC SSH targets (root@nas)
+
+- CT `111`: `192.168.1.222` -> `ssh root@192.168.1.222` or `ssh picoclaw@192.168.1.222`
+- CT `112`: `192.168.1.229` -> `ssh root@192.168.1.229` or `ssh picoclaw@192.168.1.229`
+- Re-check current IPs anytime from your laptop: `ssh root@nas "printf 'CT 111: '; pct exec 111 -- hostname -I; printf 'CT 112: '; pct exec 112 -- hostname -I"`
