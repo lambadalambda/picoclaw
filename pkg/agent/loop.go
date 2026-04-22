@@ -77,7 +77,7 @@ type processOptions struct {
 	UserMedia       []string
 	DefaultResponse string // Response when LLM returns empty
 	EnableSummary   bool   // Whether to trigger summarization
-	SendResponse    bool   // Whether to send response via bus
+	SendResponse    bool   // Deprecated: user-visible replies must use message tool
 }
 
 type processTaskResult struct {
@@ -530,17 +530,25 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				continue
 			}
 
-			response := res.response
 			if res.err != nil {
-				response = fmt.Sprintf("Error processing message: %v", res.err)
+				logger.ErrorCF("agent", "Message processing failed",
+					map[string]interface{}{
+						"session_key": res.sessionKey,
+						"channel":     res.message.Channel,
+						"chat_id":     res.message.ChatID,
+						"error":       res.err.Error(),
+					})
+				continue
 			}
 
-			if response != "" {
-				al.bus.PublishOutbound(bus.OutboundMessage{
-					Channel: res.message.Channel,
-					ChatID:  res.message.ChatID,
-					Content: response,
-				})
+			if strings.TrimSpace(res.response) != "" {
+				logger.InfoCF("agent", "Suppressed implicit outbound response; waiting for explicit message tool delivery",
+					map[string]interface{}{
+						"session_key": res.sessionKey,
+						"channel":     res.message.Channel,
+						"chat_id":     res.message.ChatID,
+						"chars":       len(res.response),
+					})
 			}
 		}
 	}
@@ -777,18 +785,18 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 		ChatID:          originChatID,
 		TraceID:         traceID,
 		UserMessage:     fmt.Sprintf("[System: %s] %s", msg.SenderID, msg.Content),
-		DefaultResponse: "Background task completed.",
+		DefaultResponse: "",
 		EnableSummary:   false,
-		SendResponse:    true, // Send response back to original channel
+		SendResponse:    false,
 	})
 	if err != nil {
-		// Avoid routing errors to the non-existent "system" channel. Send a fallback
-		// message directly to the origin channel/chat.
-		al.bus.PublishOutbound(bus.OutboundMessage{
-			Channel: originChannel,
-			ChatID:  originChatID,
-			Content: fmt.Sprintf("Error processing background task: %v", err),
-		})
+		logger.ErrorCF("agent", "Background/system message processing failed",
+			map[string]interface{}{
+				"origin_channel": originChannel,
+				"origin_chat_id": originChatID,
+				"trace_id":       traceID,
+				"error":          err.Error(),
+			})
 	}
 	return "", nil
 }
@@ -866,16 +874,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 		al.maybeSummarize(sessionKey, promptTokens)
 	}
 
-	// 7. Optional: send response via bus
-	if runOpts.SendResponse {
-		al.bus.PublishOutbound(bus.OutboundMessage{
-			Channel: runOpts.Channel,
-			ChatID:  runOpts.ChatID,
-			Content: finalContent,
-		})
-	}
-
-	// 8. Log response
+	// 7. Log response
 	if finalContent != "" {
 		responsePreview := utils.Truncate(finalContent, 120)
 		logger.InfoCF("agent", fmt.Sprintf("Response: %s", responsePreview),

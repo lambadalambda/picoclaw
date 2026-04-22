@@ -226,20 +226,10 @@ func TestRun_InterruptsActiveSessionOnNewUserMessage(t *testing.T) {
 		SessionKey: "telegram:chat-1",
 	})
 
-	outCtx, outCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	outCtx, outCancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer outCancel()
-	out, ok := al.bus.SubscribeOutbound(outCtx)
-	if !ok {
-		t.Fatal("expected outbound response for second message")
-	}
-	if out.Content != "handled second" {
-		t.Fatalf("outbound content = %q, want %q", out.Content, "handled second")
-	}
-
-	extraCtx, extraCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer extraCancel()
-	if extra, ok := al.bus.SubscribeOutbound(extraCtx); ok {
-		t.Fatalf("unexpected extra outbound message: %+v", extra)
+	if out, ok := al.bus.SubscribeOutbound(outCtx); ok {
+		t.Fatalf("unexpected implicit outbound message: %+v", out)
 	}
 
 	if provider.canceledCalls.Load() == 0 {
