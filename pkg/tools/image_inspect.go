@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	defaultImageInspectMaxImages       = 3
+	defaultImageInspectMaxImages       = 1
 	defaultImageInspectMaxBytes        = 8 * 1024 * 1024
 	defaultImageInspectDownloadTimeout = 20 * time.Second
 	defaultImageInspectInlineRetention = 15 * time.Minute
@@ -75,7 +75,7 @@ func (t *ImageInspectTool) Name() string {
 }
 
 func (t *ImageInspectTool) Description() string {
-	return "Inspect image URLs or local image files. For multimodal models, attaches the image(s) so the model can analyze directly; otherwise returns a textual analysis"
+	return "Inspect one image URL or local image file. For multimodal models, attaches the image so the model can analyze directly; otherwise returns a textual analysis"
 }
 
 func (t *ImageInspectTool) Parameters() map[string]interface{} {
@@ -84,7 +84,9 @@ func (t *ImageInspectTool) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"sources": map[string]interface{}{
 				"type":        "array",
-				"description": "Image sources to inspect (local file paths and/or http/https URLs)",
+				"description": "Exactly one image source to inspect (local file path or http/https URL)",
+				"minItems":    1,
+				"maxItems":    1,
 				"items": map[string]interface{}{
 					"type": "string",
 				},
@@ -97,10 +99,6 @@ func (t *ImageInspectTool) Parameters() map[string]interface{} {
 				"type":        "string",
 				"description": "Analyzer selection mode: auto (default), primary, or fallback",
 				"enum":        []string{"auto", "primary", "fallback"},
-			},
-			"max_images": map[string]interface{}{
-				"type":        "integer",
-				"description": "Optional max number of images to inspect from sources (default 3)",
 			},
 			"transport": map[string]interface{}{
 				"type":        "string",
@@ -137,25 +135,6 @@ func (t *ImageInspectTool) ExecuteResult(ctx context.Context, args map[string]in
 	}
 	if mode != "auto" && mode != "primary" && mode != "fallback" {
 		return ToolResult{}, fmt.Errorf("mode must be one of: auto, primary, fallback")
-	}
-
-	maxImages := t.maxImages
-	if maxImages <= 0 {
-		maxImages = defaultImageInspectMaxImages
-	}
-	if rawMaxImages, exists := args["max_images"]; exists && rawMaxImages != nil {
-		parsedMaxImages, parseErr := parseOptionalIntArg(args, "max_images", maxImages)
-		if parseErr != nil {
-			return ToolResult{}, parseErr
-		}
-		if parsedMaxImages <= 0 {
-			return ToolResult{}, fmt.Errorf("max_images must be >= 1")
-		}
-		maxImages = parsedMaxImages
-	}
-
-	if len(sources) > maxImages {
-		sources = sources[:maxImages]
 	}
 
 	prepared, warnings, cleanup, err := t.prepareSources(ctx, sources)
@@ -267,6 +246,9 @@ func (t *ImageInspectTool) parseSources(args map[string]interface{}) ([]string, 
 	if len(out) == 0 {
 		return nil, fmt.Errorf("at least one source is required")
 	}
+	if len(out) > 1 {
+		return nil, fmt.Errorf("exactly one source is allowed")
+	}
 
 	return out, nil
 }
@@ -275,11 +257,11 @@ func (t *ImageInspectTool) buildPrompt(args map[string]interface{}) string {
 	if q, ok := args["question"].(string); ok {
 		q = strings.TrimSpace(q)
 		if q != "" {
-			return "Analyze the provided image(s) and answer this request: " + q
+			return "Analyze the provided image and answer this request: " + q
 		}
 	}
 
-	return "Analyze the provided image(s). Describe visible content, transcribe important text, and highlight details useful for debugging, coding, or UI analysis."
+	return "Analyze the provided image. Describe visible content, transcribe important text, and highlight details useful for debugging, coding, or UI analysis."
 }
 
 func (t *ImageInspectTool) availableAnalyzers(mode string) ([]namedImageAnalyzer, error) {

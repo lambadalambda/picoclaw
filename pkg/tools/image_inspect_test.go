@@ -156,34 +156,21 @@ func TestImageInspectTool_FallsBackWhenPrimaryFails(t *testing.T) {
 	}
 }
 
-func TestImageInspectTool_ReturnsWarningsForSkippedSources(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/bad.txt":
-			w.Header().Set("Content-Type", "text/plain")
-			_, _ = w.Write([]byte("not an image"))
-		default:
-			w.Header().Set("Content-Type", "image/png")
-			_, _ = w.Write(tinyPNGBytes(t))
-		}
-	}))
-	defer server.Close()
+func TestImageInspectTool_RejectsMultipleSources(t *testing.T) {
+	workspace := t.TempDir()
+	_ = writeTempImage(t, workspace, "a.png")
+	_ = writeTempImage(t, workspace, "b.png")
 
-	primary := &recordingImageAnalyzer{result: "Mixed analysis"}
-	tool := NewImageInspectTool(t.TempDir(), primary, "primary-model", nil, "")
-	tool.allowPrivateHosts = true
+	tool := NewImageInspectTool(workspace, &recordingImageAnalyzer{result: "ok"}, "primary-model", nil, "")
 
-	out, err := tool.Execute(context.Background(), map[string]interface{}{
-		"sources": []interface{}{server.URL + "/bad.txt", server.URL + "/ok.png"},
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"sources": []interface{}{"a.png", "b.png"},
 	})
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
+	if err == nil {
+		t.Fatal("Execute should fail for multiple sources")
 	}
-	if !strings.Contains(out, "Warnings:") {
-		t.Fatalf("output missing warnings section: %q", out)
-	}
-	if !strings.Contains(strings.ToLower(out), "did not return image content") {
-		t.Fatalf("output missing non-image warning: %q", out)
+	if !strings.Contains(strings.ToLower(err.Error()), "exactly one source") {
+		t.Fatalf("error = %q, want exactly one source message", err)
 	}
 }
 
