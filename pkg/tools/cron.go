@@ -44,7 +44,7 @@ func (t *CronTool) Name() string {
 
 // Description returns the tool description
 func (t *CronTool) Description() string {
-	return "Schedule reminders and tasks. IMPORTANT: When user asks to be reminded or scheduled, you MUST call this tool. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). Use 'every_seconds' ONLY for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). Use 'cron_expr' for complex recurring schedules (e.g., '0 9 * * *' for daily at 9am). By default, cron jobs deliver to the most recently active chat (last channel/chat used). To pin delivery to a specific channel/chat, set both 'channel' and 'chat_id'."
+	return "Schedule reminders and tasks. IMPORTANT: When user asks to be reminded or scheduled, you MUST call this tool. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). Use 'every_seconds' ONLY for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). Use 'cron_expr' for complex recurring schedules (e.g., '0 9 * * *' for daily at 9am). Reminder delivery is processed by the agent, and user-visible output must be sent via the message tool. By default, cron jobs target the most recently active chat (last channel/chat used). To pin delivery to a specific channel/chat, set both 'channel' and 'chat_id'."
 }
 
 // Parameters returns the tool parameters schema
@@ -79,7 +79,7 @@ func (t *CronTool) Parameters() map[string]interface{} {
 			},
 			"deliver": map[string]interface{}{
 				"type":        "boolean",
-				"description": "If true, send message directly to channel. If false, let agent process the message (for complex tasks). Default: true",
+				"description": "Deprecated compatibility field. Must be false. Delivery is always processed by the agent and sent via message tool.",
 			},
 			"channel": map[string]interface{}{
 				"type":        "string",
@@ -169,10 +169,14 @@ func (t *CronTool) addJob(args map[string]interface{}) (string, error) {
 		return "Error: one of at_seconds, every_seconds, or cron_expr is required", nil
 	}
 
-	// Read deliver parameter, default to true
-	deliver := true
+	// Read deliver parameter, default to false. Direct bus delivery is disabled;
+	// all user-visible sends must go through the message tool.
+	deliver := false
 	if d, ok := args["deliver"].(bool); ok {
 		deliver = d
+	}
+	if deliver {
+		return "Error: deliver=true is no longer supported. Schedule agent-processed jobs and use the message tool for user-visible delivery.", nil
 	}
 
 	// Truncate message for job name (max 30 chars)
@@ -280,26 +284,8 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 		chatID = "direct"
 	}
 
-	// If deliver=true, send message directly without agent processing
-	if job.Payload.Deliver {
-		if t.msgBus == nil {
-			return "Error: message bus not configured"
-		}
-		if strings.TrimSpace(job.Payload.Channel) == "" || strings.TrimSpace(job.Payload.To) == "" {
-			// Job uses dynamic targeting; fail loudly if we don't have a last active chat.
-			if channel == "cli" && chatID == "direct" {
-				return "Error: no last active chat available for cron delivery (send a message to the agent once, or pin channel/chat_id)"
-			}
-		}
-		t.msgBus.PublishOutbound(bus.OutboundMessage{
-			Channel: channel,
-			ChatID:  chatID,
-			Content: job.Payload.Message,
-		})
-		return "ok"
-	}
-
-	// For deliver=false, process through agent (for complex tasks)
+	// Process all jobs through the agent so any user-visible output is sent via
+	// the message tool only.
 	if t.executor == nil {
 		return "Error: executor not configured"
 	}
@@ -319,7 +305,6 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 		return fmt.Sprintf("Error: %v", err)
 	}
 
-	// Response is automatically sent via MessageBus by AgentLoop
-	_ = response // Will be sent by AgentLoop
+	_ = response
 	return "ok"
 }

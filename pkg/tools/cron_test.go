@@ -92,7 +92,7 @@ func TestCronTool_AddAndListJobs(t *testing.T) {
 		"action":        "add",
 		"message":       "remind me",
 		"at_seconds":    float64(120),
-		"deliver":       true,
+		"deliver":       false,
 		"channel":       "telegram",
 		"chat_id":       "chat-1",
 		"cron_expr":     "ignored",
@@ -203,8 +203,8 @@ func TestCronTool_RemoveAndEnableDisableJobs(t *testing.T) {
 	}
 }
 
-func TestCronTool_ExecuteJobDeliverDirect(t *testing.T) {
-	tool, _, _, msgBus := newCronToolWithService(t)
+func TestCronTool_ExecuteJobLegacyDeliverTrueProcessesThroughAgent(t *testing.T) {
+	tool, _, executor, msgBus := newCronToolWithService(t)
 
 	job := &cron.CronJob{
 		ID: "direct-1",
@@ -219,21 +219,26 @@ func TestCronTool_ExecuteJobDeliverDirect(t *testing.T) {
 	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
 		t.Fatalf("expected ok, got %q", got)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	out, ok := msgBus.SubscribeOutbound(ctx)
-	if !ok {
-		t.Fatal("expected outbound message from direct delivery")
+	if executor.callCount != 1 {
+		t.Fatalf("expected executor to be called once, got %d", executor.callCount)
 	}
-	if out.Channel != "telegram" || out.ChatID != "chat-1" || out.Content != "ping" {
-		t.Fatalf("unexpected outbound message %#v", out)
+	if executor.lastContent != "ping" {
+		t.Fatalf("expected content %q, got %q", "ping", executor.lastContent)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if out, ok := msgBus.SubscribeOutbound(ctx); ok {
+		t.Fatalf("unexpected direct outbound message: %#v", out)
+	}
+
+	if executor.lastChannel != "telegram" || executor.lastChatID != "chat-1" {
+		t.Fatalf("unexpected target %s:%s", executor.lastChannel, executor.lastChatID)
 	}
 }
 
-func TestCronTool_ExecuteJobDeliverDirectDefaultsToLastActiveTarget(t *testing.T) {
-	tool, _, _, msgBus := newCronToolWithService(t)
+func TestCronTool_ExecuteJobLegacyDeliverTrueDefaultsToLastActiveTarget(t *testing.T) {
+	tool, _, executor, msgBus := newCronToolWithService(t)
 
 	if err := cron.SaveLastTarget(tool.lastTargetPath, cron.LastTarget{Channel: "deltachat", ChatID: "12"}); err != nil {
 		t.Fatalf("SaveLastTarget failed: %v", err)
@@ -251,21 +256,22 @@ func TestCronTool_ExecuteJobDeliverDirectDefaultsToLastActiveTarget(t *testing.T
 	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
 		t.Fatalf("expected ok, got %q", got)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	out, ok := msgBus.SubscribeOutbound(ctx)
-	if !ok {
-		t.Fatal("expected outbound message")
+	if executor.callCount != 1 {
+		t.Fatalf("expected executor to be called once, got %d", executor.callCount)
 	}
-	if out.Channel != "deltachat" || out.ChatID != "12" || out.Content != "ping" {
-		t.Fatalf("unexpected outbound message %#v", out)
+	if executor.lastChannel != "deltachat" || executor.lastChatID != "12" {
+		t.Fatalf("unexpected target %s:%s", executor.lastChannel, executor.lastChatID)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if out, ok := msgBus.SubscribeOutbound(ctx); ok {
+		t.Fatalf("unexpected direct outbound message: %#v", out)
 	}
 }
 
-func TestCronTool_ExecuteJobDeliverDirectErrorsWhenNoLastActiveTarget(t *testing.T) {
-	tool, _, _, _ := newCronToolWithService(t)
+func TestCronTool_ExecuteJobLegacyDeliverTrueWithoutLastTargetFallsBackToCli(t *testing.T) {
+	tool, _, executor, _ := newCronToolWithService(t)
 
 	job := &cron.CronJob{
 		ID: "direct-last-missing",
@@ -276,8 +282,14 @@ func TestCronTool_ExecuteJobDeliverDirectErrorsWhenNoLastActiveTarget(t *testing
 	}
 
 	got := tool.ExecuteJob(context.Background(), job)
-	if !strings.Contains(got, "no last active chat") {
-		t.Fatalf("expected missing last active chat error, got %q", got)
+	if got != "ok" {
+		t.Fatalf("expected ok fallback result, got %q", got)
+	}
+	if executor.callCount != 1 {
+		t.Fatalf("expected executor to be called once, got %d", executor.callCount)
+	}
+	if executor.lastChannel != "cli" || executor.lastChatID != "direct" {
+		t.Fatalf("unexpected fallback target %s:%s", executor.lastChannel, executor.lastChatID)
 	}
 }
 
@@ -401,6 +413,23 @@ func TestCronTool_AddJobMissingMessage(t *testing.T) {
 	}
 	if !strings.Contains(got, "message is required") {
 		t.Fatalf("expected required message error, got %q", got)
+	}
+}
+
+func TestCronTool_AddJobRejectsDeliverTrue(t *testing.T) {
+	tool, _, _, _ := newCronToolWithService(t)
+
+	got, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action":     "add",
+		"message":    "send directly",
+		"at_seconds": float64(30),
+		"deliver":    true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "deliver=true is no longer supported") {
+		t.Fatalf("expected deliver=true rejection, got %q", got)
 	}
 }
 

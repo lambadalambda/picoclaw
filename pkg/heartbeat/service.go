@@ -120,6 +120,7 @@ This is a background heartbeat run.
 - You may use any tools.
 - If there is something important to tell the user, send it using the message tool (including any media), then respond with exactly: HEARTBEAT_OK
 - If there is nothing actionable to tell the user, respond with exactly: HEARTBEAT_OK
+- Do not schedule or send raw messages that start with "HEARTBEAT:" to the user.
 - Keep actions short and concrete.
 
 %s
