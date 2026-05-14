@@ -31,6 +31,7 @@ type SpawnOptions struct {
 	MaxIterations      int
 	LLMTimeoutSeconds  int
 	ToolTimeoutSeconds int
+	MaxOutputTokens    int
 }
 
 type SubagentTask struct {
